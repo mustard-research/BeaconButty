@@ -1,0 +1,12 @@
+[Unit]
+Description=BeaconButty — storage housekeeping
+After=clickhouse-server.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/beaconbutty-housekeeping.sh
+User=root
+EnvironmentFile=/etc/rita/env
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=300

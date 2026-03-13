@@ -1,0 +1,17 @@
+[Unit]
+Description=BeaconButty — RITA beacon analysis
+Documentation=https://github.com/activecm/rita
+After=clickhouse-server.service network-online.target
+Requires=clickhouse-server.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/rita-analyze.sh
+User=root
+EnvironmentFile=/etc/rita/env
+WorkingDirectory=/etc/rita
+StandardOutput=journal
+StandardError=journal
+
+# Give the import time to complete even on a busy Pi
+TimeoutStartSec=3600

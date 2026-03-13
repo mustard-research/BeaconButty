@@ -1,0 +1,1470 @@
+
+╭─── Claude Code v2.1.63 ──────────────────────────────────────────────────────────────────────────────╮
+│                                                    │ Tips for getting started                        │
+│                 Welcome back Dave!                 │ Ask Claude to create a new app or clone a repo… │
+│                                                    │ ─────────────────────────────────────────────── │
+│                                                    │ Recent activity                                 │
+│                      ▗ ▗   ▖ ▖                     │ No recent activity                              │
+│                                                    │                                                 │
+│                        ▘▘ ▝▝                       │                                                 │
+│    Sonnet 4.6 · Claude Pro ·                       │                                                 │
+│    dave.marsh@mustardresearch.com's Organization   │                                                 │
+│           ~/…/My Drive/Claude/BeaconButty          │                                                 │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+❯ current malware can often send periodic beacons to command and control (C&C) servers running on   
+  compromised servers on the internet. once a connection is made to C&C, the malware can open up a  
+  local shell and facilitate further compromise of a companys systems. modern networks have both    
+  wired connections and wifi connections to an outgoing router which typically uses NAT. how        
+  feasible would it be to develop a beacon detector to operate on a company's network and detect    
+  these outgoing beacons?                                                                           
+
+⏺ Beacon Detection on Corporate Networks
+
+  This is a well-established area of defensive security (Network Security Monitoring / NSM). It's highly
+   feasible and actively done — let me walk through the technical landscape.
+
+  ---
+  How Beacons Behave (What You're Detecting)
+
+  Beacons have characteristic statistical signatures:
+
+  - Periodicity — connections at regular intervals (every N seconds/minutes)
+  - Jitter — sophisticated malware adds ±randomness to avoid naive detection
+  - Small, consistent payload sizes — just a check-in, not bulk data transfer
+  - Long-lived relationship — same source IP → same destination, repeated over hours/days
+  - Low data volume — distinguishes from legitimate streaming traffic
+
+  ---
+  Network Position for a Detector
+
+  [Internal Hosts] → [Switch/TAP] → [Router/NAT] → [Internet]
+                           ↑
+                     [Beacon Detector]
+
+  Best capture points:
+
+  ┌──────────────────────────────┬──────────────────────────┬───────────────────────────────────────┐
+  │           Position           │           Pros           │                 Cons                  │
+  ├──────────────────────────────┼──────────────────────────┼───────────────────────────────────────┤
+  │ Inline between switch and    │ Sees all traffic before  │ Single point of failure               │
+  │ router                       │ NAT                      │                                       │
+  ├──────────────────────────────┼──────────────────────────┼───────────────────────────────────────┤
+  │ SPAN/mirror port on switch   │ Passive, no risk         │ May miss traffic depending on switch  │
+  │                              │                          │ config                                │
+  ├──────────────────────────────┼──────────────────────────┼───────────────────────────────────────┤
+  │ On the router itself         │ Sees everything          │ Needs router access, CPU overhead     │
+  ├──────────────────────────────┼──────────────────────────┼───────────────────────────────────────┤
+  │ Per-VLAN on managed switch   │ Granular, segmented      │ More complex setup                    │
+  └──────────────────────────────┴──────────────────────────┴───────────────────────────────────────┘
+
+  For WiFi: the same SPAN/TAP approach works if you capture at the AP controller or the uplink switch
+  rather than over the air.
+
+  ---
+  Core Detection Techniques
+
+  1. Periodicity Analysis (Most Effective)
+
+  The fundamental signal. For each (src_ip, dst_ip, dst_port) tuple, collect inter-arrival times and
+  look for regularity.
+
+  import numpy as np
+  from scipy import signal
+
+  def beacon_score(connection_times):
+      """
+      Returns a score 0-1 indicating likelihood of beaconing.
+      Higher = more beacon-like.
+      """
+      if len(connection_times) < 6:
+          return 0.0
+
+      # Inter-arrival times
+      intervals = np.diff(sorted(connection_times))
+
+      # Low coefficient of variation = regular intervals
+      cv = np.std(intervals) / np.mean(intervals)
+      regularity_score = max(0, 1 - cv)
+
+      # FFT to detect dominant frequency
+      fft = np.abs(np.fft.rfft(intervals))
+      dominant_power = fft[1:].max() / (fft[1:].mean() + 1e-9)
+      frequency_score = min(1.0, dominant_power / 10.0)
+
+      return 0.6 * regularity_score + 0.4 * frequency_score
+
+  2. Payload Size Consistency
+
+  Beacons tend to send similar-sized packets each time. Compute variance of bytes_sent and
+  bytes_received per flow group over time.
+
+  3. Destination Reputation / Novelty
+
+  - New domains not seen before on the network
+  - Low Alexa/Tranco rank
+  - Recently registered domains (check via passive DNS or WHOIS)
+  - IP geolocation anomalies
+  - Self-signed TLS certificates, unusual cipher suites
+
+  4. JA3/JA3S TLS Fingerprinting
+
+  TLS clients have fingerprints based on their handshake parameters. Many malware families have known
+  JA3 hashes. You can match against threat intel feeds.
+
+  5. DNS Beaconing Detection
+
+  Some C2 uses DNS (queries encode data, responses encode commands):
+
+  - High query rate to a single domain
+  - Long/random-looking subdomains
+  - Unusual query types (TXT, NULL records)
+  - Low TTL responses
+  - Domain Generation Algorithm (DGA) detection via entropy analysis
+
+  import math
+
+  def domain_entropy(domain):
+      """High entropy subdomains suggest DGA or DNS tunneling."""
+      label = domain.split('.')[0]
+      prob = [label.count(c) / len(label) for c in set(label)]
+      return -sum(p * math.log2(p) for p in prob)
+
+  # DGA domains typically have entropy > 3.5
+
+  ---
+  Practical Implementation Stack
+
+  Capture layer:
+  - libpcap / AF_PACKET sockets on Linux for raw capture
+  - Zeek (formerly Bro) — generates structured connection logs automatically
+  - Suricata — can do both signature and statistical detection
+
+  Flow aggregation:
+  - Parse conn.log from Zeek, or use nfdump/ntopng for NetFlow
+  - Group by (src, dst, port, proto) with time-windowed buckets
+
+  Analysis layer:
+  - Python with pandas/numpy/scipy for statistical analysis
+  - Redis or TimescaleDB for storing per-flow time series
+  - Run analysis on sliding windows (e.g., score each flow over last 24h)
+
+  Alerting:
+  - Output to a SIEM (Elastic/Splunk/Wazuh)
+  - Or directly to a ticketing system
+
+  ---
+  Key Challenges
+
+  ┌───────────────────────────────┬─────────────────────────────────────────────────────────────────┐
+  │           Challenge           │                           Mitigation                            │
+  ├───────────────────────────────┼─────────────────────────────────────────────────────────────────┤
+  │ Encrypted traffic (HTTPS/TLS) │ Focus on metadata (timing, size, frequency) not content — still │
+  │                               │  works                                                          │
+  ├───────────────────────────────┼─────────────────────────────────────────────────────────────────┤
+  │ Jittered beacons              │ Use FFT and autocorrelation rather than simple variance         │
+  ├───────────────────────────────┼─────────────────────────────────────────────────────────────────┤
+  │ Legitimate periodic traffic   │ Build a baseline allowlist (NTP, update checks, telemetry)      │
+  ├───────────────────────────────┼─────────────────────────────────────────────────────────────────┤
+  │ High traffic volume           │ Aggregate to flow-level data first, don't analyze raw packets   │
+  ├───────────────────────────────┼─────────────────────────────────────────────────────────────────┤
+  │ HTTPS beacons over CDN IPs    │ Combine with JA3, SNI hostname, and behavioral clustering       │
+  ├───────────────────────────────┼─────────────────────────────────────────────────────────────────┤
+  │ Low-frequency beacons         │ Requires multi-day retention of flow metadata                   │
+  │ (hourly+)                     │                                                                 │
+  └───────────────────────────────┴─────────────────────────────────────────────────────────────────┘
+
+  ---
+  Existing Open-Source Tools
+
+  - https://github.com/activecm/rita (Real Intelligence Threat Analytics) — specifically designed for
+  this, works with Zeek logs
+  - https://zeek.org/ — foundational platform, has beacon detection scripts
+  - https://github.com/Cyb3rWard0g/HELK — hunting platform built on ELK + Zeek
+  - https://github.com/activecm/BeaKer — Zeek + RITA packaged together
+
+  ---
+  Summary
+
+  Very feasible. The key insight is that you don't need deep packet inspection — beacon detection works
+  entirely on connection metadata (timing, frequency, size distributions), which survives encryption. A
+  network tap + Zeek + RITA is a production-quality stack that many companies deploy today. The hardest
+  problems are tuning the allowlist to reduce false positives from legitimate periodic software (Windows
+   Update, Chrome telemetry, etc.) and handling very-low-frequency beacons that require days of data to
+  become statistically significant.
+
+✻ Cooked for 46s
+
+❯ implement this using zeek and rita on a raspberry pi 
+
+⏺ Recalled 1 memory, read 2 files (ctrl+o to expand)
+
+⏺ Good, fresh project. Let me plan out the full implementation and create all the files.
+
+❯ can zeek work with a network tap on the outgoing pipe of a router, where the traffic is NAT 
+
+⏺ I'll address the NAT/tap question after creating the files — there's an important distinction between
+  LAN-side and WAN-side tapping.
+
+⏺ Write(setup.sh)
+  ⎿  Wrote 84 lines to setup.sh
+       1 #!/usr/bin/env bash
+       2 set -euo pipefail
+       3
+       4 # BeaconButty - Network Beacon Detector
+       5 # Zeek + RITA on Raspberry Pi 4/5 (64-bit ARM)
+       6 #
+       7 # Hardware requirements:
+       8 #   - Raspberry Pi 4 or 5, minimum 4GB RAM (8GB recommended)
+       9 #   - 64-bit Raspberry Pi OS (Debian Bookworm) or Ubuntu 22.04/24.04 arm64
+      10 #   - Capture interface on a SPAN/mirror port (see README for network setup)
+     … +74 lines (ctrl+o to expand)
+
+
+
+⏺ Write(scripts/01_system_deps.sh)
+  ⎿  Wrote 60 lines to scripts/01_system_deps.sh
+       1 #!/usr/bin/env bash
+       2 set -euo pipefail
+       3
+       4 # Install system packages needed to compile Zeek and run RITA/MongoDB
+       5
+       6 echo "Updating package lists..."
+       7 apt-get update -qq
+       8
+       9 # Zeek build dependencies
+      10 ZEEK_BUILD_DEPS=(
+     … +50 lines (ctrl+o to expand)
+
+
+⏺ Write(scripts/02_install_zeek.sh)
+  ⎿  Wrote 82 lines to scripts/02_install_zeek.sh
+       1 #!/usr/bin/env bash
+       2 set -euo pipefail
+       3
+       4 # Install Zeek network analysis framework
+       5 #
+       6 # Strategy:
+       7 #   1. Try pre-built ARM64 packages from OpenSUSE Build Service (fast, ~2 min)
+       8 #   2. Fall back to compiling from source if packages unavailable (slow, ~60-90 min on P
+         i 4)
+       9
+      10 ZEEK_PREFIX="${ZEEK_PREFIX:-/opt/zeek}"
+     … +72 lines (ctrl+o to expand)
+
+
+
+⏺ Write(scripts/03_install_mongodb.sh)
+  ⎿  Wrote 69 lines to scripts/03_install_mongodb.sh
+       1 #!/usr/bin/env bash
+       2 set -euo pipefail
+       3
+       4 # Install MongoDB 7.0 — required by RITA as its analysis database.
+       5 # Official ARM64 packages are available for Debian Bookworm.
+       6
+       7 MONGO_MAJOR="7.0"
+       8
+       9 if command -v mongod &>/dev/null; then
+      10     echo "MongoDB already installed ($(mongod --version | head -1))"
+     … +59 lines (ctrl+o to expand)
+
+
+⏺ Write(scripts/04_install_rita.sh)
+  ⎿  Wrote 40 lines to scripts/04_install_rita.sh
+       1 #!/usr/bin/env bash
+       2 set -euo pipefail
+       3
+       4 # Install RITA v5 (Real Intelligence Threat Analytics)
+       5 # https://github.com/activecm/rita
+       6 #
+       7 # RITA reads Zeek conn.log/dns.log/ssl.log and scores each
+       8 # (src → dst) pair for beaconing behaviour using:
+       9 #   - Inter-arrival time regularity (coefficient of variation + MADM)
+      10 #   - Data size consistency
+     … +30 lines (ctrl+o to expand)
+
+
+⏺ Write(scripts/05_configure.sh)
+  ⎿  Wrote 101 lines to scripts/05_configure.sh
+       1 #!/usr/bin/env bash
+       2 set -euo pipefail
+       3
+       4 # Apply all configuration files and set up systemd timers.
+       5
+       6 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+       7
+       8 ZEEK_PREFIX="${ZEEK_PREFIX:-/opt/zeek}"
+       9 CAPTURE_IFACE="${CAPTURE_IFACE:-eth1}"
+      10 LOCAL_NETWORKS="${LOCAL_NETWORKS:-10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}"
+     … +91 lines (ctrl+o to expand)
+
+
+⏺ Write(config/zeek/node.cfg)
+  ⎿  Wrote 11 lines to config/zeek/node.cfg
+       1 # Zeek node configuration — standalone sensor
+       2 #
+       3 # "standalone" mode runs all Zeek components (logger, manager, worker)
+       4 # in a single process, which is appropriate for a Raspberry Pi.
+       5 #
+       6 # __CAPTURE_IFACE__ is replaced by setup script with the actual interface name.
+       7
+       8 [zeek]
+       9 type=standalone
+      10 host=localhost
+     … +1 line (ctrl+o to expand)
+
+
+
+⏺ Write(config/zeek/zeekctl.cfg)
+  ⎿  Wrote 22 lines to config/zeek/zeekctl.cfg
+       1 # Zeekctl global configuration
+       2
+       3 # Rotate logs every hour so RITA can import them in near-real-time
+       4 LogRotationInterval = 3600
+       5
+       6 # Keep 14 days of Zeek logs (one dir per day under LogDir)
+       7 # Reduce if SD card storage is limited; raise if using a USB SSD
+       8 LogExpireInterval = 336
+       9
+      10 # Write performance stats every 5 minutes
+     … +12 lines (ctrl+o to expand)
+
+⏺ Write(config/zeek/site/local.zeek)
+  ⎿  Wrote 44 lines to config/zeek/site/local.zeek
+       1 ##! BeaconButty — site-local Zeek policy
+       2 ##!
+       3 ##! Loads exactly the log sources RITA needs for beacon analysis:
+       4 ##!   conn.log   — the primary input (timing, bytes, duration)
+       5 ##!   dns.log    — DNS beaconing / DGA detection
+       6 ##!   ssl.log    — JA3 fingerprints, SNI, certificate subjects
+       7 ##!   http.log   — HTTP C2 (user-agent, URIs)
+       8 ##!   ssh.log    — reverse shell over SSH
+       9 ##!
+      10 ##! Intentionally excludes high-CPU scripts (SSL cert validation,
+     … +34 lines (ctrl+o to expand)
+
+⏺ Write(config/rita/config.yaml)
+  ⎿  Wrote 55 lines to config/rita/config.yaml
+      1 # RITA v5 configuration — BeaconButty
+      2 # Full reference: https://github.com/activecm/rita
+      3
+      4 mongodb:
+      5   connection_string: "mongodb://localhost:27017"
+      6   auth_mechanism: ""        # Leave empty for unauthenticated local MongoDB
+      7   socket_timeout_seconds: 120
+      8   tls:
+      9     enable: false           # Local connection only — no TLS needed
+     … +45 lines (ctrl+o to expand)
+
+
+⏺ Write(scripts/analyze.sh)
+  ⎿  Wrote 61 lines to scripts/analyze.sh
+       1 #!/usr/bin/env bash
+       2 set -euo pipefail
+       3
+       4 # rita-analyze.sh
+       5 #
+       6 # Imports the most recently completed Zeek log directory into RITA and
+       7 # runs beacon analysis.  Called every hour by rita-analyze.timer.
+       8 #
+       9 # Zeek rotates logs into dated subdirectories:
+      10 #   /opt/zeek/logs/2024-01-15/    ← yesterday (complete)
+     … +51 lines (ctrl+o to expand)
+
+
+⏺ Write(scripts/report.sh)
+  ⎿  Wrote 109 lines to scripts/report.sh
+       1 #!/usr/bin/env bash
+       2 set -euo pipefail
+       3
+       4 # beacon-report.sh
+       5 #
+       6 # Queries RITA for the last 3 days of databases and prints:
+       7 #   - High-scoring IP beacons   (periodic C2 check-ins)
+       8 #   - DNS beacons               (C2 over DNS queries)
+       9 #   - Long connections           (persistent shells / tunnels)
+      10 #   - Strobes                   (extremely high-frequency scanners)
+     … +99 lines (ctrl+o to expand)
+
+
+⏺ Write(systemd/rita-analyze.service)
+  ⎿  Wrote 15 lines to systemd/rita-analyze.service
+       1 [Unit]
+       2 Description=BeaconButty — RITA beacon analysis
+       3 Documentation=https://github.com/activecm/rita
+       4 After=mongod.service network-online.target
+       5 Requires=mongod.service
+       6
+       7 [Service]
+       8 Type=oneshot
+       9 ExecStart=/usr/local/bin/rita-analyze.sh
+      10 User=root
+     … +5 lines (ctrl+o to expand)
+
+⏺ Write(systemd/rita-analyze.timer)
+  ⎿  Wrote 12 lines to systemd/rita-analyze.timer
+      1 [Unit]
+      2 Description=BeaconButty — run RITA analysis every hour
+      3 Requires=rita-analyze.service
+      4
+      5 [Timer]
+      6 # Run 5 minutes after Zeek rotates its logs (which happens on the hour)
+      7 OnCalendar=*:05
+      8 # If the Pi was powered off, catch up on missed runs immediately at boot
+      9 Persistent=true
+     … +2 lines (ctrl+o to expand)
+
+
+
+⏺ Write(systemd/beacon-report.service)
+  ⎿  Wrote 11 lines to systemd/beacon-report.service
+       1 [Unit]
+       2 Description=BeaconButty — generate daily beacon threat report
+       3 After=mongod.service rita-analyze.service
+       4
+       5 [Service]
+       6 Type=oneshot
+       7 ExecStart=/usr/local/bin/beacon-report.sh
+       8 User=root
+       9 StandardOutput=journal
+      10 StandardError=journal
+     … +1 line (ctrl+o to expand)
+
+⏺ Write(systemd/beacon-report.timer)
+  ⎿  Wrote 11 lines to systemd/beacon-report.timer
+       1 [Unit]
+       2 Description=BeaconButty — daily beacon report at 07:00
+       3 Requires=beacon-report.service
+       4
+       5 [Timer]
+       6 # Run at 07:00 each morning, after overnight traffic has been analysed
+       7 OnCalendar=*-*-* 07:00:00
+       8 Persistent=true
+       9
+      10 [Install]
+     … +1 line (ctrl+o to expand)
+
+
+⏺ Now let me address the NAT/tap question and give you the full picture.
+
+  ---
+  Does Zeek work on the outgoing (NAT) pipe of a router?
+
+  Yes — but where you place the tap changes what you can see.
+
+  LAN-side tap (strongly preferred)
+
+  [Internal hosts 192.168.x.x]
+           |
+     [Managed Switch] ← SPAN port → [Pi eth1]  ← TAP HERE
+           |
+        [Router/NAT]
+           |
+        [Internet]
+
+  - Zeek sees the real internal IP (e.g. 192.168.1.45) as the source
+  - You know which machine is beaconing — this is what RITA needs
+  - This is what the implementation above assumes
+
+  WAN-side tap (after NAT)
+
+  [Managed Switch]
+         |
+     [Router/NAT]
+         |
+    [Pi eth1]  ← TAP HERE  (or on modem uplink)
+         |
+     [Internet]
+
+  - Zeek only sees the router's public IP as the source of every connection
+  - You can detect that beaconing is happening, but not which internal host
+  - Less useful for incident response
+
+  Recommendation: Tap between the switch and the router (LAN-side). If you only have a consumer router
+  with no SPAN port, the options are:
+
+  ┌───────────────────────┬─────────────────────────────────────────────────────────────────────────┐
+  │        Option         │                                   How                                   │
+  ├───────────────────────┼─────────────────────────────────────────────────────────────────────────┤
+  │ Inline Pi bridge      │ Pi sits between switch and router; bridges eth0↔eth1, captures on eth1. │
+  │                       │  Single point of failure.                                               │
+  ├───────────────────────┼─────────────────────────────────────────────────────────────────────────┤
+  │ Managed switch SPAN   │ Mirror all switch ports to the Pi. Best option — passive.               │
+  │ port                  │                                                                         │
+  ├───────────────────────┼─────────────────────────────────────────────────────────────────────────┤
+  │ OpenWrt/pfSense       │ Run packet capture directly on the router's mirror interface.           │
+  │ router                │                                                                         │
+  ├───────────────────────┼─────────────────────────────────────────────────────────────────────────┤
+  │ Network tap hardware  │ Passive copper tap (e.g. Dualcomm ETAP-2003) — completely invisible, no │
+  │                       │  failure risk.                                                          │
+  └───────────────────────┴─────────────────────────────────────────────────────────────────────────┘
+
+  Inline Pi bridge setup (if you have no managed switch)
+
+  If you need to go inline, add this to your setup:
+
+  # On the Pi: bridge eth0 (to router) and eth1 (to switch), capture on eth1
+  apt-get install -y bridge-utils
+  brctl addbr br0
+  brctl addif br0 eth0 eth1
+  ip link set br0 up
+  # Zeek watches eth1 in promiscuous mode — sees all traffic crossing the bridge
+
+  Then in node.cfg, set interface=eth1 (the switch-facing side) — Zeek will see the original internal
+  IPs before they hit the router's NAT.
+
+  ---
+  Project layout
+
+  BeaconButty/
+  ├── setup.sh                        # Main installer (run as root)
+  ├── scripts/
+  │   ├── 01_system_deps.sh           # apt packages + kernel buffer tuning
+  │   ├── 02_install_zeek.sh          # OBS packages → compile fallback
+  │   ├── 03_install_mongodb.sh       # MongoDB 7.0 ARM64 + Pi memory tuning
+  │   ├── 04_install_rita.sh          # RITA v5 binary from GitHub releases
+  │   ├── 05_configure.sh             # Apply configs, set up timers, deploy Zeek
+  │   ├── analyze.sh → /usr/local/bin/rita-analyze.sh
+  │   └── report.sh  → /usr/local/bin/beacon-report.sh
+  ├── config/
+  │   ├── zeek/
+  │   │   ├── node.cfg                # Standalone mode, CAPTURE_IFACE placeholder
+  │   │   ├── zeekctl.cfg             # Hourly log rotation, 14-day retention
+  │   │   └── site/local.zeek         # conn/dns/ssl/http/ssh + JA3
+  │   └── rita/config.yaml            # Thresholds, MongoDB local, DGA entropy
+  └── systemd/
+      ├── rita-analyze.{service,timer} # Runs at :05 every hour
+      └── beacon-report.{service,timer}# Runs at 07:00 daily
+
+  Quick start
+
+  # 1. Flash Raspberry Pi OS 64-bit (Bookworm) to SD/SSD
+  # 2. Connect eth0 to your network, eth1 to the SPAN port
+  # 3. Clone/copy BeaconButty onto the Pi
+
+  CAPTURE_IFACE=eth1 sudo -E ./setup.sh
+
+  # 4. Check Zeek is running
+  zeekctl status
+
+  # 5. Next morning, read the report
+  /usr/local/bin/beacon-report.sh
+
+  The first day's analysis appears in /var/log/beaconbutty/ at 07:00. You can also run rita-analyze.sh
+  and beacon-report.sh manually at any time.
+
+✻ Cooked for 7m 12s
+
+❯ set up the inline bridge mode 
+
+⏺ Entered plan mode
+  Claude is now exploring and designing an implementation approach.
+
+⏺ Explore(Explore existing BeaconButty project files)
+  ⎿  Done (18 tool uses · 39.7k tokens · 1m 5s)
+  (ctrl+o to expand)
+
+⏺ User declined to answer questions
+
+❯ so i currently have a netgear wifi access point with a small switch built in - the access point   
+  has a single outgoing connection to connect to the ISP. I think the only place i can see all the  
+  traffic - from the switch ports and the wifi traffic - is on the single outgoing connection to    
+  the IPS - but this traffic is NATed. I'm thinking it might be better to seperate the functions of 
+   WiFI and switch and ISP connectivity so I can operate zeek - what's the best way to do this      
+
+⏺ Exited plan mode
+
+⏺ Good question — let me step back from the bridge implementation, because the architecture decision
+  here is more important.
+
+  The core problem with your current setup
+
+  [WiFi clients]  ─┐
+                    ├─ [Netgear internal bus] ─ [NAT] ─── [ISP]
+  [Switch clients] ─┘         ↑
+                        inaccessible from outside
+
+  The internal switching and WiFi happen inside the Netgear's chip — you can't tap that bus. The only
+  external port is the WAN, which is post-NAT. Zeek on the WAN sees only your router's single public IP
+  as the source of every connection. You can detect that beaconing is happening but not which internal
+  host is responsible.
+
+  ---
+  Three architectures, one clear winner
+
+  Option A — Managed switch with SPAN port (passive, non-breaking)
+
+  [WiFi clients on Netgear WiFi]
+             |
+      [Netgear in AP mode]  ──┐
+                               ├── [Managed switch] ──── [ISP router/modem]
+      [Wired clients]  ────────┘         |
+                                    SPAN port
+                                         │
+                                      [Pi eth1]
+                                      Zeek captures
+
+  - Netgear is reconfigured to AP-only (disable its DHCP/NAT, use one of its LAN ports as uplink)
+  - A cheap managed switch handles all forwarding
+  - SPAN port mirrors all traffic to the Pi — completely passive
+  - Hardware cost: ~£25-35 for a TP-Link TL-SG108E (8-port, supports port mirroring)
+  - Risk: Zero. The Pi is not in the data path.
+  - Gap: WiFi traffic between clients (client-to-client on same AP) won't be visible if the Netgear
+  doesn't bridge it through the switch — but outgoing internet traffic will be.
+
+  Option B — Pi as the router (best visibility, most control)
+
+  [Wired clients]  ──┐
+                      ├── [Dumb switch] ── eth1 (Pi LAN) ← Zeek captures here
+  [AP in AP mode] ───┘                        │
+                                          Pi (NAT + Zeek)
+                                              │
+                                            eth0 ── [ISP modem/connection]
+
+  - The Pi replaces the Netgear's routing/NAT function entirely
+  - Zeek runs on the Pi's LAN interface — sees every internal host's real IP
+  - Netgear (or a cheap replacement AP) used in AP-only mode
+  - Pi runs iptables NAT and optionally a DHCP server (or use dnsmasq)
+  - Hardware cost: Just a cheap unmanaged switch (~£10) if you already have two Pi NICs
+  - Risk: If the Pi crashes, internet goes down (mitigated by watchdog)
+  - Visibility: Complete — every connection from every host
+
+  Option C — Inline Pi bridge on the WAN (what we were building)
+
+  [Netgear (NAT + WiFi + switch)]
+              |
+            [Pi bridge]  ← Zeek captures here (POST-NAT)
+              |
+            [ISP]
+
+  - All traffic appears as the router's single public IP
+  - Can still detect beaconing by timing/frequency, but can't identify which internal host
+  - Only useful for "is anything on this network beaconing?" not "which machine?"
+  - Verdict: least useful for your goals
+
+  ---
+  Recommendation: Option A first, upgrade to B later
+
+  Start with Option A — it's non-breaking and cheap:
+
+  1. Buy a TP-Link TL-SG108E (~£30) — 8 ports, web-managed, port mirroring
+  2. Connect your Netgear's WAN port into the ISP line (unchanged)
+  3. Connect a LAN port of the Netgear into port 1 of the TL-SG108E (Netgear becomes AP+switch)
+  4. Connect all other wired devices to remaining switch ports
+  5. Mirror all ports to port 8 → connect Pi eth0 to port 8 (SPAN capture, no IP needed)
+  6. Pi eth1 stays on the LAN for management SSH
+
+  Actually wait — there's still a gap here. If the Netgear does NAT internally, the traffic between the
+  Netgear and the TL-SG108E is still post-NAT. You need the Netgear in AP mode to push NAT to a separate
+   device.
+
+  Does your Netgear model support AP mode? (i.e. can you disable its DHCP and NAT so it just bridges
+  WiFi and switch ports to a single uplink?) Most consumer Netgear routers do — it's called "Access
+  Point mode" or you manually disable DHCP and use a LAN port as the uplink.
+
+  If yes:
+
+  [WiFi clients]  ──┐
+                     ├── [Netgear in AP mode, DHCP off]
+  [Wired clients] ──┘         │ (LAN uplink)
+                               │
+                       [TL-SG108E managed switch]
+                        port 1..7: devices & AP uplink
+                        port 8: SPAN (mirror) → Pi eth0
+                               │
+                        port 7: uplink → Pi eth1 (Pi now does NAT)
+                        OR leave Netgear doing NAT and Pi is passive
+
+  The cleanest approach:
+  - Netgear in AP mode (just WiFi + dumb switch)
+  - Pi has two interfaces: eth0 to ISP, eth1 to internal switch
+  - Pi does NAT — this is Option B
+  - Zeek captures on eth1 — sees all real internal IPs
+
+  ---
+  What I need to know to proceed
+
+  1. Does your Netgear have a separate modem (ADSL/cable/fibre modem) upstream, or does it connect
+  directly to the ISP line (i.e. is it also a modem)?
+  2. What's the Netgear model? — to check if AP mode is supported
+  3. Do you want to keep using the Netgear for WiFi, or are you happy to replace it with a cheap AP?
+
+  If the Netgear is modem+router+WiFi combined (common with ISP-supplied kit), Option B needs a
+  different approach. If it's purely a router+WiFi with a separate ISP modem, Option B is
+  straightforward and we can implement the Pi-as-router configuration.
+
+✻ Sautéed for 2m 16s
+
+❯ i'm happy to replace the netgear - so i'd want a good wifi ap that supports the latest wifi       
+  standards and a managed switch - so some recommendations for these would be good - then ISP just  
+  presents an ethernet interface so the switch could plug straight in - sounds like option a is the 
+   best one                                                                                         
+
+⏺ Good — replacing the Netgear changes the picture slightly. Since the ISP hands you a plain Ethernet,
+  you actually don't need a separate router at all. The Pi can be the router, which gives you cleaner
+  visibility than a passive SPAN and requires less hardware.
+
+  ---
+  Revised architecture (replacing the Netgear)
+
+  [ISP Ethernet]
+        |
+      eth0  ← Pi WAN (gets public IP from ISP via DHCP)
+      [ Pi — NAT + Zeek ]
+      eth1  ← Pi LAN  ← Zeek captures here (sees all real internal IPs)
+        |
+   [Managed switch]
+    /    |    \
+  [AP] [PC1] [PC2]  ...
+
+  Zeek sits on the LAN side of the Pi's own NAT — sees every internal host. No SPAN port needed, no
+  separate router. The managed switch is just for port count and to power the AP.
+
+  This is cleaner than Option A because:
+  - Pi is always inline — zero blind spots (SPAN ports can miss traffic depending on switch config)
+  - One fewer device in the chain
+  - The switch is only doing Layer 2 — simpler, more reliable
+
+  The tradeoff vs. a passive SPAN is that the Pi is now in the critical path. A Pi crash takes down the
+  internet. A watchdog and a quality power supply (not the cheap ones) mitigate this well.
+
+  ---
+  Hardware recommendations
+
+  WiFi Access Point
+
+  ┌───────────────────┬─────────────────┬─────────────┬────────────────────────────────────────────┐
+  │      Device       │    Standard     │  Approx.    │                   Notes                    │
+  │                   │                 │    price    │                                            │
+  ├───────────────────┼─────────────────┼─────────────┼────────────────────────────────────────────┤
+  │ TP-Link EAP773    │ WiFi 7 (BE9300) │ ~£130       │ Best value WiFi 7, works standalone or via │
+  │                   │                 │             │  Omada app                                 │
+  ├───────────────────┼─────────────────┼─────────────┼────────────────────────────────────────────┤
+  │ TP-Link EAP783    │ WiFi 7          │ ~£200       │ High-end, tri-band, large spaces           │
+  │                   │ (BE19000)       │             │                                            │
+  ├───────────────────┼─────────────────┼─────────────┼────────────────────────────────────────────┤
+  │ Ubiquiti UniFi U7 │ WiFi 7          │ ~£200       │ Premium build, excellent UniFi ecosystem   │
+  │  Pro              │                 │             │                                            │
+  ├───────────────────┼─────────────────┼─────────────┼────────────────────────────────────────────┤
+  │ TP-Link EAP680    │ WiFi 6E         │ ~£80        │ Step down but still very capable           │
+  │                   │ (AXE5400)       │             │                                            │
+  └───────────────────┴─────────────────┴─────────────┴────────────────────────────────────────────┘
+
+  Recommendation: TP-Link EAP773. WiFi 7 (802.11be) gives you 6 GHz band support, MLO (multi-link
+  operation for lower latency), and backward compatibility with all your existing devices. The Omada app
+   manages it without needing a dedicated controller server. It takes PoE power so no wall adapter.
+
+  If you already have a Ubiquiti account or want a premium ecosystem: UniFi U7 Pro + a UniFi switch is a
+   very clean setup but costs more.
+
+  Managed switch
+
+  You primarily need: PoE+ on at least one port (to power the AP), and port mirroring (useful for future
+   diagnostics even if you don't use it now for Zeek).
+
+  ┌─────────────────────┬───────┬───────────┬────────────┬────────────────────────────────────────┐
+  │       Device        │ Ports │    PoE    │  Approx.   │                 Notes                  │
+  │                     │       │           │   price    │                                        │
+  ├─────────────────────┼───────┼───────────┼────────────┼────────────────────────────────────────┤
+  │ TP-Link TL-SG2008P  │ 8     │ 4× PoE+   │ ~£55       │ Full L2 managed, VLAN, SPAN, LACP      │
+  │                     │       │ (65W)     │            │                                        │
+  ├─────────────────────┼───────┼───────────┼────────────┼────────────────────────────────────────┤
+  │ TP-Link TL-SG108PE  │ 8     │ 4× PoE+   │ ~£45       │ "Easy Smart" — simpler web UI, still   │
+  │                     │       │ (55W)     │            │ has port mirroring                     │
+  ├─────────────────────┼───────┼───────────┼────────────┼────────────────────────────────────────┤
+  │ Netgear GS308EP     │ 8     │ 4× PoE+   │ ~£55       │ Solid alternative, Plus-managed        │
+  │                     │       │ (62W)     │            │                                        │
+  ├─────────────────────┼───────┼───────────┼────────────┼────────────────────────────────────────┤
+  │ Ubiquiti            │ 8     │ 4× PoE+   │ ~£100      │ Premium, integrates with UniFi if you  │
+  │ USW-Lite-8-PoE      │       │ (52W)     │            │ go that route                          │
+  └─────────────────────┴───────┴───────────┴────────────┴────────────────────────────────────────┘
+
+  Recommendation: TP-Link TL-SG2008P. Full managed (not "easy smart"), has proper VLAN support if you
+  ever want to segment IoT devices, port mirroring, and enough PoE budget for the AP. Works
+  independently — no cloud account needed.
+
+  If you go with the UniFi U7 Pro, the USW-Lite-8-PoE pairs well and is managed from the same
+  Omada/UniFi app.
+
+  ---
+  Shopping list summary
+
+  ┌──────────────────────────────────┬───────────────────────────────────────────┬────────┐
+  │               Item               │                   Model                   │ ~Price │
+  ├──────────────────────────────────┼───────────────────────────────────────────┼────────┤
+  │ WiFi 7 AP                        │ TP-Link EAP773                            │ £130   │
+  ├──────────────────────────────────┼───────────────────────────────────────────┼────────┤
+  │ Managed switch                   │ TP-Link TL-SG2008P                        │ £55    │
+  ├──────────────────────────────────┼───────────────────────────────────────────┼────────┤
+  │ USB Ethernet dongle (2nd Pi NIC) │ TP-Link UE306 (USB 3→Gigabit)             │ £12    │
+  ├──────────────────────────────────┼───────────────────────────────────────────┼────────┤
+  │ Decent Pi power supply           │ Official Pi 5 PSU or Argon ONE with USB-C │ £12    │
+  ├──────────────────────────────────┼───────────────────────────────────────────┼────────┤
+  │ Total                            │                                           │ ~£210  │
+  └──────────────────────────────────┴───────────────────────────────────────────┴────────┘
+
+  The USB Ethernet dongle gives the Pi its second interface (eth1 for the LAN side). The TP-Link UE306
+  works reliably with Pi OS and is gigabit. Avoid cheap no-brand ones — they have flaky driver support.
+
+  ---
+  What this means for the BeaconButty code
+
+  Once the hardware is wired up, we need to add a new setup mode to the project:
+
+  - eth0 = WAN (DHCP from ISP)
+  - eth1 = LAN (to switch)
+  - Pi runs iptables NAT (masquerade)
+  - Pi runs dnsmasq as DHCP server for your internal network (or you can skip and use static IPs)
+  - Zeek captures on eth1
+
+  This is a scripts/07_router_mode.sh addition — want me to build that out now?
+
+✻ Baked for 1m 23s
+
+❯ yes, build out the router mode script 
+
+⏺ Write(scripts/07_router_mode.sh)
+  ⎿  Wrote 362 lines to scripts/07_router_mode.sh
+       1 #!/usr/bin/env bash
+       2 set -euo pipefail
+       3
+       4 # BeaconButty — Router Mode Setup
+       5 #
+       6 # Configures the Raspberry Pi as a NAT router + Zeek sensor:
+       7 #
+       8 #   [ISP Ethernet] ── eth0 (WAN, DHCP from ISP)
+       9 #                         Pi (NAT + DHCP server + Zeek)
+      10 #                     eth1 (LAN, static IP)
+     … +352 lines (ctrl+o to expand)
+
+⏺ Write(scripts/wan-watchdog.sh)
+  ⎿  Wrote 91 lines to scripts/wan-watchdog.sh
+       1 #!/usr/bin/env bash
+       2 set -euo pipefail
+       3
+       4 # wan-watchdog.sh
+       5 #
+       6 # Monitors WAN connectivity every 5 minutes (via wan-watchdog.timer).
+       7 # If the WAN is unreachable for FAIL_THRESHOLD consecutive checks,
+       8 # it attempts a DHCP renewal on the WAN interface.
+       9 #
+      10 # Unlike the bridge watchdog, this does NOT revert configuration —
+     … +81 lines (ctrl+o to expand)
+
+
+⏺ Write(systemd/wan-watchdog.service)
+  ⎿  Wrote 15 lines to systemd/wan-watchdog.service
+       1 [Unit]
+       2 Description=BeaconButty — WAN connectivity watchdog
+       3 After=network-online.target
+       4 Wants=network-online.target
+       5
+       6 [Service]
+       7 Type=oneshot
+       8 ExecStart=/usr/local/bin/wan-watchdog.sh
+       9 User=root
+      10 StandardOutput=journal
+     … +5 lines (ctrl+o to expand)
+
+⏺ Write(systemd/wan-watchdog.timer)
+  ⎿  Wrote 11 lines to systemd/wan-watchdog.timer
+       1 [Unit]
+       2 Description=BeaconButty — check WAN connectivity every 5 minutes
+       3 Requires=wan-watchdog.service
+       4
+       5 [Timer]
+       6 OnBootSec=2min          # First check 2 minutes after boot (give DHCP time to settle)
+       7 OnUnitActiveSec=5min    # Then every 5 minutes
+       8 Persistent=true
+       9
+      10 [Install]
+     … +1 line (ctrl+o to expand)
+
+
+⏺ Now update setup.sh to mention router mode as the next step after the base install:
+
+⏺ Update(setup.sh)
+  ⎿  Added 4 lines
+      81  echo "  Systemd timers (auto-run hourly/daily):"
+      82  echo "    systemctl status rita-analyze.timer"
+      83  echo "    systemctl status beacon-report.timer"
+      84 +echo ""                                                                                
+      85 +echo "  ── Next step: choose a network capture mode ────────"                          
+      86 +echo "  Router mode (Pi does NAT, full internal IP visibility):"                       
+      87 +echo "    sudo -E ./scripts/07_router_mode.sh"                                         
+      88  echo "═══════════════════════════════════════════════════════"
+
+
+⏺ Here's a summary of what was built and how it all fits together.
+
+  ---
+  What was created
+
+  scripts/07_router_mode.sh
+
+  The main script. Eight clearly-separated steps:
+
+  ┌──────┬───────────────────────────────────────────────────────────────────────────────────────────┐
+  │ Step │                                       What it does                                        │
+  ├──────┼───────────────────────────────────────────────────────────────────────────────────────────┤
+  │ 1    │ Installs dnsmasq, iptables, iptables-persistent                                           │
+  ├──────┼───────────────────────────────────────────────────────────────────────────────────────────┤
+  │ 2    │ Configures interfaces — detects NetworkManager or legacy /etc/network/interfaces          │
+  │      │ automatically                                                                             │
+  ├──────┼───────────────────────────────────────────────────────────────────────────────────────────┤
+  │ 3    │ Enables net.ipv4.ip_forward permanently via sysctl                                        │
+  ├──────┼───────────────────────────────────────────────────────────────────────────────────────────┤
+  │ 4    │ Sets up iptables: DROP default, allow LAN→WAN forwarding, MASQUERADE NAT on WAN           │
+  ├──────┼───────────────────────────────────────────────────────────────────────────────────────────┤
+  │ 5    │ Configures dnsmasq as DHCP server + DNS forwarder on the LAN only; disables               │
+  │      │ systemd-resolved stub listener to avoid port 53 conflict                                  │
+  ├──────┼───────────────────────────────────────────────────────────────────────────────────────────┤
+  │ 6    │ Updates Zeek node.cfg to capture on eth1 and adds the LAN subnet to networks.cfg          │
+  ├──────┼───────────────────────────────────────────────────────────────────────────────────────────┤
+  │ 7    │ Installs the WAN watchdog                                                                 │
+  ├──────┼───────────────────────────────────────────────────────────────────────────────────────────┤
+  │ 8    │ Reboots (clean network bring-up)                                                          │
+  └──────┴───────────────────────────────────────────────────────────────────────────────────────────┘
+
+  scripts/wan-watchdog.sh
+
+  Runs every 5 minutes. Checks WAN interface has an IP, then pings 1.1.1.1 and 8.8.8.8. After 3
+  consecutive failures (~15 min) it attempts a DHCP renewal. Logs to /var/log/beaconbutty/watchdog.log
+  and syslog. Does not revert — in router mode there's no fallback topology.
+
+  iptables firewall posture
+
+  INPUT:    DROP by default
+            ACCEPT lo, ESTABLISHED, all from LAN, ICMP echo
+  FORWARD:  LAN → WAN (new + established)
+            WAN → LAN (established only — no unsolicited inbound)
+  NAT:      MASQUERADE on WAN
+
+  ---
+  How to run
+
+  # Defaults: WAN=eth0, LAN=eth1, LAN gateway=192.168.50.1
+  sudo ./scripts/07_router_mode.sh
+
+  # Or with overrides:
+  WAN_IFACE=eth0 LAN_IFACE=eth1 LAN_IP=192.168.1.1 sudo -E ./scripts/07_router_mode.sh
+
+  After the reboot, connect a device to eth1 (or your switch), get DHCP from 192.168.50.100+, and SSH to
+   192.168.50.1. Your devices will have full internet access through the Pi, and Zeek will log every
+  connection with the real internal source IP.
+
+✻ Brewed for 3m 59s
+
+❯ test the router mode script 
+
+⏺ Let me run through syntax checking, static analysis, and a logic review of all the new scripts.
+
+⏺ Bash(cd "/Users/dave/Library/CloudStorage/GoogleDrive-dave.marsh@mustardresearch.com/My
+      Drive/Claude/BeaconButty" && bash -n scripts/07_router_mode.sh && echo "SYNTA…)
+  ⎿  SYNTAX OK: 07_router_mode.sh
+     SYNTAX OK: wan-watchdog.sh
+
+⏺ Bash(which shellcheck && shellcheck --version | head -2 || echo "shellcheck not installed")
+  ⎿  shellcheck not found
+     shellcheck not installed
+
+⏺ Bash(brew install shellcheck 2>&1 | tail -5)
+  ⎿  ==> Pouring shellcheck--0.11.0.arm64_tahoe.bottle.tar.gz
+     🍺  /opt/homebrew/Cellar/shellcheck/0.11.0: 8 files, 68.4MB
+     ==> Running `brew cleanup shellcheck`...
+     … +2 lines (ctrl+o to expand)
+
+⏺ Bash(cd "/Users/dave/Library/CloudStorage/GoogleDrive-dave.marsh@mustardresearch.com/My
+      Drive/Claude/BeaconButty" && shellcheck -S warning scripts/07_router_mode.sh…)
+  ⎿  scripts/setup.sh: scripts/setup.sh: openBinaryFile: does not exist (No such file or directory)
+
+
+⏺ Bash(cd "/Users/dave/Library/CloudStorage/GoogleDrive-dave.marsh@mustardresearch.com/My
+      Drive/Claude/BeaconButty" && shellcheck -S warning scripts/07_router_mode.sh…)
+  ⎿  ---
+     ---
+
+⏺ Bash(cd "/Users/dave/Library/CloudStorage/GoogleDrive-dave.marsh@mustardresearch.com/My
+      Drive/Claude/BeaconButty" && for f in setup.sh scripts/0*.sh scripts/wan-watc…)
+  ⎿  === setup.sh ===
+     CLEAN
+     === scripts/01_system_deps.sh ===
+     … +19 lines (ctrl+o to expand)
+
+⏺ Good — shellcheck is clean except for one unused loop variable in 03_install_mongodb.sh. Now let me do
+   a thorough logic review to catch things shellcheck can't see.
+
+⏺ Explore(Logic review of router mode scripts)
+  ⎿  Done (3 tool uses · 22.4k tokens · 24s)
+  (ctrl+o to expand)
+
+⏺ Good — 10 bugs found across the three files. Let me fix them all systematically, most critical first.
+
+⏺ Read 2 files (ctrl+o to expand)
+
+⏺ Now I have all I need. Let me fix all 10 issues across the three files.
+
+⏺ Update(scripts/07_router_mode.sh)
+  ⎿  Added 9 lines, removed 3 lines
+      41  ZEEK_PREFIX="${ZEEK_PREFIX:-/opt/zeek}"
+      42  # ─────────────────────────────────────────────────────────────────────────────
+      43  
+      44 -# ── Derive network values ─────────────────────────────────────────────────────       
+      45 -# Strip the last octet to get the network address (assumes /24)                        
+      46 -LAN_NET="${LAN_IP%.*}.0/${LAN_PREFIX}"                                                 
+      44 +# ── Network address helpers ───────────────────────────────────────────────────       
+      45 +# Pure-bash IPv4 arithmetic — works for any prefix length, not just /24.               
+      46 +_ip_to_int() { local a b c d; IFS=. read -r a b c d <<< "$1"; echo $(( (a<<24)+(b<<16)+
+         +(c<<8)+d )); }                                                                         
+      47 +_int_to_ip() { local n=$1; echo "$(( (n>>24)&255 )).$(( (n>>16)&255 )).$(( (n>>8)&255 )
+         +).$(( n&255 ))"; }                                                                     
+      48 +_prefix_to_mask() { echo $(( 0xFFFFFFFF ^ ((1 << (32-$1)) - 1) )); }                   
+      49  
+      50 +LAN_MASK=$(_prefix_to_mask "$LAN_PREFIX")                                              
+      51 +LAN_NET="$(_int_to_ip $(( $(_ip_to_int "$LAN_IP") & LAN_MASK )))/${LAN_PREFIX}"        
+      52 +NETMASK="$(_int_to_ip "$LAN_MASK")"   # dotted-decimal for legacy /etc/network/interfac
+         +es                                                                                     
+      53 +                                                                                       
+      54  # ── Pre-flight checks ─────────────────────────────────────────────────────────
+      55  [[ $EUID -ne 0 ]] && { echo "Error: run as root (sudo -E ./scripts/07_router_mode.sh)";
+           exit 1; }
+      56  
+
+⏺ Update(scripts/07_router_mode.sh)
+  ⎿  Added 1 line, removed 1 line
+      153  auto $LAN_IFACE
+      154  iface $LAN_IFACE inet static
+      155      address $LAN_IP
+      156 -    netmask 255.255.255.0                                                             
+      156 +    netmask $NETMASK                                                                  
+      157      up ip link set \$IFACE promisc on
+      158  EOF
+      159  
+
+⏺ Update(scripts/07_router_mode.sh)
+  ⎿  Added 3 lines, removed 5 lines
+      174  cat > /etc/sysctl.d/99-beaconbutty-router.conf <<EOF
+      175  # BeaconButty: enable IPv4 forwarding for NAT routing
+      176  net.ipv4.ip_forward=1
+      177 -                                                                                      
+      178 -# Disable bridge netfilter — we're routing, not bridging.                             
+      179 -# Prevents iptables from processing traffic that should bypass the firewall.          
+      180 -net.bridge.bridge-nf-call-iptables=0                                                  
+      181 -net.bridge.bridge-nf-call-ip6tables=0                                                 
+      177  EOF
+      178 +# Note: net.bridge.bridge-nf-call-iptables is intentionally omitted.                  
+      179 +# It requires the br_netfilter module which is not loaded in pure router mode         
+      180 +# and its absence would cause sysctl to error at boot.                                
+      181  
+      182  # ─────────────────────────────────────────────────────────────────────────────
+      183  # Step 4: Configure iptables NAT and firewall
+
+
+
+
+
+⏺ Update(scripts/07_router_mode.sh)
+  ⎿  Added 2 lines
+      293  log-facility=/var/log/beaconbutty/dnsmasq.log
+      294  EOF
+      295  
+      296 +mkdir -p /var/log/beaconbutty /etc/dnsmasq.d                                          
+      297 +                                                                                      
+      298  systemctl enable dnsmasq
+      299  echo "  dnsmasq configured — will start on reboot."
+      300  
+
+⏺ Wait — that mkdir needs to be before the heredoc that writes to /etc/dnsmasq.d/, not after. Let me fix
+   the ordering:
+
+⏺ Read 1 file (ctrl+o to expand)
+
+⏺ Update(scripts/07_router_mode.sh)
+  ⎿  Added 3 lines
+      235  echo ""
+      236  echo "── Step 5: Configuring dnsmasq ─────────────────────────────"
+      237  
+      238 +# Ensure target directories exist before writing into them                            
+      239 +mkdir -p /etc/dnsmasq.d /etc/systemd/resolved.conf.d /var/log/beaconbutty             
+      240 +                                                                                      
+      241  # systemd-resolved listens on 127.0.0.53:53 and conflicts with dnsmasq.
+      242  # Disable its stub listener; dnsmasq takes over DNS for the LAN.
+      243  mkdir -p /etc/systemd/resolved.conf.d
+
+
+
+
+
+⏺ Now remove the duplicate mkdir I added after the heredoc:
+
+⏺ Update(scripts/07_router_mode.sh)
+  ⎿  Removed 2 lines
+      296  log-facility=/var/log/beaconbutty/dnsmasq.log
+      297  EOF
+      298  
+      299 -mkdir -p /var/log/beaconbutty /etc/dnsmasq.d                                          
+      300 -                                                                                      
+      299  systemctl enable dnsmasq
+      300  echo "  dnsmasq configured — will start on reboot."
+      301  
+
+⏺ Also remove the now-redundant mkdir -p /etc/systemd/resolved.conf.d that was already in the original:
+
+⏺ Read 1 file (ctrl+o to expand)
+
+⏺ Update(scripts/07_router_mode.sh)
+  ⎿  Removed 1 line
+      240  
+      241  # systemd-resolved listens on 127.0.0.53:53 and conflicts with dnsmasq.
+      242  # Disable its stub listener; dnsmasq takes over DNS for the LAN.
+      243 -mkdir -p /etc/systemd/resolved.conf.d                                                 
+      243  cat > /etc/systemd/resolved.conf.d/99-beaconbutty.conf <<'EOF'
+      244  [Resolve]
+      245  DNSStubListener=no
+
+
+
+⏺ Now fix 03_install_mongodb.sh — unused loop variable and false-success after timeout:
+
+⏺ Update(scripts/03_install_mongodb.sh)
+  ⎿  Added 28 lines, removed 9 lines
+      55  
+      56  systemctl enable --now mongod
+      57  
+      58 -# Wait for MongoDB to be ready                                                         
+      59 -echo -n "Waiting for MongoDB to start"                                                 
+      60 -for i in {1..15}; do                                                                   
+      61 -    if mongosh --eval "db.runCommand({ping:1})" --quiet &>/dev/null; then              
+      62 -        echo " ready."                                                                 
+      63 -        break                                                                          
+      58 +# Wait for MongoDB to be ready.                                                        
+      59 +# mongosh is the current client; fall back to legacy mongo binary if absent.           
+      60 +MONGO_CLIENT=""                                                                        
+      61 +if command -v mongosh &>/dev/null; then                                                
+      62 +    MONGO_CLIENT="mongosh"                                                             
+      63 +elif command -v mongo &>/dev/null; then                                                
+      64 +    MONGO_CLIENT="mongo"                                                               
+      65 +fi                                                                                     
+      66 +                                                                                       
+      67 +if [[ -n "$MONGO_CLIENT" ]]; then                                                      
+      68 +    echo -n "Waiting for MongoDB to start"                                             
+      69 +    READY=false                                                                        
+      70 +    for _ in {1..15}; do                                                               
+      71 +        if "$MONGO_CLIENT" --eval "db.runCommand({ping:1})" --quiet &>/dev/null 2>&1; t
+         +hen                                                                                    
+      72 +            echo " ready."                                                             
+      73 +            READY=true                                                                 
+      74 +            break                                                                      
+      75 +        fi                                                                             
+      76 +        echo -n "."                                                                    
+      77 +        sleep 2                                                                        
+      78 +    done                                                                               
+      79 +    if [[ "$READY" == false ]]; then                                                   
+      80 +        echo " timeout."                                                               
+      81 +        echo "Warning: MongoDB did not respond within 30 s. Check: systemctl status mon
+         +god"                                                                                   
+      82      fi
+      65 -    echo -n "."                                                                        
+      66 -    sleep 2                                                                            
+      67 -done                                                                                   
+      83 +else                                                                                   
+      84 +    echo "  Note: mongosh not found — skipping readiness check. Check: systemctl status
+         + mongod"                                                                               
+      85 +    sleep 5                                                                            
+      86 +fi                                                                                     
+      87  
+      88  echo "MongoDB ${MONGO_MAJOR} installed and running."
+
+⏺ Now fix wan-watchdog.sh — dhcpcd renewal should release before re-acquiring:
+
+⏺ Update(scripts/wan-watchdog.sh)
+  ⎿  Added 7 lines, removed 3 lines
+      78  if [[ "$FAILS" -ge "$FAIL_THRESHOLD" ]]; then
+      79      log "Threshold reached — renewing DHCP on $WAN_IFACE"
+      80  
+      81 -    # Attempt DHCP renewal (works with both dhclient and dhcpcd)                       
+      81 +    # Attempt DHCP renewal: release existing lease first, then request fresh one.      
+      82 +    # dhclient: -r releases, then re-run acquires.                                     
+      83 +    # dhcpcd:   -k sends RELEASE and exits, then re-run acquires.                      
+      84      if command -v dhclient &>/dev/null; then
+      85          dhclient -r "$WAN_IFACE" 2>/dev/null || true
+      84 -        dhclient "$WAN_IFACE" 2>/dev/null || true                                      
+      86 +        dhclient "$WAN_IFACE"   2>/dev/null || true                                    
+      87      elif command -v dhcpcd &>/dev/null; then
+      86 -        dhcpcd -n "$WAN_IFACE" 2>/dev/null || true                                     
+      88 +        dhcpcd -k "$WAN_IFACE"  2>/dev/null || true                                    
+      89 +        sleep 1                                                                        
+      90 +        dhcpcd "$WAN_IFACE"     2>/dev/null || true                                    
+      91      fi
+      92  
+      93      write_fails 0
+
+
+
+
+⏺ Now re-run all checks to confirm everything is clean:
+
+⏺ Bash(cd "/Users/dave/Library/CloudStorage/GoogleDrive-dave.marsh@mustardresearch.com/My
+      Drive/Claude/BeaconButty" && for f in setup.sh scripts/0*.sh scripts/wan-watc…)
+  ⎿  === setup.sh: syntax OK  shellcheck CLEAN
+     === scripts/01_system_deps.sh: syntax OK  shellcheck CLEAN
+     === scripts/02_install_zeek.sh: syntax OK  shellcheck CLEAN
+     … +5 lines (ctrl+o to expand)
+
+⏺ All clean. Now verify the IP math logic in isolation, since that's the most complex change:
+
+⏺ Bash(bash << 'EOF'
+      _ip_to_int() { local a b c d; IFS=. read -r a b c d <<< "$1"; echo $(( (a<<24)+(b<<16)+(c<<8)+d
+      )); }…)
+  ⎿  192.168.50.1         /24   net=192.168.50.0/24      mask=255.255.255.0    PASS
+     172.16.5.1           /16   net=172.16.0.0/16        mask=255.255.0.0      PASS
+     10.0.0.130           /25   net=10.0.0.128/25        mask=255.255.255.128  PASS
+     … +2 lines (ctrl+o to expand)
+
+⏺ All five cases pass, including the tricky ones (/25, /23). Final check — confirm the full file is
+  coherent top to bottom:
+
+⏺ Bash(cd "/Users/dave/Library/CloudStorage/GoogleDrive-dave.marsh@mustardresearch.com/My
+      Drive/Claude/BeaconButty" && grep -n "LAN_NET\|NETMASK\|LAN_MASK\|mkdir\|net\…)
+  ⎿  scripts/07_router_mode.sh:50:LAN_MASK=$(_prefix_to_mask "$LAN_PREFIX")
+     scripts/07_router_mode.sh:51:LAN_NET="$(_int_to_ip $(( $(_ip_to_int "$LAN_IP") & LAN_MASK )))/
+     ${LAN_PREFIX}"
+     … +16 lines (ctrl+o to expand)
+
+⏺ All clean. Here's what was fixed and why each one mattered:
+
+  ---
+  Fixes applied
+
+  ┌─────┬───────────────────────┬───────────────────────────────────────┬───────────────────────────┐
+  │  #  │         File          │                  Bug                  │            Fix            │
+  ├─────┼───────────────────────┼───────────────────────────────────────┼───────────────────────────┤
+  │     │                       │ LAN_NET calculation hardcoded .0 as   │ Replaced with proper bash │
+  │ 1   │ 07_router_mode.sh     │ last octet — wrong for /25, /23, /16, │  IP arithmetic (<<, &, ^) │
+  │     │                       │  etc.                                 │  — tested across 5 prefix │
+  │     │                       │                                       │  lengths                  │
+  ├─────┼───────────────────────┼───────────────────────────────────────┼───────────────────────────┤
+  │     │                       │ netmask 255.255.255.0 hardcoded in    │ Now uses computed         │
+  │ 2   │ 07_router_mode.sh     │ legacy interfaces block, ignored      │ $NETMASK                  │
+  │     │                       │ LAN_PREFIX                            │                           │
+  ├─────┼───────────────────────┼───────────────────────────────────────┼───────────────────────────┤
+  │     │                       │ sysctl -w net.bridge.* in Step 3 —    │ Removed entirely          │
+  │ 3   │ 07_router_mode.sh     │ requires br_netfilter kernel module;  │ (irrelevant in router     │
+  │     │                       │ not loaded in router mode → set -e    │ mode); left an            │
+  │     │                       │ kills the script                      │ explanatory comment       │
+  ├─────┼───────────────────────┼───────────────────────────────────────┼───────────────────────────┤
+  │     │                       │ /var/log/beaconbutty/ and             │ mkdir -p moved to top of  │
+  │ 4   │ 07_router_mode.sh     │ /etc/dnsmasq.d/ assumed to exist      │ Step 5, before any        │
+  │     │                       │ before being written into             │ writes; duplicate removed │
+  ├─────┼───────────────────────┼───────────────────────────────────────┼───────────────────────────┤
+  │ 5   │ 03_install_mongodb.sh │ for i in — unused variable i          │ Renamed to _              │
+  ├─────┼───────────────────────┼───────────────────────────────────────┼───────────────────────────┤
+  │     │                       │ If mongosh isn't installed, all 15    │ Detects mongosh/mongo,    │
+  │ 6   │ 03_install_mongodb.sh │ loop iterations silently fail and the │ tracks READY flag, prints │
+  │     │                       │  script prints "installed and         │  a warning on timeout     │
+  │     │                       │ running"                              │                           │
+  ├─────┼───────────────────────┼───────────────────────────────────────┼───────────────────────────┤
+  │ 7   │ 03_install_mongodb.sh │ mongosh assumed installed; no         │ Added command -v check    │
+  │     │                       │ fallback to legacy mongo client       │ with mongo fallback       │
+  ├─────┼───────────────────────┼───────────────────────────────────────┼───────────────────────────┤
+  │     │                       │ dhcpcd -n only sends RENEW (may fail  │ Changed to dhcpcd -k      │
+  │ 8   │ wan-watchdog.sh       │ if ISP assigns a new IP) — doesn't    │ (release) + dhcpcd (fresh │
+  │     │                       │ release first                         │  acquire)                 │
+  └─────┴───────────────────────┴───────────────────────────────────────┴───────────────────────────┘
+
+✻ Crunched for 6m 49s
+
+❯ please draw a network diagram of the solution with the proposed model numbers  
+
+⏺ Read 1 file (ctrl+o to expand)
+
+⏺ ┌─────────────────────┐
+                           │      INTERNET        │
+                           └──────────┬──────────┘
+                                      │
+                                ISP Ethernet
+                             (single RJ45 cable)
+                                      │
+            ╔═════════════════════════╧═════════════════════════╗
+            ║                  Raspberry Pi 5                   ║
+            ║                   8 GB RAM                        ║
+            ║                                                   ║
+            ║   ┌──────────────────────────────────────────┐   ║
+            ║   │  eth0  —  built-in Gigabit NIC           │   ║
+            ║   │  WAN port  ·  DHCP from ISP              │   ║
+            ║   ├──────────────────────────────────────────┤   ║
+            ║   │  NAT  (iptables MASQUERADE)              │   ║
+            ║   │  iptables firewall  (DROP by default)    │   ║
+            ║   │  Zeek 7  +  RITA 5  +  MongoDB 7         │   ║
+            ║   │  dnsmasq  (DHCP server · DNS forwarder)  │   ║
+            ║   ├──────────────────────────────────────────┤   ║
+            ║   │  eth1  —  TP-Link UE306 USB Gigabit NIC  │   ║
+            ║   │  LAN port  ·  192.168.50.1 / 24          │   ║
+            ║   │  DHCP pool  192.168.50.100 – .200        │   ║
+            ║   └──────────────────┬───────────────────────┘   ║
+            ║                      │                           ║
+            ║            ◄── Zeek captures on eth1             ║
+            ║                sees real internal IPs            ║
+            ╚══════════════════════╪═══════════════════════════╝
+                                   │
+                          Gigabit Ethernet
+                                   │
+            ╔══════════════════════╧════════════════════════╗
+            ║          TP-Link TL-SG2008P                   ║
+            ║          8-port Managed Switch                 ║
+            ║          4 × PoE+  (65 W total)               ║
+            ╚══╤══════════╤══════════╤══════════╤═══════════╝
+               │          │          │          │
+             port 1     port 2     port 3     port 4
+            Ethernet   Ethernet   Ethernet    PoE+
+               │          │          │          │
+            Wired PC   Wired PC   Wired PC     feeds power
+           .100-.102   pool      pool          + data
+                                               │
+                           ╔═══════════════════╧══════════════════╗
+                           ║         TP-Link EAP773               ║
+                           ║         WiFi 7  (802.11be)           ║
+                           ║         2.4 GHz / 5 GHz / 6 GHz     ║
+                           ║         Powered by PoE  (no PSU)     ║
+                           ╚══════╤═════════════════╤════════════╝
+                                  │                 │
+                             WiFi clients      WiFi clients
+                             2.4 / 5 GHz         6 GHz
+                          (phones, laptops)   (WiFi 7 devices)
+                            .100 – .200         .100 – .200
+                              via DHCP            via DHCP
+
+  A few things worth noting in the physical cabling:
+
+  - One cable from ISP → Pi eth0. The Pi becomes your only internet gateway — replace the Netgear with
+  this.
+  - One cable from Pi eth1 → switch port 1 (any non-PoE port is fine for the uplink).
+  - EAP773 on a PoE+ port — no wall adapter needed, the switch feeds it. The EAP773 draws ~13 W, well
+  within the 65 W switch budget.
+  - Remaining ports 2–7 are free for wired devices. Ports 5–8 on the TL-SG2008P are non-PoE if you're
+  using the standard model, so plug the Pi uplink into one of those.
+  - SSH access after setup — connect a laptop to any switch port, get 192.168.50.1xx via DHCP, then ssh
+  pi@192.168.50.1.
+
+✻ Sautéed for 1m 8s
+
+❯ add the cabling instructions to the diagram 
+
+⏺ Read 1 file (ctrl+o to expand)    
+                                                               
+⏺ The diagram with cabling instructions is above — here's what it covers:
+                                      
+  Cable numbering — each cable gets a circled number that appears both on the cable label box and at the
+   port where it lands on the device, so you can trace each run at a glance.                            
+   
+  Switch port assignment:                                                                               
+                                                                                                      
+  ┌──────┬──────┬──────────────────────────────────────────────┐
+  │ Port │ Type │                     Use                      │
+  ├──────┼──────┼──────────────────────────────────────────────┤
+  │ 1    │ PoE+ │ EAP773 AP (cable ③, no power adapter needed) │
+  ├──────┼──────┼──────────────────────────────────────────────┤
+  │ 2–4  │ PoE+ │ Wired clients, or a second AP if needed      │
+  ├──────┼──────┼──────────────────────────────────────────────┤
+  │ 5–7  │ GbE  │ More wired clients                           │
+  ├──────┼──────┼──────────────────────────────────────────────┤
+  │ 8    │ GbE  │ Pi eth1 uplink (cable ②)                     │
+  └──────┴──────┴──────────────────────────────────────────────┘
+
+  Key cabling notes embedded in the diagram:
+  - The UE306 dongle goes into a blue USB 3.0 port on the Pi — not a USB 2.0 port (black), which would
+  throttle it to 480 Mbps
+  - ISP cable goes in last — avoids the Pi routing traffic before the LAN is ready
+  - The AP gets no wall adapter — port 1 PoE+ feeds it directly
+  - First-boot checklist at the bottom walks through the software bring-up in the right order, ending
+  with the next-morning beacon report
+
+✻ Cogitated for 1m 11s                
+
+❯ store the diagram in the project folder                                                               
+                                          
+⏺ Write(network-diagram.txt)                                                                            
+  ⎿  Wrote 140 lines to network-diagram.txt                 
+       1                                                                                                
+       2   ┌─────────────────────────────────────────────────────────────────────────────────┐
+       3   │  BeaconButty — Physical Network Diagram & Cabling Guide                        │           
+       4   └─────────────────────────────────────────────────────────────────────────────────┘
+       5
+       6                                 ┌──────────────────┐
+       7                                 │    INTERNET       │
+       8                                 └────────┬─────────┘
+       9                                          │
+      10                         ╔════════════════╧══════════════════╗
+     … +130 lines (ctrl+o to expand)
+
+⏺ Saved to network-diagram.txt in the project folder. I also took the opportunity to add two sections
+  that weren't in the terminal output — a full switch port assignment table and a hardware bill of 
+  materials with approximate UK prices, totalling around £359.                                          
+   
+✻ Worked for 48s                                                                                        
+                                                            
+❯ how does the range through walls on the  TP-Link EAP773  compare with the other options for the       
+  ap                                                                                                 
+                                                                                                        
+⏺ Honest answer: the EAP773 is a solid AP but it has a meaningful weakness for through-wall range
+  compared to some of the alternatives, for a specific reason.                                          
+                                                                                                        
+  The issue: 2×2 MIMO on 5 GHz
+                                                                                                        
+  The EAP773 uses a 2×2 antenna configuration on each band. The competitors at similar or slightly
+  higher price points use 4×4 on 5 GHz, which matters a lot for wall penetration because more streams
+  enable better beamforming — the AP can concentrate signal toward a client rather than radiating it
+  equally in all directions.
+
+  ┌──────────────────────────┬─────────┬───────┬───────┬───────┐
+  │            AP            │ 2.4 GHz │ 5 GHz │ 6 GHz │ Price │
+  ├──────────────────────────┼─────────┼───────┼───────┼───────┤
+  │ TP-Link EAP773           │ 2×2     │ 2×2   │ 2×2   │ ~£130 │
+  ├──────────────────────────┼─────────┼───────┼───────┼───────┤
+  │ TP-Link EAP783           │ 4×4     │ 4×4   │ 4×4   │ ~£200 │
+  ├──────────────────────────┼─────────┼───────┼───────┼───────┤
+  │ Ubiquiti U7 Pro          │ 4×4     │ 4×4   │ 2×2   │ ~£200 │
+  ├──────────────────────────┼─────────┼───────┼───────┼───────┤
+  │ Ubiquiti U6 Pro (WiFi 6) │ 4×4     │ 4×4   │ —     │ ~£120 │
+  └──────────────────────────┴─────────┴───────┴───────┴───────┘
+
+  The 6 GHz problem (affects all WiFi 7 APs equally)
+
+  The new 6 GHz band that makes WiFi 7 fast is also its Achilles heel through walls. The physics is
+  straightforward: higher frequency = shorter wavelength = more absorption by building materials.
+  Concrete, brick, and even plasterboard with foil-backed insulation will kill 6 GHz signal after one
+  wall. This affects every WiFi 7 AP equally — it's not a flaw specific to the EAP773.
+
+  In practice, 6 GHz is essentially a short-range, high-speed band for devices in the same room.
+
+  Real-world ranking for through-wall coverage (single AP)
+
+  1. Ubiquiti U6 Pro — consistently rated best-in-class for range from a single AP; 4×4 on 5 GHz with
+  mature beamforming firmware; no 6 GHz band means all antenna resources go to 2.4/5 GHz
+  2. Ubiquiti U7 Pro — marginally better than U6 Pro on connected throughput, similar real-world range;
+  4×4 on 5 GHz
+  3. TP-Link EAP783 — 4×4 across all three bands; comparable to the Ubiquiti units but TP-Link's
+  beamforming implementation is slightly behind Ubiquiti's in independent reviews
+  4. TP-Link EAP773 — noticeably behind the above three on a multi-room/multi-wall deployment due to 2×2
+   MIMO
+
+  Practical guidance
+
+  - Small flat or open-plan office (2–4 rooms, few walls): EAP773 is fine and the £70 saving over a U7
+  Pro is real money
+  - House with multiple floors or thick walls: the U7 Pro or EAP783 will give meaningfully better
+  coverage from a single unit
+  - Large or awkward space: no single AP will be ideal — the right answer is two cheaper APs (e.g. two
+  EAP773s) with Omada roaming configured, which Zeek and RITA handle transparently since both APs are on
+   the same subnet
+
+  For the BeaconButty use case specifically, AP choice doesn't affect the security monitoring at all —
+  Zeek sees traffic at the router (Pi eth1) regardless of which AP the client connected through.
+
+✻ Cooked for 45s
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ go with the U7 Pro, update the diagram and BOM
+────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ accept edits on (shift+tab to cycle)
+

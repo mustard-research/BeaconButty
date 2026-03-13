@@ -1,0 +1,9 @@
+<clickhouse>
+    <profiles>
+        <default>
+            <!-- RITA v5 uses JOIN ... USING with SELECT-level aliases.
+                 This setting restores the legacy behaviour that allows it. -->
+            <analyzer_compatibility_join_using_top_level_identifier>1</analyzer_compatibility_join_using_top_level_identifier>
+        </default>
+    </profiles>
+</clickhouse>

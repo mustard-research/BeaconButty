@@ -1,0 +1,18 @@
+[Unit]
+Description=BeaconButty thermal & health watchdog
+After=network.target beaconbutty-health.sh
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/bb-watchdog
+User=dm
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=bb-watchdog
+# Give it a moment to settle on boot
+ExecStartPre=/bin/sleep 5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,86 @@
+{
+    // BeaconButty — RITA v5 configuration
+    // Database connection is NOT set here; it comes from environment variables:
+    //   DB_ADDRESS=localhost:9000
+    //   CLICKHOUSE_USERNAME=default
+    //   CLICKHOUSE_PASSWORD=
+    // These are written to /etc/rita/env and sourced by systemd units.
+
+    "update_check_enabled": false,
+
+    "threat_intel": {
+        "online_feeds": [
+            "https://feodotracker.abuse.ch/downloads/ipblocklist.txt"
+        ]
+    },
+
+    "filtering": {
+        // RFC 1918 private ranges — covers the 192.168.50.0/24 LAN
+        "internal_subnets": [
+            "10.0.0.0/8",
+            "172.16.0.0/12",
+            "192.168.0.0/16",
+            "fd00::/8"
+        ],
+        "always_included_subnets": [],
+        "always_included_domains": [],
+        "never_included_subnets": [],
+        "never_included_domains": [],
+        "filter_external_to_internal": true
+    },
+
+    "scoring": {
+        "beacon": {
+            "unique_connection_threshold": 4,
+            "timestamp_score_weight": 0.25,
+            "datasize_score_weight": 0.25,
+            "duration_score_weight": 0.25,
+            "histogram_score_weight": 0.25,
+            "duration_min_hours_seen": 6,
+            "duration_consistency_ideal_hours_seen": 12,
+            "histogram_mode_sensitivity": 0.05,
+            "histogram_bimodal_outlier_removal": 1,
+            "histogram_bimodal_min_hours_seen": 11,
+            "score_thresholds": {
+                "base": 50,
+                "low": 70,
+                "medium": 90,
+                "high": 100
+            }
+        },
+        "long_connection_score_thresholds": {
+            "base": 3600,
+            "low": 14400,
+            "medium": 28800,
+            "high": 43200
+        },
+        "c2_score_thresholds": {
+            "base": 100,
+            "low": 500,
+            "medium": 800,
+            "high": 1000
+        },
+        "strobe_impact": { "category": "high" },
+        "threat_intel_impact": { "category": "high" }
+    },
+
+    "modifiers": {
+        "threat_intel_score_increase": 0.15,
+        "threat_intel_datasize_threshold": 25000000,
+        "prevalence_score_increase": 0.15,
+        "prevalence_increase_threshold": 0.02,
+        "prevalence_score_decrease": 0.15,
+        "prevalence_decrease_threshold": 0.5,
+        "first_seen_score_increase": 0.15,
+        "first_seen_increase_threshold": 7,
+        "first_seen_score_decrease": 0.15,
+        "first_seen_decrease_threshold": 30,
+        "missing_host_count_score_increase": 0.1,
+        "rare_signature_score_increase": 0.15,
+        "c2_over_dns_direct_conn_score_increase": 0.15,
+        "mime_type_mismatch_score_increase": 0.15
+    },
+
+    "months_to_keep_historical_first_seen": 3,
+    "batch_size": 100000
+}

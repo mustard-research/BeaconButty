@@ -1,0 +1,13 @@
+[Unit]
+Description=BeaconButty graphs HTTP server
+After=network.target
+
+[Service]
+Type=simple
+User=dm
+ExecStart=/usr/bin/python3 -m http.server 8080 --directory /var/lib/beaconbutty/watchdog/graphs
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

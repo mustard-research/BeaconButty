@@ -1,0 +1,15 @@
+[Unit]
+Description=Zeek Network Analysis Framework
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Start if not running; succeed silently if already running
+ExecStart=/bin/sh -c '/opt/zeek/bin/zeekctl status 2>/dev/null | grep -q running || /opt/zeek/bin/zeekctl start'
+ExecStop=/opt/zeek/bin/zeekctl stop
+ExecReload=/opt/zeek/bin/zeekctl restart
+
+[Install]
+WantedBy=multi-user.target

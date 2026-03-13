@@ -1,0 +1,55 @@
+# RITA v5 configuration — BeaconButty
+# Full reference: https://github.com/activecm/rita
+
+mongodb:
+  connection_string: "mongodb://localhost:27017"
+  auth_mechanism: ""        # Leave empty for unauthenticated local MongoDB
+  socket_timeout_seconds: 120
+  tls:
+    enable: false           # Local connection only — no TLS needed
+
+# ── Beacon scoring ────────────────────────────────────────────────────────────
+# RITA scores each (internal src → external dst) pair 0.0–1.0.
+# The score combines timing regularity, data size consistency, and prevalence.
+
+beaconing:
+  # Minimum number of connections before scoring a pair.
+  # Raise to reduce noise from bursty-but-rare connections.
+  unique_connection_threshold: 4
+
+  # Score threshold for "show-beacons" output.
+  # 0.7 = conservative (fewer false positives, may miss low-jitter beacons)
+  # 0.5 = moderate
+  # Lower values catch more beacons but generate more noise from legitimate
+  # periodic software (Windows Update, Chrome telemetry, time sync, etc.)
+  score_threshold: 0.7
+
+  # Ignore pairs seen for less than this duration (seconds).
+  # A single burst of connections is not a beacon pattern.
+  min_hours_seen: 2
+
+# ── DNS beacon / DGA detection ────────────────────────────────────────────────
+dns:
+  # Minimum distinct queries to score a domain
+  query_threshold: 4
+
+  # Shannon entropy threshold for subdomain labels.
+  # Random-looking DGA domains score > 3.5; real words score < 3.0.
+  subdomain_entropy_threshold: 3.5
+
+# ── Long connection detection ─────────────────────────────────────────────────
+# Flags connections open for an unusually long time (potential tunnels/shells).
+long_connections:
+  min_duration_hours: 1
+
+# ── Strobe detection ──────────────────────────────────────────────────────────
+# A "strobe" is a (src, dst) pair with an abnormally high unique connection
+# count — typical of port scanners or very high-frequency beacons.
+strobes:
+  connection_count_threshold: 250
+
+# ── Log import ────────────────────────────────────────────────────────────────
+import:
+  # RITA auto-discovers log types (conn, dns, ssl, http) in this directory.
+  # The analyze.sh script passes daily subdirectories explicitly.
+  zeek_log_path: /opt/zeek/logs

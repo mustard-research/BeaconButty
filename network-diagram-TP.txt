@@ -1,0 +1,141 @@
+
+  ┌─────────────────────────────────────────────────────────────────────────────────┐
+  │  BeaconButty — Physical Network Diagram & Cabling Guide                         │
+  └─────────────────────────────────────────────────────────────────────────────────┘
+
+                                ┌──────────────────┐
+                                │    INTERNET      │
+                                └────────┬─────────┘
+                                         │
+                        ╔════════════════╧══════════════════╗
+                        ║  CABLE ①  ISP Ethernet            ║
+                        ║  Supplied by ISP (usually RJ45)   ║
+                        ║  Plug into Pi eth0 (built-in NIC) ║
+                        ╚════════════════╤══════════════════╝
+                                         │
+     ┌───────────────────────────────────┼───────────────────────────────────┐
+     │                        Raspberry Pi 5  (8 GB)                         │
+     │                                                                       │
+     │  ┌──────────────────────────────────────────────────────────────────┐ │
+     │  │  eth0  ──  built-in RJ45 (south edge of board)                   │◄──── ① ISP cable
+     │  │           WAN  ·  public IP via DHCP from ISP                    │ │
+     │  ├──────────────────────────────────────────────────────────────────┤ │
+     │  │  NAT  (iptables MASQUERADE on eth0)                              │ │
+     │  │  Firewall  (DROP inbound on WAN by default)                      │ │
+     │  │  Zeek 7  ·  RITA 5  ·  MongoDB 7                                 │ │
+     │  │  dnsmasq  (DHCP server + DNS forwarder)                          │ │
+     │  ├──────────────────────────────────────────────────────────────────┤ │
+     │  │  eth1  ──  TP-Link UE306  (USB 3.0 → Gigabit adapter)            │◄──── ② LAN cable
+     │  │           Plug UE306 into any USB 3.0 (blue) port on Pi          │ │       to switch
+     │  │           LAN  ·  192.168.50.1/24  ·  DHCP pool .100–.200        │ │       port 8
+     │  └────────────────────────────┬─────────────────────────────────────┘ │
+     │                               │                                       │
+     │              Zeek captures on eth1 — sees all internal source IPs     │
+     └───────────────────────────────┼───────────────────────────────────────┘
+                                     │
+                     ╔═══════════════╧══════════════════╗
+                     ║  CABLE ②  Cat 6 patch cable      ║
+                     ║  Pi eth1 (UE306)  →  port 8      ║
+                     ║  Any length up to 100 m          ║
+                     ╚═══════════════╤══════════════════╝
+                                     │
+  ┌──────────────────────────────────┼───────────────────────────────────────────┐
+  │                    TP-Link TL-SG2008P  Managed Switch                        │
+  │                                                                              │
+  │   Switch front panel:                                                        │
+  │                                                                              │
+  │  ┌────────┬────────┬────────┬────────┬────────┬────────┬────────┬────────┐   │
+  │  │ port 1 │ port 2 │ port 3 │ port 4 │ port 5 │ port 6 │ port 7 │ port 8 │   │
+  │  │ PoE+   │ PoE+   │ PoE+   │ PoE+   │  GbE   │  GbE   │  GbE   │  GbE   │   │
+  │  └───┬────┴───┬────┴───┬────┴────────┴────────┴────────┴───┬────┴───┬────┘   │
+  │      │        │        │                                    │        │       │
+  │   ③ U7   ④ PC 1   ⑤ PC 2                               ⑥ PC 3  ② Pi eth1     │
+  │   Pro                                                               uplink   │
+  └──────┼────────┼────────┼────────────────────────────────────┼────────────────┘
+         │        │        │                                    │
+   ╔═════╧══════╗ │        │                                    │
+   ║ CABLE ③    ║ │        │                                    │
+   ║ Cat 6      ║ │        │                              wired clients
+   ║ port 1 →   ║ │        │                              use Cat 6
+   ║ U7 Pro     ║ │        │                              patch cables
+   ║ (PoE+,     ║ │        │
+   ║ no PSU)    ║ │        │
+   ╚═════╤══════╝ │        │
+         │        │        │
+  ┌──────┴──────────────────────────────────────────────────────────────────┐
+  │                    Ubiquiti UniFi U7 Pro  WiFi 7 AP                     │
+  │                                                                         │
+  │  Power:  from PoE+ on switch port 1  (no separate power adapter needed) │
+  │  Mgmt:   UniFi app (iOS / Android / web)  or  standalone mode           │
+  │  Bands:  2.4 GHz  ·  5 GHz  ·  6 GHz  (802.11be / WiFi 7)               │
+  │  MIMO:   4×4 on 2.4 & 5 GHz  ·  2×2 on 6 GHz                            │
+  └──────────────────────────────┬──────────────────────────────────────────┘
+                                 │
+                    ╔════════════╧════════════╗
+                    ║   WiFi clients          ║
+                    ║   phones · laptops      ║
+                    ║   tablets · IoT         ║
+                    ║   192.168.50.100–.200   ║
+                    ║   DHCP from Pi          ║
+                    ╚═════════════════════════╝
+
+
+  SWITCH PORT ASSIGNMENTS
+  ────────────────────────────────────────────────────────────────────────────
+  Port 1   PoE+   Ubiquiti U7 Pro WiFi 7 AP  (cable ③)
+  Port 2   PoE+   Wired client  or  second AP if needed  (cable ④)
+  Port 3   PoE+   Wired client  (cable ⑤)
+  Port 4   PoE+   Wired client  (cable ⑥ — or spare PoE for future device)
+  Port 5   GbE    Wired client
+  Port 6   GbE    Wired client
+  Port 7   GbE    Wired client
+  Port 8   GbE    Pi eth1 uplink  (cable ②)
+
+
+  CABLING SEQUENCE
+  ────────────────────────────────────────────────────────────────────────────
+  ①  ISP cable   →  Pi eth0 (built-in RJ45, south edge of board)
+                    Do this last — inserting it first means the Pi starts
+                    NAT-ing before the LAN is wired up.
+
+  ②  Cat 6       →  Pi eth1 (UE306 dongle in a blue USB 3.0 port on Pi)
+                    other end  →  switch port 8  (any non-PoE port works)
+                    Use a blue USB 3.0 port — not a black USB 2.0 port,
+                    which caps throughput at 480 Mbps.
+
+  ③  Cat 6       →  switch port 1  (PoE+)
+                    other end  →  U7 Pro LAN/PoE port
+                    No power adapter needed on the AP — PoE feeds it.
+
+  ④⑤⑥ Cat 6    →  switch ports 2–7
+                    other end  →  wired PCs, NAS, printers, etc.
+                    Ports 2–4 also deliver PoE+ if a device needs it.
+
+
+  FIRST-BOOT CHECKLIST
+  ────────────────────────────────────────────────────────────────────────────
+  □  Flash Raspberry Pi OS 64-bit (Bookworm) to USB SSD, boot Pi from it
+  □  SSH to Pi on its initial IP and run:  sudo ./setup.sh
+  □  Then run:  sudo ./scripts/07_router_mode.sh  — Pi reboots into router mode
+  □  Connect a PC to switch port 2, confirm DHCP address is 192.168.50.1xx
+  □  SSH to 192.168.50.1 and verify:
+       zeekctl status
+       systemctl status dnsmasq
+       systemctl status wan-watchdog.timer
+       systemctl status rita-analyze.timer
+  □  Plug in ISP cable (cable ①) — internet goes live
+  □  Configure U7 Pro SSID via UniFi app (connect phone to AP, open app)
+  □  Next morning:  /usr/local/bin/beacon-report.sh  — first overnight analysis
+
+
+  HARDWARE BILL OF MATERIALS
+  ────────────────────────────────────────────────────────────────────────────
+  Raspberry Pi 5  8 GB                          ~£ 80
+  Pi official USB-C power supply                ~£ 12
+  USB SSD  (e.g. Samsung T7, 500 GB)            ~£ 55
+  TP-Link UE306  USB 3.0 Gigabit adapter        ~£ 12
+  TP-Link TL-SG2008P  8-port managed switch     ~£ 55
+  Ubiquiti UniFi U7 Pro  WiFi 7 access point    ~£200
+  Cat 6 patch cables  (×4, assorted lengths)    ~£ 15
+                                               ──────
+  Total                                         ~£429

@@ -1,0 +1,12 @@
+[Unit]
+Description=BeaconButty — run RITA analysis every hour
+Requires=rita-analyze.service
+
+[Timer]
+# Run 5 minutes after Zeek rotates its logs (which happens on the hour)
+OnCalendar=*:05
+# If the Pi was powered off, catch up on missed runs immediately at boot
+Persistent=true
+
+[Install]
+WantedBy=timers.target
