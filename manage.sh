@@ -41,6 +41,7 @@ RITA_DB_NAME="${RITA_DB_NAME:-beaconbutty}"
 LOCAL_NETWORKS="${LOCAL_NETWORKS:-10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}"
 RETAIN_DAYS="${RETAIN_DAYS:-30}"
 BEACON_THRESHOLD="${BEACON_THRESHOLD:-0.80}"
+LEASES_FILE="/var/lib/misc/dnsmasq.leases"
 
 load_config() {
     if [[ -f "$CONFIG_FILE" ]]; then
@@ -283,6 +284,275 @@ do_housekeeping() {
     run_with_env "$SCRIPTS/housekeeping.sh"
 }
 
+do_suricata_review() {
+    hdr "Suricata Events Review"
+
+    EVE="/var/lib/suricata/log/eve.json"
+    FAST="/var/lib/suricata/log/fast.log"
+
+    if [[ ! -f "$EVE" ]]; then
+        warn "Suricata eve.json not found at $EVE"
+        warn "Is Suricata installed and running?"
+        press_enter
+        return
+    fi
+
+    echo ""
+    echo -e "  ${B}Options:${RESET}"
+    echo -e "   ${B}1${RESET}  Summary — today's alerts grouped by signature"
+    echo -e "   ${B}2${RESET}  Recent alerts — last N events"
+    echo -e "   ${B}3${RESET}  Live tail — follow fast.log in real time"
+    echo -e "   ${B}4${RESET}  Trace alerts to LAN devices  ${DIM}(via Zeek conn.log)${RESET}"
+    echo -e "   ${B}0${RESET}  Back"
+    echo ""
+    echo -n "  Select [0-4]: "
+    read -r sub
+
+    case "$sub" in
+        1)
+            echo ""
+            echo -n "  Skip priority-3 engine noise? [Y/n]: "
+            read -r skip_p3
+            python3 - "$EVE" "${skip_p3:-y}" <<'PYEOF'
+import json, sys
+from collections import defaultdict
+from datetime import datetime, timezone
+
+eve_file = sys.argv[1]
+skip_p3  = sys.argv[2].lower() not in ('n', 'no')
+
+today = datetime.now(timezone.utc).date()
+sigs  = defaultdict(lambda: {'count': 0, 'priority': 0, 'srcs': set(), 'last': ''})
+
+with open(eve_file) as f:
+    for line in f:
+        try:
+            evt = json.loads(line)
+        except Exception:
+            continue
+        if evt.get('event_type') != 'alert':
+            continue
+        if evt.get('timestamp', '')[:10] != str(today):
+            continue
+        alert = evt.get('alert', {})
+        pri   = alert.get('severity', 3)
+        if skip_p3 and pri >= 3:
+            continue
+        sig   = alert.get('signature', '(unknown)')
+        sigs[sig]['count']    += 1
+        sigs[sig]['priority']  = pri
+        sigs[sig]['srcs'].add(evt.get('src_ip', ''))
+        sigs[sig]['last']      = evt.get('timestamp', '')[:19].replace('T', ' ')
+
+label = "priority 1–2 only" if skip_p3 else "all priorities"
+if not sigs:
+    print(f"\n  No Suricata alerts today ({label}).")
+else:
+    print(f"\n  Today's alerts ({label}):\n")
+    print(f"  {'P':>2}  {'Count':>5}  {'Srcs':>4}  {'Last Seen':<19}  Signature")
+    print("  " + "\u2500" * 76)
+    for sig, d in sorted(sigs.items(), key=lambda x: (x[1]['priority'], -x[1]['count'])):
+        print(f"  {d['priority']:>2}  {d['count']:>5}  {len(d['srcs']):>4}  {d['last']:<19}  {sig[:50]}")
+PYEOF
+            press_enter
+            ;;
+        2)
+            echo ""
+            echo -n "  How many recent alerts to show [20]: "
+            read -r n_alerts
+            echo ""
+            echo -n "  Skip priority-3 engine noise? [Y/n]: "
+            read -r skip_p3
+            python3 - "$EVE" "${n_alerts:-20}" "${skip_p3:-y}" <<'PYEOF'
+import json, sys
+
+eve_file = sys.argv[1]
+n        = int(sys.argv[2])
+skip_p3  = sys.argv[3].lower() not in ('n', 'no')
+
+alerts = []
+with open(eve_file) as f:
+    for line in f:
+        try:
+            evt = json.loads(line)
+        except Exception:
+            continue
+        if evt.get('event_type') != 'alert':
+            continue
+        if skip_p3 and evt.get('alert', {}).get('severity', 3) >= 3:
+            continue
+        alerts.append(evt)
+
+recent = alerts[-n:]
+label  = "priority 1–2 only" if skip_p3 else "all priorities"
+if not recent:
+    print(f"\n  No alerts found ({label}).")
+else:
+    print(f"\n  Last {len(recent)} alerts ({label}):\n")
+    for evt in recent:
+        alert = evt.get('alert', {})
+        ts    = evt.get('timestamp', '')[:19].replace('T', ' ')
+        pri   = alert.get('severity', '?')
+        sig   = alert.get('signature', '(unknown)')[:55]
+        src   = evt.get('src_ip', '')
+        sport = evt.get('src_port', '')
+        dst   = evt.get('dest_ip', '')
+        dport = evt.get('dest_port', '')
+        proto = evt.get('proto', '')
+        print(f"  [{ts}] P{pri}  {sig}")
+        print(f"    {proto}  {src}:{sport} \u2192 {dst}:{dport}\n")
+PYEOF
+            press_enter
+            ;;
+        3)
+            echo ""
+            info "Tailing $FAST — press Ctrl-C to stop."
+            echo ""
+            tail -f "$FAST" || true
+            press_enter
+            ;;
+        4)
+            if [[ $EUID -ne 0 ]]; then
+                warn "This option requires root (needs access to Zeek logs)."
+                press_enter
+                return
+            fi
+            WAN_IP=$(ip -4 addr show "$WAN_IFACE" 2>/dev/null | grep -oP '(?<=inet )\d+\.\d+\.\d+\.\d+' | head -1)
+            if [[ -z "$WAN_IP" ]]; then
+                warn "Could not determine WAN IP from interface $WAN_IFACE."
+                press_enter
+                return
+            fi
+            python3 - "$FAST" "/opt/zeek/logs" "$WAN_IP" "$LEASES_FILE" <<'PYEOF'
+import re, sys, os, gzip
+from datetime import datetime
+from collections import defaultdict
+
+fast_log    = sys.argv[1]
+zeek_base   = sys.argv[2]
+wan_ip      = sys.argv[3]
+leases_file = sys.argv[4]
+
+ip_to_host = {}
+try:
+    with open(leases_file) as f:
+        for line in f:
+            parts = line.split()
+            if len(parts) >= 4 and parts[3] != '*':
+                ip_to_host[parts[2]] = parts[3]
+except FileNotFoundError:
+    pass
+
+def host(ip):
+    h = ip_to_host.get(ip, '')
+    return f"{ip} ({h})" if h else ip
+
+FAST_RE = re.compile(
+    r'(\d{2}/\d{2}/\d{4}-\d{2}:\d{2}:\d{2})\.\d+\s+\[\*\*\]\s+\[\S+\]\s+(.*?)\s+\[\*\*\]'
+    r'.*?\{(\w+)\}\s+([\d.]+):(\d+)\s+->\s+([\d.]+):(\d+)'
+)
+
+alerts_raw = []
+try:
+    with open(fast_log) as f:
+        for line in f:
+            m = FAST_RE.search(line)
+            if not m:
+                continue
+            ts_str, sig, proto, src_ip, src_port, dst_ip, dst_port = m.groups()
+            if dst_ip == wan_ip:
+                ext_ip, ext_port = src_ip, int(src_port)
+            elif src_ip == wan_ip:
+                ext_ip, ext_port = dst_ip, int(dst_port)
+            else:
+                ext_ip, ext_port = dst_ip, int(dst_port)
+            ts = datetime.strptime(ts_str, '%m/%d/%Y-%H:%M:%S')
+            alerts_raw.append((ts, sig.strip(), proto, ext_ip, ext_port))
+except FileNotFoundError:
+    print(f"  fast.log not found: {fast_log}")
+    sys.exit(1)
+
+if not alerts_raw:
+    print("  No alerts in fast.log.")
+    sys.exit(0)
+
+ext_ips    = set(a[3] for a in alerts_raw)
+date_hours = defaultdict(set)
+for ts, *_ in alerts_raw:
+    d = ts.strftime('%Y-%m-%d')
+    for dh in range(max(0, ts.hour - 1), min(24, ts.hour + 2)):
+        date_hours[d].add(dh)
+
+ext_to_lans = defaultdict(set)
+files_checked = 0
+for date_str, hours in date_hours.items():
+    zeek_dir = os.path.join(zeek_base, date_str)
+    if not os.path.isdir(zeek_dir):
+        continue
+    for h in sorted(hours):
+        fname = f"conn.{h:02d}:00:00-{(h+1):02d}:00:00.log.gz"
+        fpath = os.path.join(zeek_dir, fname)
+        if not os.path.exists(fpath):
+            continue
+        files_checked += 1
+        try:
+            with gzip.open(fpath, 'rt') as f:
+                for line in f:
+                    if line.startswith('#'):
+                        continue
+                    parts = line.split('\t')
+                    if len(parts) >= 6 and parts[4] in ext_ips:
+                        ext_to_lans[parts[4]].add(parts[2])
+        except Exception:
+            continue
+
+print(f"\n  {len(alerts_raw)} alert(s), {len(ext_ips)} external IP(s), {files_checked} Zeek file(s) searched\n")
+
+# Group unique (ext_ip, ext_port, sig) by LAN device
+# An alert touching multiple LAN devices appears under each
+lan_to_alerts = defaultdict(set)   # lan_ip -> {(ext_str, sig)}
+unresolved    = set()              # (ext_str, sig) with no LAN match
+
+seen = set()
+for ts, sig, proto, ext_ip, ext_port in alerts_raw:
+    key = (ext_ip, sig)
+    if key in seen:
+        continue
+    seen.add(key)
+    ext_str = f"{ext_ip}:{ext_port}"
+    lans = ext_to_lans.get(ext_ip, set())
+    if lans:
+        for lan in lans:
+            lan_to_alerts[lan].add((ext_str, sig))
+    else:
+        unresolved.add((ext_str, sig))
+
+print(f"  {'LAN Device':<28} {'External IP':<24} Signature")
+print("  " + "\u2500" * 88)
+
+for lan_ip in sorted(lan_to_alerts):
+    label    = host(lan_ip)
+    entries  = sorted(lan_to_alerts[lan_ip])
+    first    = True
+    for ext_str, sig in entries:
+        dev_col = label if first else ''
+        print(f"  {dev_col:<28} {ext_str:<24} {sig[:36]}")
+        first = False
+    print()
+
+if unresolved:
+    print(f"  {'(inbound / not in Zeek)':<28} {'External IP':<24} Signature")
+    print("  " + "\u2500" * 88)
+    for ext_str, sig in sorted(unresolved):
+        print(f"  {'': <28} {ext_str:<24} {sig[:36]}")
+PYEOF
+            press_enter
+            ;;
+        0|"") return ;;
+        *) warn "Unknown option." ; press_enter ;;
+    esac
+}
+
 do_assets() {
     require_root || return
     hdr "LAN Asset Inventory"
@@ -299,10 +569,10 @@ do_fp_add() {
     require_root || return
     hdr "False Positives — Add"
     echo ""
-    echo -n "  IP address to whitelist: "
+    echo -n "  IP or MAC address to whitelist: "
     read -r fp_ip
     if [[ -z "$fp_ip" ]]; then
-        err "IP address required."
+        err "IP or MAC address required."
         press_enter
         return
     fi
@@ -323,10 +593,10 @@ do_fp_remove() {
     # Show current list first
     bash "$SCRIPTS/fp.sh" list 2>/dev/null || true
     echo ""
-    echo -n "  IP address to remove: "
+    echo -n "  IP or MAC address to remove: "
     read -r fp_ip
     if [[ -z "$fp_ip" ]]; then
-        err "IP address required."
+        err "IP or MAC address required."
         press_enter
         return
     fi
@@ -364,6 +634,47 @@ do_edit_config() {
     press_enter
 }
 
+# ── Installation sub-menu ──────────────────────────────────────────────────────
+
+do_installation_menu() {
+    while true; do
+        clear
+        echo -e "${B}${CYAN}"
+        echo "  ╔══════════════════════════════════════════════════════════╗"
+        echo "  ║         BeaconButty — Installation & Setup               ║"
+        echo "  ╚══════════════════════════════════════════════════════════╝"
+        echo -e "${RESET}"
+        echo -e "   ${B}1${RESET}  Full Setup (01→05, all components)"
+        echo -e "   ${B}2${RESET}  System Dependencies"
+        echo -e "   ${B}3${RESET}  Install Zeek"
+        echo -e "   ${B}4${RESET}  Install ClickHouse"
+        echo -e "   ${B}5${RESET}  Install RITA"
+        echo -e "   ${B}6${RESET}  Apply Configuration"
+        echo -e "   ${B}7${RESET}  Router Mode Setup"
+        echo -e "   ${B}8${RESET}  Security Hardening"
+        echo -e "   ${B}9${RESET}  Install Suricata IDS  ${DIM}(8 GB Pi only)${RESET}"
+        echo ""
+        echo -e "   ${B}0${RESET}  Back"
+        echo ""
+        sep
+        echo -n "  Select [0-9]: "
+        read -r choice || true
+        case "${choice:-}" in
+            1) do_full_setup ;;
+            2) do_system_deps ;;
+            3) do_install_zeek ;;
+            4) do_install_clickhouse ;;
+            5) do_install_rita ;;
+            6) do_configure ;;
+            7) do_router_mode ;;
+            8) do_harden ;;
+            9) do_install_suricata ;;
+            0|"") return ;;
+            *) warn "Unknown option: ${choice}" ;;
+        esac
+    done
+}
+
 # ── Main menu ──────────────────────────────────────────────────────────────────
 
 print_menu() {
@@ -376,43 +687,33 @@ print_menu() {
     echo -e "  ${DIM}Capture: ${CAPTURE_IFACE}  │  Zeek: ${ZEEK_PREFIX}  │  RITA DB: ${RITA_DB_NAME}${RESET}"
     echo ""
 
-    echo -e "  ${B}${YELLOW}── INSTALLATION ─────────────────────────────────────────${RESET}"
-    echo -e "   ${B}1${RESET}  Full Setup (01→05, all components)"
-    echo -e "   ${B}2${RESET}  System Dependencies"
-    echo -e "   ${B}3${RESET}  Install Zeek"
-    echo -e "   ${B}4${RESET}  Install ClickHouse"
-    echo -e "   ${B}5${RESET}  Install RITA"
-    echo -e "   ${B}6${RESET}  Apply Configuration"
-    echo -e "   ${B}7${RESET}  Router Mode Setup"
-    echo -e "   ${B}8${RESET}  Security Hardening"
-    echo -e "   ${B}9${RESET}  Install Suricata IDS  ${DIM}(8 GB Pi only)${RESET}"
-    echo ""
-
     echo -e "  ${B}${YELLOW}── DAILY OPERATIONS ─────────────────────────────────────${RESET}"
-    echo -e "  ${B}10${RESET}  Morning Check  ${DIM}(health + import + report)${RESET}"
-    echo -e "  ${B}11${RESET}  Run RITA Analysis"
-    echo -e "  ${B}12${RESET}  Generate Beacon Report"
-    echo -e "  ${B}13${RESET}  View Summary"
-    echo -e "  ${B}14${RESET}  Health Check"
-    echo -e "  ${B}15${RESET}  WAN Watchdog  ${DIM}(manual run)${RESET}"
-    echo -e "  ${B}16${RESET}  Storage Housekeeping"
+    echo -e "   ${B}1${RESET}  Morning Check  ${DIM}(health + import + report)${RESET}"
+    echo -e "   ${B}2${RESET}  Run RITA Analysis"
+    echo -e "   ${B}3${RESET}  Generate Beacon Report"
+    echo -e "   ${B}4${RESET}  View Summary"
+    echo -e "   ${B}5${RESET}  Health Check"
+    echo -e "   ${B}6${RESET}  WAN Watchdog  ${DIM}(manual run)${RESET}"
+    echo -e "   ${B}7${RESET}  Storage Housekeeping"
+    echo -e "   ${B}8${RESET}  Suricata Events Review"
     echo ""
 
     echo -e "  ${B}${YELLOW}── ASSET & FALSE POSITIVE MANAGEMENT ───────────────────${RESET}"
-    echo -e "  ${B}17${RESET}  LAN Asset Inventory"
-    echo -e "  ${B}18${RESET}  False Positives — List"
-    echo -e "  ${B}19${RESET}  False Positives — Add"
-    echo -e "  ${B}20${RESET}  False Positives — Remove"
+    echo -e "   ${B}9${RESET}  LAN Asset Inventory"
+    echo -e "  ${B}10${RESET}  False Positives — List"
+    echo -e "  ${B}11${RESET}  False Positives — Add"
+    echo -e "  ${B}12${RESET}  False Positives — Remove"
     echo ""
 
     echo -e "  ${B}${YELLOW}── MIGRATION ────────────────────────────────────────────${RESET}"
-    echo -e "  ${B}21${RESET}  Migration — Export  ${DIM}(package data from this Pi)${RESET}"
-    echo -e "  ${B}22${RESET}  Migration — Import  ${DIM}(apply data on new Pi)${RESET}"
-    echo -e "  ${B}23${RESET}  Migration — Checklist"
+    echo -e "  ${B}13${RESET}  Migration — Export  ${DIM}(package data from this Pi)${RESET}"
+    echo -e "  ${B}14${RESET}  Migration — Import  ${DIM}(apply data on new Pi)${RESET}"
+    echo -e "  ${B}15${RESET}  Migration — Checklist"
     echo ""
     echo -e "  ${B}${YELLOW}── SETTINGS ─────────────────────────────────────────────${RESET}"
-    echo -e "  ${B}24${RESET}  Edit Configuration"
-    echo -e "  ${B}25${RESET}  Show Current Configuration"
+    echo -e "  ${B}16${RESET}  Edit Configuration"
+    echo -e "  ${B}17${RESET}  Show Current Configuration"
+    echo -e "  ${B}18${RESET}  Installation & Setup  ${DIM}(Zeek, RITA, ClickHouse…)${RESET}"
     echo ""
     echo -e "   ${B}0${RESET}  Exit"
     echo ""
@@ -421,31 +722,24 @@ print_menu() {
 
 dispatch() {
     case "$1" in
-        1)  do_full_setup ;;
-        2)  do_system_deps ;;
-        3)  do_install_zeek ;;
-        4)  do_install_clickhouse ;;
-        5)  do_install_rita ;;
-        6)  do_configure ;;
-        7)  do_router_mode ;;
-        8)  do_harden ;;
-        9)  do_install_suricata ;;
-        10) do_morning_check ;;
-        11) do_analyze ;;
-        12) do_report ;;
-        13) do_summarize ;;
-        14) do_healthcheck ;;
-        15) do_wan_watchdog ;;
-        16) do_housekeeping ;;
-        17) do_assets ;;
-        18) do_fp_list ;;
-        19) do_fp_add ;;
-        20) do_fp_remove ;;
-        21) require_root && run_script "$SCRIPT_DIR/migrate.sh" export ;;
-        22) require_root && run_script "$SCRIPT_DIR/migrate.sh" import ;;
-        23) bash "$SCRIPT_DIR/migrate.sh" checklist; press_enter ;;
-        24) do_edit_config ;;
-        25) hdr "Current Configuration"; echo ""; show_config_inline; press_enter ;;
+        1)  do_morning_check ;;
+        2)  do_analyze ;;
+        3)  do_report ;;
+        4)  do_summarize ;;
+        5)  do_healthcheck ;;
+        6)  do_wan_watchdog ;;
+        7)  do_housekeeping ;;
+        8)  do_suricata_review ;;
+        9)  do_assets ;;
+        10) do_fp_list ;;
+        11) do_fp_add ;;
+        12) do_fp_remove ;;
+        13) require_root && run_script "$SCRIPT_DIR/migrate.sh" export ;;
+        14) require_root && run_script "$SCRIPT_DIR/migrate.sh" import ;;
+        15) bash "$SCRIPT_DIR/migrate.sh" checklist; press_enter ;;
+        16) do_edit_config ;;
+        17) hdr "Current Configuration"; echo ""; show_config_inline; press_enter ;;
+        18) do_installation_menu ;;
         0)  echo ""; info "Goodbye."; echo ""; exit 0 ;;
         *)  warn "Unknown option: $1" ;;
     esac
@@ -464,7 +758,7 @@ fi
 # Interactive loop
 while true; do
     print_menu
-    echo -n "  Select [0-25]: "
+    echo -n "  Select [0-18]: "
     read -r choice || true
     dispatch "${choice:-}"
 done

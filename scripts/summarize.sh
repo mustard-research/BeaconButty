@@ -10,6 +10,7 @@ set -euo pipefail
 # Set BEACON_THRESHOLD=0.90 to raise the score cutoff for the top-beacons table.
 
 REPORT_DIR="/var/lib/beaconbutty/reports"
+LEASES_FILE="/var/lib/misc/dnsmasq.leases"
 TODAY=$(date +%Y%m%d)
 THRESHOLD="${BEACON_THRESHOLD:-0.80}"
 
@@ -26,13 +27,14 @@ fi
 
 [[ -f "$REPORT_FILE" ]] || { echo "Report not found: $REPORT_FILE"; exit 1; }
 
-python3 - "$REPORT_FILE" "$THRESHOLD" <<'PYEOF'
+python3 - "$REPORT_FILE" "$THRESHOLD" "$LEASES_FILE" <<'PYEOF'
 import csv, json, re, sys, os, ipaddress
 from collections import defaultdict
 from datetime import datetime
 
 report_file = sys.argv[1]
 threshold   = float(sys.argv[2])
+leases_file = sys.argv[3]
 
 # ── Parse all CSV rows from report ───────────────────────────────────────────
 csv_lines = []
@@ -70,13 +72,39 @@ except Exception:
     assets = {}
     asset_age_min = None
 
-# ── Load false positives ──────────────────────────────────────────────────────
+# ── Load false positives (MAC-keyed) and resolve to current IPs ───────────────
 FP_FILE = '/var/lib/beaconbutty/false-positives.conf'
 try:
     with open(FP_FILE) as f:
-        false_positives = json.load(f)
+        fp_by_mac = json.load(f)
 except Exception:
-    false_positives = {}
+    fp_by_mac = {}
+
+mac_to_ip  = {}
+ip_to_host = {}
+try:
+    with open(leases_file) as f:
+        for line in f:
+            parts = line.split()
+            if len(parts) >= 3:
+                mac_to_ip[parts[1].lower()] = parts[2]
+            if len(parts) >= 4 and parts[3] != '*':
+                ip_to_host[parts[2]] = parts[3]
+except Exception:
+    pass
+
+def ip_label(ip):
+    h = ip_to_host.get(ip, '')
+    return f"{ip} ({h})" if h else ip
+
+# Build IP-keyed view for suppression; track which MACs have no current lease
+false_positives = {}   # ip → reason  (for suppression)
+fp_mac_display  = []   # (mac, current_ip, reason)  (for display table)
+for mac, reason in fp_by_mac.items():
+    cur_ip = mac_to_ip.get(mac.lower())
+    fp_mac_display.append((mac, cur_ip or '\u2014', reason))
+    if cur_ip:
+        false_positives[cur_ip] = reason
 
 if not rows:
     print("No findings in report.")
@@ -88,6 +116,15 @@ for r in rows:
     if r[COL['Source IP']].strip() in false_positives:
         fp_suppressed[r[COL['Source IP']].strip()] += 1
 rows = [r for r in rows if r[COL['Source IP']].strip() not in false_positives]
+
+# Drop rows with non-IPv4 source IPs (e.g. '::' from RITA's IPv6 artefacts)
+def is_ipv4(s):
+    try:
+        ipaddress.IPv4Address(s)
+        return True
+    except ValueError:
+        return False
+rows = [r for r in rows if is_ipv4(r[COL['Source IP']].strip())]
 
 # ── Field accessors ───────────────────────────────────────────────────────────
 def dest(row):
@@ -323,17 +360,17 @@ print('\u255a' + '\u2550' * 54 + '\u255d')
 print()
 
 # ── 1. False positives ───────────────────────────────────────────────────────
-if false_positives:
+if fp_mac_display:
     total_sup = sum(fp_suppressed.values())
-    print(f'FALSE POSITIVES  ({len(false_positives)} registered \u2014 {total_sup} findings suppressed)')
+    print(f'FALSE POSITIVES  ({len(fp_mac_display)} registered \u2014 {total_sup} findings suppressed)')
     fp_data = []
-    for ip in sorted(false_positives, key=ip_sort):
-        sup = fp_suppressed.get(ip, 0)
-        fp_data.append([ip, trunc(false_positives[ip], 50), sup if sup else '\u2014'])
+    for mac, cur_ip, reason in sorted(fp_mac_display, key=lambda x: ip_sort(x[1])):
+        sup = fp_suppressed.get(cur_ip, 0) if cur_ip != '\u2014' else 0
+        fp_data.append([mac, cur_ip, trunc(reason, 40), sup if sup else '\u2014'])
     print(table(
-        ['Source IP', 'Reason', 'Suppressed'],
+        ['MAC Address', 'Current IP', 'Reason', 'Suppressed'],
         fp_data,
-        ['<', '<', '>']
+        ['<', '<', '<', '>']
     ))
     print()
 
@@ -358,7 +395,7 @@ for ip, dests_list in ip_all_dests.items():
     benign_map[ip] = {'label': label, 'evidence': evidence}
 
 benign_rows = [
-    [ip, benign_map[ip]['label'], trunc(', '.join(benign_map[ip]['evidence']), 52)]
+    [ip_label(ip), benign_map[ip]['label'], trunc(', '.join(benign_map[ip]['evidence']), 52)]
     for ip in sorted(benign_map, key=ip_sort)
 ]
 
@@ -401,7 +438,7 @@ for r in rows:
 
 sorted_devs = sorted(dev.items(), key=lambda x: (-x[1]['H'], -x[1]['max']))
 dev_data = [
-    [ip, d['H'], d['M'], d['total'], f"{d['max']:.3f}", trunc(d['top'], 36)]
+    [ip_label(ip), d['H'], d['M'], d['total'], f"{d['max']:.3f}", trunc(d['top'], 36)]
     for ip, d in sorted_devs
 ]
 print(table(
@@ -432,7 +469,7 @@ if top:
             if total_rows >= 30:
                 break
             tdata.append([
-                ip if first else '',
+                ip_label(ip) if first else '',
                 trunc(dest(r), 42),
                 f'{score(r):.3f}',
                 conns(r),
@@ -460,11 +497,11 @@ else:
     if threat:
         print(f'  \u26a0  THREAT INTEL  ({len(threat)} hits)')
         for r in threat:
-            print(f'     {r[COL["Source IP"]].strip():<16}  \u2192  {trunc(dest(r), 50)}')
+            print(f'     {ip_label(r[COL["Source IP"]].strip()):<30}  \u2192  {trunc(dest(r), 50)}')
     if strobes:
         print(f'  \u26a0  STROBES  ({len(strobes)})')
         for r in strobes:
-            print(f'     {r[COL["Source IP"]].strip():<16}  \u2192  {trunc(dest(r), 50)}  ({conns(r)} conns)')
+            print(f'     {ip_label(r[COL["Source IP"]].strip()):<30}  \u2192  {trunc(dest(r), 50)}  ({conns(r)} conns)')
 print()
 
 # ── 7. Investigate ───────────────────────────────────────────────────────────
@@ -507,7 +544,7 @@ for (ip, ft), g in sorted(grouped.items(), key=lambda x: -score(x[1]['best'])):
     else:
         flag_str = g['msgs'][0]
 
-    inv_rows.append([ip, trunc(dest_str, 40), f'{s:.3f}', trunc(flag_str, 48)])
+    inv_rows.append([ip_label(ip), trunc(dest_str, 40), f'{s:.3f}', trunc(flag_str, 48)])
 
 print(f'INVESTIGATE  ({len(inv_rows)} item{"s" if len(inv_rows) != 1 else ""})')
 if inv_rows:
@@ -569,7 +606,7 @@ print('  Health:     beaconbutty-health.sh')
 print('  Morning:    sudo beaconbutty-morning.sh')
 print('  Assets:     sudo beaconbutty-assets.sh')
 print('  False +ve:  beaconbutty-fp.sh list')
-print('              beaconbutty-fp.sh add <ip> "<reason up to 50 chars>"')
-print('              beaconbutty-fp.sh remove <ip>')
+print('              beaconbutty-fp.sh add <ip|mac> "<reason up to 50 chars>"')
+print('              beaconbutty-fp.sh remove <ip|mac>')
 print()
 PYEOF

@@ -353,6 +353,15 @@ def run_daemon():
     log.info(f'Starting (tick={TICK_INTERVAL}s, health_every={HEALTH_CHECK_EVERY} ticks, '
              f'fan on>={FAN_ON_TEMP}C off<={FAN_OFF_TEMP}C)')
 
+    # Backfill: if we (re)started after midnight, yesterday's graph may have been missed
+    yesterday = date.today() - timedelta(days=1)
+    if _data_file(yesterday).exists() and not (GRAPH_DIR / f'{yesterday.isoformat()}.png').exists():
+        log.info(f'Backfilling missing graph for {yesterday}')
+        try:
+            generate_graph(yesterday)
+        except Exception as e:
+            log.error(f'Backfill generate_graph failed: {e}')
+
     tick      = HEALTH_CHECK_EVERY - 5  # skip immediate boot check; first check after 5 min
     last_date = date.today()
 

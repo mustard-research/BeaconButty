@@ -254,7 +254,7 @@ OK "ClickHouse data: ${CH_SIZE}"
 echo ""
 echo -e "${BOLD}Suricata IDS${RESET}"
 
-SURICATA_LOG_DIR="/var/lib/suricata/logs"
+SURICATA_LOG_DIR="/var/log/suricata"
 
 if ! command -v suricata &>/dev/null; then
     MEM_TOTAL_MB=$(awk '/MemTotal/ {printf "%.0f", $2/1024}' /proc/meminfo)

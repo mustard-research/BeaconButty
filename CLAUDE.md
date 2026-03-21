@@ -29,6 +29,7 @@ You have direct access to the live production system. Useful things to do:
 | `/var/lib/beaconbutty/false-positives.conf` | False positive registry |
 | `/var/log/beaconbutty/` | Operational logs (on log2ram) |
 | `/var/lib/clickhouse/logs/` | ClickHouse logs (on NVMe) |
+| `/var/lib/suricata/log/` | Suricata logs — eve.json, fast.log (on NVMe) |
 | `/opt/zeek/logs/` | Zeek daily log directories |
 | `/etc/rita/config.hjson` | RITA configuration |
 | `/etc/clickhouse-server/config.d/logs.xml` | ClickHouse log path override |

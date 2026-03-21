@@ -12,6 +12,9 @@ __pycache__/
 *.env
 secrets/
 
+# Claude Code (local permissions, machine-specific)
+.claude/
+
 # Editor
 .vscode/
 *.swp
