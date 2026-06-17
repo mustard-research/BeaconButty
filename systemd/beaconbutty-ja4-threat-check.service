@@ -1,0 +1,9 @@
+[Unit]
+Description=BeaconButty JA4 threat-intel scan
+After=zeek.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/beaconbutty-ja4-threat-check.py
+StandardOutput=append:/var/log/beaconbutty/ja4-threat.log
+StandardError=append:/var/log/beaconbutty/ja4-threat.log

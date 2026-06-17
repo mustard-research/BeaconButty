@@ -1,0 +1,11 @@
+[Unit]
+Description=BeaconButty external IP threat-intel refresh (Shodan + AbuseIPDB + Spamhaus DROP + Tor)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/beaconbutty-ip-intel.py
+StandardOutput=append:/var/log/beaconbutty/ip-intel.log
+StandardError=append:/var/log/beaconbutty/ip-intel.log
+TimeoutStartSec=600

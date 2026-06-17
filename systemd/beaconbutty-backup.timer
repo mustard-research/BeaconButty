@@ -1,0 +1,10 @@
+[Unit]
+Description=BeaconButty — daily config snapshot (02:00)
+Requires=beaconbutty-backup.service
+
+[Timer]
+OnCalendar=*-*-* 02:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

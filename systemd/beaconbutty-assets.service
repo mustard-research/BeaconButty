@@ -1,0 +1,9 @@
+[Unit]
+Description=BeaconButty LAN asset inventory scan
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/beaconbutty-assets.sh
+StandardOutput=append:/var/log/beaconbutty/assets.log
+StandardError=append:/var/log/beaconbutty/assets.log

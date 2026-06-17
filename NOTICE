@@ -1,0 +1,37 @@
+BeaconButty — third-party components and licensing notes
+==========================================================
+
+BeaconButty's own code is MIT-licensed; see LICENSE. The notes below
+cover the upstream tools and reference materials that BeaconButty
+relies on but does not ship.
+
+JA4 / JA4+ (FoxIO LLC)
+----------------------
+- The JA4 TLS fingerprinting algorithm is licensed under BSD-3. See
+  https://github.com/FoxIO-LLC/ja4 for the upstream specification.
+- JA4+ fingerprints (JA4S/JA4H/JA4X and related variants) are licensed
+  under the FoxIO License 1.1, which restricts commercial use.
+  BeaconButty's use of JA4+ in this repo is for non-commercial /
+  internal-use deployment only. Commercial users must obtain an OEM
+  licence from FoxIO (john@foxio.io).
+
+See docs/development/licensing.md for the full analysis.
+
+Suricata rules
+--------------
+Any Suricata rules loaded on top of config/local.rules (typically the
+Emerging Threats Open ruleset) are subject to their own licence terms.
+BeaconButty does not redistribute those rules.
+
+Upstream packages
+-----------------
+The following are installed from their own package repositories under
+their respective licences:
+
+- Zeek          — BSD-3
+- RITA          — GPL-3.0 (Active Countermeasures LLC)
+- ClickHouse    — Apache-2.0
+- Suricata      — GPL-2.0
+- dnsmasq       — GPL-2.0
+- fail2ban      — GPL-2.0
+- log2ram       — GPL-3.0

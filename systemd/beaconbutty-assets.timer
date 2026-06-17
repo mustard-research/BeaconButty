@@ -1,0 +1,9 @@
+[Unit]
+Description=BeaconButty LAN asset scan — every 6 hours
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=6h
+
+[Install]
+WantedBy=timers.target

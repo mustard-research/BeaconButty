@@ -1,0 +1,350 @@
+{% extends "base.html" %}
+{% from "_intel_badge.html" import intel_badge %}
+{% block title %}Slow Beacons{% endblock %}
+
+{% block content %}
+{% set n = payload.candidates | length %}
+{% set elig = payload.eligible_total or 0 %}
+<div class="page-header">
+  <div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;">
+    <h1 style="margin:0;">Slow-Cadence Beacons</h1>
+    <span style="font-size:28px;font-weight:600;font-variant-numeric:tabular-nums;
+                 color:{% if elig == 0 %}var(--green){% elif elig <= 3 %}var(--yellow){% else %}var(--red){% endif %};"
+          title="Candidates that would Slack-page: sole LAN talker AND non-hyperscaler dst">
+      {{ elig }}
+    </span>
+    <span class="text-dim" style="font-size:13px;">alert-eligible</span>
+    <span class="text-dim" style="font-size:13px;">·</span>
+    <span style="font-size:18px;font-weight:500;font-variant-numeric:tabular-nums;color:var(--text-dim);"
+          title="All candidates that survived the FP filter (hunt surface)">
+      {{ n }}
+    </span>
+    <span class="text-dim" style="font-size:13px;">total hunt candidate{{ '' if n == 1 else 's' }}</span>
+  </div>
+  <p>Cross-day low-rate periodic egress — fills RITA's sleep-cycle blind spot.
+    A candidate becomes a Slack alert only when it's the <strong>sole LAN
+    device</strong> talking to a <strong>non-hyperscaler</strong> destination —
+    the strongest "this is not just SaaS" signal we have. Everything else stays
+    on this page as a hunting surface.
+    {% if payload.generated_at %}
+      <span class="text-dim">Generated {{ payload.generated_at }} —
+      window {{ payload.window_days }} days.</span>
+    {% endif %}
+  </p>
+</div>
+
+<div class="card">
+  <div class="card-title">
+    Slow-Cadence Candidates <small>{{ payload.window_days }}-day window · cross-DB correlator</small>
+    {% if n == 0 %}
+      <span class="badge badge-ok">0</span>
+    {% elif n <= 25 %}
+      <span class="badge badge-low">{{ n }}</span>
+    {% elif n <= 100 %}
+      <span class="badge badge-warn">{{ n }}</span>
+    {% else %}
+      <span class="badge badge-high">{{ n }}</span>
+    {% endif %}
+    <span style="margin-left:auto;font-weight:400;font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.04em;">Hunt</span>
+  </div>
+
+  <p style="font-size:13px;color:var(--text-dim);margin-bottom:12px;">
+    Pairs surviving the filter:
+    <span class="mono">days&nbsp;≥&nbsp;{{ payload.thresholds.min_days_seen if payload.thresholds else '5' }}</span>,
+    <span class="mono">conns/active&nbsp;day&nbsp;≤&nbsp;{{ payload.thresholds.max_conns_per_active_day if payload.thresholds else '6' }}</span>,
+    <span class="mono">≥&nbsp;{{ ((payload.thresholds.min_hour_consistency if payload.thresholds else 0.7) * 100) | round | int }}%</span>
+    of timestamps within ±1h of the modal hour. Lower&nbsp;CV&nbsp;= tighter
+    inter-arrival cadence; that's the column that matters most for spotting
+    machine-driven check-ins among human-driven traffic.
+  </p>
+
+  {% if payload.groups %}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th title="🚨 = would Slack-alert (sole LAN talker, non-hyperscaler dst)">!</th>
+          <th>Destination</th>
+          <th>Host <small class="text-dim" style="font-weight:400;">(SNI / HTTP)</small></th>
+          <th class="num">Port</th>
+          <th class="num" title="Distinct days the pair appeared in window">Days</th>
+          <th class="num" title="Average connections per active day">Conns/day</th>
+          <th class="num" title="Distinct LAN devices that talked to this dst+port across the window. 1 = lonely (one ingredient of alert-eligibility); higher = shared SaaS endpoint">LAN</th>
+          <th class="num" title="Modal hour (UTC) of all timestamps">Modal&nbsp;hr</th>
+          <th title="Fraction of timestamps within ±1h of the modal hour">Hour&nbsp;consistency</th>
+          <th class="num" title="Coefficient of variation of inter-arrival intervals — lower = more regular cadence">CV</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for g in payload.groups %}
+        <tr style="background:rgba(88,166,255,0.06);border-top:2px solid var(--border);">
+          <td colspan="10" style="padding:10px 12px;">
+            <span class="mono" style="font-weight:600;font-size:14px;">{{ g.src_label or g.src }}</span>
+            <span class="badge {% if g.dst_count >= 10 %}badge-high{% elif g.dst_count >= 5 %}badge-warn{% else %}badge-low{% endif %}" style="margin-left:10px;"
+                  title="Distinct destination IPs{% if g.count != g.dst_count %}; {{ g.count }} dst+port rows below — one dst was hit on several ports{% endif %}">
+              {{ g.dst_count }} destination{{ '' if g.dst_count == 1 else 's' }}{% if g.count != g.dst_count %} · {{ g.count }} ports{% endif %}
+            </span>
+            {% if g.eligible_count %}
+              <span class="badge badge-high" style="margin-left:6px;" title="Candidates that would Slack-page">
+                🚨 {{ g.eligible_count }} alert-eligible
+              </span>
+            {% endif %}
+            {% if g.dst_count >= 5 %}
+              <span class="text-dim" style="margin-left:8px;font-size:12px;">→ FP&nbsp;src is more efficient than {{ g.dst_count }} domain entries</span>
+            {% endif %}
+          </td>
+          <td style="padding:6px 8px;">
+            <form method="post" action="{{ url_for('fps_add') }}"
+                  onsubmit="return slowFpSrcConfirm(this);">
+              <input type="hidden" name="addr"   value="{{ g.src }}">
+              <input type="hidden" name="reason" value="">
+              <input type="hidden" name="next"   value="{{ url_for('beacons_slow') }}">
+              <button type="submit" class="btn btn-sm" style="width:100%;"
+                      title="Suppress this entire source LAN device">
+                FP&nbsp;src
+              </button>
+            </form>
+          </td>
+        </tr>
+        {% for c in g.rows %}
+        {# Persistence colour: 14/14 = red, 10–13 = yellow, otherwise dim. #}
+        {% if c.days_seen >= 14 %}
+          {% set days_cls = 'badge-high' %}
+        {% elif c.days_seen >= 10 %}
+          {% set days_cls = 'badge-warn' %}
+        {% else %}
+          {% set days_cls = 'badge-none' %}
+        {% endif %}
+
+        {# Cadence regularity by CV: lower = more beacon-like. #}
+        {% if c.interval_cv is not none and c.interval_cv <= 0.10 %}
+          {% set cv_cls = 'badge-high' %}{% set cv_lbl = 'very regular' %}
+        {% elif c.interval_cv is not none and c.interval_cv <= 0.30 %}
+          {% set cv_cls = 'badge-warn' %}{% set cv_lbl = 'regular' %}
+        {% elif c.interval_cv is not none and c.interval_cv <= 0.60 %}
+          {% set cv_cls = 'badge-low' %}{% set cv_lbl = 'irregular' %}
+        {% else %}
+          {% set cv_cls = 'badge-none' %}{% set cv_lbl = 'noisy' %}
+        {% endif %}
+
+        {# Hour-consistency bar colour mirrors CV intent. #}
+        {% set hc_pct = (c.hour_consistency * 100) | round | int %}
+        {% if c.hour_consistency >= 0.95 %}
+          {% set bar_cls = 'bar-err' %}
+        {% elif c.hour_consistency >= 0.85 %}
+          {% set bar_cls = 'bar-warn' %}
+        {% else %}
+          {% set bar_cls = 'bar-ok' %}
+        {% endif %}
+
+        <tr{% if not c.alert_eligible %} style="opacity:0.78;"{% endif %}>
+          <td class="num" style="padding:6px 6px;">
+            {% if c.alert_eligible %}
+              <span title="Alert-eligible: sole LAN talker AND non-hyperscaler dst — would Slack-page on first detection"
+                    style="font-size:14px;">🚨</span>
+            {% else %}
+              <span class="text-dim"
+                    title="{% if c.is_hyperscaler %}Demoted: dst ASN is a hyperscaler / major CDN ({{ c.dst_org }}){% endif %}{% if c.lan_talkers and c.lan_talkers > 1 %}{% if c.is_hyperscaler %} · {% endif %}Demoted: {{ c.lan_talkers }} LAN devices share this dst (not lonely){% endif %}"
+                    style="font-size:11px;">·</span>
+            {% endif %}
+          </td>
+          <td class="mono" style="font-size:12px;">
+            {{ c.dst }}{{ intel_badge(c.intel) }}
+            {% if c.dst_org %}
+              <div class="text-dim" style="font-size:10px;margin-top:2px;font-family:inherit;">
+                {% if c.is_hyperscaler %}<span title="Recognised hyperscaler / major CDN">☁️ </span>{% endif %}{{ c.dst_org }}{% if c.dst_cc %} <span style="opacity:0.7;">· {{ c.dst_cc }}</span>{% endif %}
+              </div>
+            {% endif %}
+          </td>
+          <td style="font-size:12px;max-width:320px;">
+            {% if c.sni %}
+              <div class="mono" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ c.sni }}</div>
+            {% elif c.http_host %}
+              <div class="mono" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
+                   title="HTTP Host header (no SNI — this is plain HTTP traffic){% if c.http_hosts and c.http_hosts|length > 1 %}&#10;Other hosts on this dst: {{ c.http_hosts | reject('equalto', c.http_host) | join(', ') }}{% endif %}">
+                {{ c.http_host }}
+                {% if c.http_hosts and c.http_hosts|length > 1 %}
+                  <span class="text-dim" style="font-family:inherit;font-size:10px;">+{{ c.http_hosts|length - 1 }}</span>
+                {% endif %}
+              </div>
+            {% elif c.dst_org %}
+              <span class="text-dim" style="font-style:italic;" title="No SNI or HTTP Host — showing ASN owner from GeoIP">no host · {{ c.dst_org }}</span>
+            {% else %}
+              <span class="text-dim">—</span>
+            {% endif %}
+            {% if c.http_useragent or c.http_uri_sample or c.http_method_mix %}
+              <div class="text-dim" style="font-size:10px;margin-top:3px;line-height:1.4;">
+                {% if c.http_method_mix %}<span title="HTTP method mix">{{ c.http_method_mix }}</span>{% endif %}
+                {% if c.http_useragent %}
+                  {% if c.http_method_mix %} · {% endif %}
+                  <span class="mono" title="Most common User-Agent">{{ c.http_useragent[:60] }}{% if c.http_useragent|length > 60 %}…{% endif %}</span>
+                {% endif %}
+                {% if c.http_uri_sample %}
+                  <div class="mono" style="margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
+                       title="Most common URI prefix">{{ c.http_uri_sample }}</div>
+                {% endif %}
+              </div>
+            {% endif %}
+          </td>
+          <td class="num">{{ c.dst_port }}</td>
+          <td class="num">
+            <span class="badge {{ days_cls }}">{{ c.days_seen }}</span>
+          </td>
+          <td class="num" style="font-weight:600;">{{ c.conns_per_active_day }}</td>
+          <td class="num">
+            {% if c.lan_talkers == 1 %}
+              <span class="badge badge-high" title="Sole LAN device talking to this dst — strong implant-style signal">1</span>
+            {% elif c.lan_talkers and c.lan_talkers <= 3 %}
+              <span class="badge badge-warn" title="Only {{ c.lan_talkers }} devices share this dst">{{ c.lan_talkers }}</span>
+            {% elif c.lan_talkers %}
+              <span class="badge badge-none" title="{{ c.lan_talkers }} LAN devices share this dst — likely shared SaaS endpoint">{{ c.lan_talkers }}</span>
+            {% else %}
+              <span class="text-dim">—</span>
+            {% endif %}
+          </td>
+          <td class="num text-dim" style="font-size:12px;">{{ '%02d:00' | format(c.modal_hour_utc) }}</td>
+          <td>
+            <div class="score-bar">
+              <span class="score-num">{{ hc_pct }}%</span>
+              <div class="bar-container">
+                <div class="bar-fill {{ bar_cls }}" style="width: {{ hc_pct }}%"></div>
+              </div>
+            </div>
+          </td>
+          <td class="num">
+            {% if c.interval_cv is not none %}
+              <span class="badge {{ cv_cls }}" title="{{ cv_lbl }}">{{ '%.2f' | format(c.interval_cv) }}</span>
+            {% else %}
+              <span class="text-dim">—</span>
+            {% endif %}
+          </td>
+          <td style="white-space:nowrap;">
+            {% if c.sni %}
+              {% set dest_default = '*.' ~ (c.sni.split('.', 1)[1] if '.' in c.sni else c.sni) %}
+            {% elif c.http_host %}
+              {% set dest_default = '*.' ~ (c.http_host.split('.', 1)[1] if '.' in c.http_host else c.http_host) %}
+            {% else %}
+              {% set dest_default = c.dst %}
+            {% endif %}
+            <button type="button" class="btn btn-sm" style="width:100%;"
+                    data-pattern="{{ dest_default }}"
+                    data-reason="{{ c.dst_org or '' }}"
+                    onclick="slowFpOpenDst(this)"
+                    title="Suppress this destination — pattern is editable">
+              FP&nbsp;dst
+            </button>
+          </td>
+        </tr>
+        {% endfor %}
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="empty-state" style="padding:24px;">
+    <p class="text-dim">No slow-cadence candidates in the current window. Either nothing in the LAN is checking in on a regular long-interval schedule, or every such pair is already covered by the false-positive registry.</p>
+  </div>
+  {% endif %}
+</div>
+
+{# ── Destination FP dialog ── #}
+<div id="sfp-dialog" style="display:none;position:fixed;inset:0;z-index:1100;background:rgba(0,0,0,.5);align-items:center;justify-content:center;">
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:24px;width:380px;max-width:90vw;">
+    <div style="font-weight:600;margin-bottom:6px;">Add False Positive</div>
+    <div style="font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px;">Destination pattern <span style="text-transform:none;letter-spacing:0;font-weight:400;">(editable — generalise with <code>*.parent.tld</code> if needed)</span></div>
+    <input id="sfp-pattern" class="mono" type="text" oninput="slowFpUpdateSubmitEnabled()"
+           style="width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:13px;margin-bottom:16px;">
+    <label style="display:block;font-size:13px;margin-bottom:6px;">Reason <span style="color:var(--text-dim)">(required)</span></label>
+    <input id="sfp-reason" type="text" maxlength="50" placeholder="e.g. Amazon.com Inc."
+           oninput="slowFpUpdateSubmitEnabled()"
+           style="width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:13px;margin-bottom:16px;">
+    <div id="sfp-msg" style="display:none;font-size:12px;color:var(--text-dim);margin-bottom:10px;"></div>
+    <div style="display:flex;gap:10px;justify-content:flex-end;">
+      <button onclick="slowFpClose()" class="btn">Cancel</button>
+      <button id="sfp-submit" onclick="slowFpSubmit()" class="btn btn-primary" disabled>Add FP</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// Destination FP — pattern + reason editable in a modal. Submission goes
+// via fetch so we can fade the originating row out for instant feedback
+// instead of full-page redirecting (matches the network.html flow).
+var _sfpBtn = null;
+
+function slowFpOpenDst(btn) {
+  _sfpBtn = btn;
+  document.getElementById('sfp-pattern').value = btn.dataset.pattern || '';
+  document.getElementById('sfp-reason').value  = btn.dataset.reason  || '';
+  document.getElementById('sfp-msg').style.display = 'none';
+  slowFpUpdateSubmitEnabled();
+  document.getElementById('sfp-dialog').style.display = 'flex';
+  var rea = document.getElementById('sfp-reason');
+  setTimeout(function() { rea.focus(); rea.select(); }, 50);
+}
+
+function slowFpUpdateSubmitEnabled() {
+  var pat    = document.getElementById('sfp-pattern').value.trim();
+  var reason = document.getElementById('sfp-reason').value.trim();
+  document.getElementById('sfp-submit').disabled = !pat || !reason;
+}
+
+function slowFpClose() {
+  document.getElementById('sfp-dialog').style.display = 'none';
+  _sfpBtn = null;
+}
+
+function slowFpSubmit() {
+  var pat    = document.getElementById('sfp-pattern').value.trim();
+  var reason = document.getElementById('sfp-reason').value.trim();
+  if (!pat)    { document.getElementById('sfp-pattern').focus(); return; }
+  if (!reason) { document.getElementById('sfp-reason').focus(); return; }
+  document.getElementById('sfp-submit').disabled = true;
+
+  var fd = new FormData();
+  fd.append('pattern', pat);
+  fd.append('reason', reason);
+
+  fetch('{{ url_for("fps_add_domain") }}', {method: 'POST', body: fd})
+    .then(function(r) { return {ok: r.ok}; })
+    .then(function(data) {
+      if (data.ok) {
+        if (_sfpBtn) {
+          var tr = _sfpBtn.closest('tr');
+          if (tr) {
+            tr.style.transition = 'opacity .4s';
+            tr.style.opacity = '0.25';
+          }
+        }
+        var msg = document.getElementById('sfp-msg');
+        msg.textContent = 'FP added — will be suppressed on next page load.';
+        msg.style.display = 'block';
+        setTimeout(slowFpClose, 1500);
+      } else {
+        document.getElementById('sfp-submit').disabled = false;
+      }
+    })
+    .catch(function() {
+      document.getElementById('sfp-submit').disabled = false;
+    });
+}
+
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape' && document.getElementById('sfp-dialog').style.display !== 'none') {
+    slowFpClose();
+  }
+});
+
+// Source FP — adds the LAN source IP/MAC, no pattern editing.
+function slowFpSrcConfirm(form) {
+  const addr = form.elements['addr'].value;
+  const reason = window.prompt(
+    'Suppress source ' + addr + ' entirely.\n\nReason (≤50 chars):'
+  );
+  if (reason === null || reason.trim() === '') return false;
+  form.elements['reason'].value = reason.trim();
+  return true;
+}
+</script>
+{% endblock %}

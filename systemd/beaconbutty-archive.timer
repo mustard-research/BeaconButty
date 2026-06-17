@@ -1,0 +1,11 @@
+[Unit]
+Description=BeaconButty — weekly full archive (Sunday 03:00)
+Requires=beaconbutty-archive.service
+
+[Timer]
+OnCalendar=Sun *-*-* 03:00:00
+Persistent=true
+RandomizedDelaySec=5m
+
+[Install]
+WantedBy=timers.target

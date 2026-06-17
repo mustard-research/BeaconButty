@@ -1,0 +1,672 @@
+#!/usr/bin/env python3
+"""
+bb-watchdog — thermal & health watchdog for bb0 (Raspberry Pi 5)
+
+Modes:
+  bb-watchdog           daemon mode (managed by systemd)
+  bb-watchdog status    show health issues and reset LEDs to normal
+
+Daemon behaviour:
+  Every 60 s   : record (time, temp_c, cpu_pct, rpi_fan, pironman_fan) to daily JSON
+  Every 30 min : run beaconbutty-health.sh; set LEDs red on failure
+  Just after midnight : generate temperature/fan graph for the previous day
+
+Data lives in /var/lib/beaconbutty/watchdog/
+"""
+
+import json
+import logging
+import os
+import signal
+import subprocess
+import sys
+import time
+from datetime import datetime, date, timedelta
+from glob import glob
+from pathlib import Path
+
+# ── Paths ─────────────────────────────────────────────────────────────────────
+WATCHDOG_DIR  = Path('/var/lib/beaconbutty/watchdog')
+DATA_DIR      = WATCHDOG_DIR / 'data'
+GRAPH_DIR     = WATCHDOG_DIR / 'graphs'
+STATUS_FILE   = WATCHDOG_DIR / 'health-status.json'
+HEALTH_SCRIPT = Path('/usr/local/bin/beaconbutty-health.sh')
+LED_STATE     = Path('/var/lib/beaconbutty/watchdog/led-state.json')
+ALERT_SCRIPT  = Path('/usr/local/bin/beaconbutty-alert.sh')
+
+# High-CPU detector — baseline mean over a day is ~27%; the 2026-06-15
+# 16:13 event sustained >60% for 214 minutes, which is what we want
+# the alarm to catch. Window 60 min @ 60s ticks = 60 samples. Threshold
+# 60% mean. After firing, we suppress re-alerts for 4 h unless the
+# trailing window falls below the reset threshold first.
+HIGH_CPU_STATE_FILE  = WATCHDOG_DIR / 'high-cpu-state.json'
+HIGH_CPU_EVENTS_DIR  = WATCHDOG_DIR / 'high-cpu-events'
+HIGH_CPU_WINDOW_MIN  = 60     # rolling window length in samples (= 60 min @ 60s tick)
+HIGH_CPU_THRESHOLD   = 60.0   # alert if window mean >= this
+HIGH_CPU_RESET_BELOW = 50.0   # clear elevated state when 30-min mean drops below this
+HIGH_CPU_REALERT_H   = 4      # re-alert no more often than every N hours while still hot
+
+TICK_INTERVAL      = 60   # seconds between data records
+HEALTH_CHECK_EVERY = 30   # ticks between health checks
+
+# ── Pironman5 GPIO fan control ────────────────────────────────────────────────
+# bb0-display.py owns GPIO 6 and reads /var/lib/beaconbutty/watchdog/fan-state to decide fan state.
+# Writing "on" or "off" to that file is all we need to do.
+#
+# The webapp can also drop a fan-override.json to force the fan ON or OFF for a
+# bounded time; while that override is valid we skip the temperature-based
+# hysteresis and just re-assert the manual state each tick.
+FAN_STATE     = Path('/var/lib/beaconbutty/watchdog/fan-state')
+FAN_OVERRIDE  = Path('/var/lib/beaconbutty/watchdog/fan-override.json')
+FAN_ON_TEMP   = 60.0 # turn fan ON at or above this temperature (°C)
+FAN_OFF_TEMP  = 55.0 # turn fan OFF at or below this temperature (°C)
+
+_fan_on = False # our current commanded fan state
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s bb-watchdog %(levelname)s: %(message)s',
+    datefmt='%Y-%m-%dT%H:%M:%S',
+    stream=sys.stdout,
+)
+log = logging.getLogger('bb-watchdog')
+
+# ── Sensor reads ──────────────────────────────────────────────────────────────
+def read_temperature() -> float:
+    """CPU temperature in degrees C from thermal_zone0."""
+    try:
+        raw = Path('/sys/class/thermal/thermal_zone0/temp').read_text().strip()
+        return round(int(raw) / 1000.0, 1)
+    except Exception as e:
+        log.warning(f'read_temperature failed: {e}')
+        return 0.0
+
+
+def read_fan_states() -> tuple:
+    """Return (rpi_fan_on, pironman_fan_on).
+    RPi official fan: from cooling_device0/cur_state.
+    Pironman5 fan: from _fan_on (we write /var/lib/beaconbutty/watchdog/fan-state; bb0-display.py applies it).
+    """
+    try:
+        cur = int(Path('/sys/class/thermal/cooling_device0/cur_state').read_text().strip())
+        rpi_fan = cur > 0
+    except Exception as e:
+        log.warning(f'read_fan_states failed: {e}')
+        rpi_fan = False
+    return rpi_fan, _fan_on
+
+
+# Prior /proc/stat reading, used to compute a busy % over the last tick interval.
+_prev_cpu_idle = None
+_prev_cpu_total = None
+
+
+def read_cpu_pct():
+    """Return system-wide CPU busy % since the previous call, or None on first
+    call / error. Uses /proc/stat so the tick isn't blocked for sampling."""
+    global _prev_cpu_idle, _prev_cpu_total
+    try:
+        fields = Path('/proc/stat').read_text().splitlines()[0].split()
+        # cpu  user nice system idle iowait irq softirq steal guest guest_nice
+        vals = [int(x) for x in fields[1:]]
+        idle = sum(vals[3:5])  # idle + iowait
+        total = sum(vals)
+    except Exception as e:
+        log.warning(f'read_cpu_pct failed: {e}')
+        return None
+    prev_idle, prev_total = _prev_cpu_idle, _prev_cpu_total
+    _prev_cpu_idle, _prev_cpu_total = idle, total
+    if prev_total is None or total <= prev_total:
+        return None
+    return round(100.0 * (1 - (idle - prev_idle) / (total - prev_total)), 1)
+
+# ── LED control ───────────────────────────────────────────────────────────────
+def _write_led(state: dict):
+    try:
+        LED_STATE.write_text(json.dumps(state))
+    except Exception as e:
+        log.warning(f'LED write failed: {e}')
+
+
+def led_alert():
+    _write_led({'enable': True, 'color': '#ff0000',
+                'brightness': 100, 'style': 'solid', 'speed': 50})
+    log.info('LED -> red solid (health alert)')
+
+
+def led_ok():
+    _write_led({'enable': True, 'color': '#00ff00',
+                'brightness': 100, 'style': 'breathing', 'speed': 75})
+    log.info('LED -> green breathing (OK)')
+
+# ── Daily data file ───────────────────────────────────────────────────────────
+def _data_file(d: date) -> Path:
+    return DATA_DIR / f'{d.isoformat()}.json'
+
+
+def append_record(d: date, record: dict):
+    """Append one record to the day's JSON file."""
+    path = _data_file(d)
+    if path.exists():
+        try:
+            data = json.loads(path.read_text())
+        except Exception:
+            data = {'date': d.isoformat(), 'records': []}
+    else:
+        data = {'date': d.isoformat(), 'records': []}
+    data['records'].append(record)
+    path.write_text(json.dumps(data, separators=(',', ':')))
+
+# ── High-CPU detector ─────────────────────────────────────────────────────────
+def _recent_cpu_samples(today: date, count: int) -> list:
+    """Return the most recent <count> cpu_pct values, drawing from today's
+    file and yesterday's if needed (covers a window that straddles midnight).
+    None entries are skipped — we still need <count> valid samples to act."""
+    samples: list = []
+    for d in (today, today - timedelta(days=1)):
+        p = _data_file(d)
+        if not p.exists():
+            continue
+        try:
+            recs = json.loads(p.read_text()).get('records', [])
+        except Exception:
+            continue
+        # Walk records newest-first; prepend so final ordering is oldest-first
+        for r in reversed(recs):
+            c = r.get('cpu_pct')
+            if c is not None:
+                samples.insert(0, c)
+                if len(samples) >= count:
+                    return samples
+    return samples
+
+
+def _load_high_cpu_state() -> dict:
+    if HIGH_CPU_STATE_FILE.exists():
+        try:
+            return json.loads(HIGH_CPU_STATE_FILE.read_text())
+        except Exception:
+            pass
+    return {'in_elevated_state': False, 'last_alert_ts': None}
+
+
+def _save_high_cpu_state(state: dict) -> None:
+    try:
+        HIGH_CPU_STATE_FILE.write_text(json.dumps(state, indent=2))
+    except Exception as e:
+        log.warning(f'Could not persist high-CPU state: {e}')
+
+
+def _capture_high_cpu_diagnostic(window_mean: float) -> dict:
+    """Snapshot top processes, load avg, and known background jobs so the
+    operator can tell at-a-glance what's holding CPU."""
+    now = datetime.now()
+    diag: dict = {
+        'time': now.isoformat(timespec='seconds'),
+        'window_mean_cpu_pct': round(window_mean, 1),
+        'load_avg': None,
+        'top_processes': [],
+        'active_background_jobs': [],
+    }
+
+    # 1-/5-/15-min load average
+    try:
+        diag['load_avg'] = Path('/proc/loadavg').read_text().split()[:3]
+    except Exception:
+        pass
+
+    # Top 5 by CPU% (single ps snapshot — cheap, but %CPU here is the
+    # cumulative-since-start figure for each process, not a delta; that's
+    # OK because the worst offender's %CPU still tends to dominate)
+    try:
+        out = subprocess.run(
+            ['ps', '-eo', 'pid,user,%cpu,%mem,comm', '--sort=-%cpu'],
+            capture_output=True, text=True, timeout=10,
+        )
+        for line in out.stdout.splitlines()[1:6]:
+            parts = line.split(None, 4)
+            if len(parts) == 5:
+                pid, user, cpu, mem, comm = parts
+                diag['top_processes'].append({
+                    'pid': pid, 'user': user, 'cpu_pct': cpu,
+                    'mem_pct': mem, 'comm': comm,
+                })
+    except Exception as e:
+        log.warning(f'ps snapshot failed: {e}')
+
+    # Background units that legitimately spike CPU — if one of these is
+    # "active" the elevated period is probably expected work, not an anomaly
+    KNOWN_HEAVY = [
+        'rita-analyze.service', 'beacon-report.service',
+        'beaconbutty-housekeeping.service', 'beaconbutty-backup.service',
+        'beaconbutty-archive.service', 'suricata-update.service',
+        'geoipupdate.service', 'beaconbutty-ip-intel.service',
+    ]
+    for unit in KNOWN_HEAVY:
+        try:
+            r = subprocess.run(
+                ['systemctl', 'is-active', '--quiet', unit],
+                timeout=5,
+            )
+            if r.returncode == 0:
+                diag['active_background_jobs'].append(unit)
+        except Exception:
+            continue
+
+    # Persist for forensics
+    HIGH_CPU_EVENTS_DIR.mkdir(parents=True, exist_ok=True)
+    out_path = HIGH_CPU_EVENTS_DIR / (now.strftime('%Y%m%dT%H%M%S') + '.json')
+    try:
+        out_path.write_text(json.dumps(diag, indent=2))
+        diag['_path'] = str(out_path)
+    except Exception as e:
+        log.warning(f'Diagnostic write failed: {e}')
+
+    return diag
+
+
+def _send_high_cpu_alert(diag: dict) -> None:
+    """Fire one Slack alert via the standard alert pipeline. Keep the
+    detail string stable per logical finding so Lambda dedup works —
+    only the top consumer's comm goes in; counts/timestamps do not.
+    See feedback_lambda_dedup.md."""
+    if not ALERT_SCRIPT.exists():
+        log.warning(f'Alert script not found: {ALERT_SCRIPT}')
+        return
+    top_comm = (diag['top_processes'][0]['comm']
+                if diag.get('top_processes') else 'unknown')
+    bg = ','.join(diag.get('active_background_jobs') or []) or 'none'
+    detail = (f"CPU mean ≥{HIGH_CPU_THRESHOLD:.0f}% for {HIGH_CPU_WINDOW_MIN} min "
+              f"— top consumer: {top_comm}; active jobs: {bg}")
+    try:
+        subprocess.run(
+            [str(ALERT_SCRIPT), 'sustained_high_cpu', 'medium', 'bb0', detail],
+            capture_output=True, text=True, timeout=15,
+        )
+        log.warning(f'High-CPU alert sent: {detail}')
+    except Exception as e:
+        log.error(f'Alert send failed: {e}')
+
+
+def check_high_cpu(today: date) -> None:
+    """One tick of the sustained-high-CPU detector."""
+    state = _load_high_cpu_state()
+    samples = _recent_cpu_samples(today, HIGH_CPU_WINDOW_MIN)
+    if len(samples) < HIGH_CPU_WINDOW_MIN:
+        return  # not enough history yet
+
+    mean = sum(samples) / len(samples)
+
+    # Clear elevated state when the trailing 30-min mean falls below the reset line
+    if state.get('in_elevated_state'):
+        recent30 = samples[-30:]
+        if recent30 and (sum(recent30) / len(recent30)) < HIGH_CPU_RESET_BELOW:
+            log.info(f'High-CPU state cleared (30-min mean {sum(recent30)/30:.1f}% < {HIGH_CPU_RESET_BELOW})')
+            state['in_elevated_state'] = False
+            _save_high_cpu_state(state)
+
+    if mean < HIGH_CPU_THRESHOLD:
+        return
+
+    # We're hot. Should we alert?
+    now = datetime.now()
+    last_ts = state.get('last_alert_ts')
+    suppress = False
+    if last_ts:
+        try:
+            age = (now - datetime.fromisoformat(last_ts)).total_seconds()
+            suppress = (age < HIGH_CPU_REALERT_H * 3600)
+        except Exception:
+            suppress = False
+    if state.get('in_elevated_state') and suppress:
+        return  # already alerted recently for the same elevated period
+
+    diag = _capture_high_cpu_diagnostic(mean)
+    _send_high_cpu_alert(diag)
+    state['in_elevated_state'] = True
+    state['last_alert_ts'] = now.isoformat(timespec='seconds')
+    _save_high_cpu_state(state)
+
+# ── Health check ──────────────────────────────────────────────────────────────
+def run_health_check():
+    """Run beaconbutty-health.sh, persist result, alert LED on failure."""
+    if not HEALTH_SCRIPT.exists():
+        log.warning(f'Health script not found: {HEALTH_SCRIPT}')
+        return
+
+    try:
+        result = subprocess.run(
+            ["sudo", str(HEALTH_SCRIPT)],
+            capture_output=True, text=True, timeout=60,
+        )
+    except Exception as e:
+        log.error(f'Health check subprocess error: {e}')
+        return
+
+    output = result.stdout + result.stderr
+    # Match only lines that contain the actual fail/warn marker characters.
+    # The health script emits '  ✗  ...' for failures and '  !  ...' for warnings.
+    failures = [line.strip() for line in output.splitlines() if '✗' in line]
+    warnings  = [line.strip() for line in output.splitlines() if '  !  ' in line]
+
+    has_issues = result.returncode != 0 or bool(failures)
+    now_str = datetime.now().isoformat(timespec='seconds')
+
+    status = {
+        'last_check': now_str,
+        'exit_code': result.returncode,
+        'status': 'issues' if has_issues else 'ok',
+        'failures': failures,
+        'warnings': warnings,
+        'led_alert': has_issues,
+    }
+
+    try:
+        STATUS_FILE.write_text(json.dumps(status, indent=2))
+    except Exception as e:
+        log.warning(f'Could not write health status: {e}')
+
+    if has_issues:
+        log.warning(f'Health check: {len(failures)} failure(s), {len(warnings)} warning(s)')
+        for line in failures:
+            log.warning(f'  FAIL: {line}')
+        led_alert()
+    else:
+        log.info(f'Health check OK (warnings: {len(warnings)})')
+
+# ── Graph generation ──────────────────────────────────────────────────────────
+def generate_graph(d: date):
+    """Generate a PNG temperature/fan-activity graph for the given date."""
+    import numpy as np
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    import matplotlib.dates as mdates
+
+    path = _data_file(d)
+    if not path.exists():
+        log.warning(f'generate_graph: no data file for {d}')
+        return
+
+    try:
+        records = json.loads(path.read_text()).get('records', [])
+    except Exception as e:
+        log.error(f'generate_graph: failed to load {path}: {e}')
+        return
+
+    if not records:
+        log.warning(f'generate_graph: no records for {d}')
+        return
+
+    times    = [datetime.fromisoformat(r['time']) for r in records]
+    temps    = [r['temp_c'] for r in records]
+    rpi_fan  = np.array([1.0 if r.get('rpi_fan')     else 0.0 for r in records])
+    p5_fan   = np.array([1.0 if r.get('pironman_fan') else 0.0 for r in records])
+
+    min_temp = min(temps)
+    max_temp = max(temps)
+    min_idx  = temps.index(min_temp)
+    max_idx  = temps.index(max_temp)
+
+    BG_DARK  = '#1a1a2e'
+    BG_PANEL = '#16213e'
+    FG       = '#cccccc'
+
+    fig, (ax_t, ax_f) = plt.subplots(
+        2, 1, figsize=(14, 7),
+        gridspec_kw={'height_ratios': [4, 1]},
+        sharex=True,
+    )
+    fig.patch.set_facecolor(BG_DARK)
+
+    for ax in (ax_t, ax_f):
+        ax.set_facecolor(BG_PANEL)
+        ax.tick_params(colors=FG, labelsize=8)
+        ax.xaxis.label.set_color(FG)
+        ax.yaxis.label.set_color(FG)
+        for spine in ax.spines.values():
+            spine.set_edgecolor('#334455')
+
+    # Temperature trace
+    ax_t.plot(times, temps, color='#ff7040', linewidth=1.5, label='CPU temp', zorder=3)
+    ax_t.axhline(min_temp, color='#40a0ff', linestyle='--', alpha=0.5, linewidth=1)
+    ax_t.axhline(max_temp, color='#ff4040', linestyle='--', alpha=0.5, linewidth=1)
+
+    # Min annotation (place label above or below depending on position)
+    ax_t.annotate(
+        f'Min {min_temp:.1f}C',
+        xy=(times[min_idx], min_temp),
+        xytext=(6, 6), textcoords='offset points',
+        fontsize=8, color='#40a0ff',
+        arrowprops=dict(arrowstyle='->', color='#40a0ff', lw=0.8),
+    )
+    ax_t.annotate(
+        f'Max {max_temp:.1f}C',
+        xy=(times[max_idx], max_temp),
+        xytext=(6, -14), textcoords='offset points',
+        fontsize=8, color='#ff4040',
+        arrowprops=dict(arrowstyle='->', color='#ff4040', lw=0.8),
+    )
+
+    ax_t.set_ylabel('Temperature (C)', color=FG)
+    ax_t.set_title(f'BeaconButty Thermal Log  {d.isoformat()}',
+                   fontsize=12, color='#eeeeee', pad=8)
+    ax_t.grid(True, alpha=0.2, color='#445566')
+    ax_t.legend(loc='upper right', fontsize=8,
+                facecolor=BG_DARK, labelcolor=FG, edgecolor='#445566')
+
+    # Fan activity bars
+    ax_f.fill_between(times, 0.55, 0.95, where=rpi_fan > 0,
+                      color='#3a9ad9', alpha=0.85, step='pre', label='RPi fan')
+    ax_f.fill_between(times, 0.05, 0.45, where=p5_fan > 0,
+                      color='#3ab868', alpha=0.85, step='pre', label='Pironman5 fan')
+
+    ax_f.set_yticks([0.25, 0.75])
+    ax_f.set_yticklabels(['Pironman5\nfan', 'RPi\nfan'], fontsize=7, color=FG)
+    ax_f.set_ylim(0, 1)
+    ax_f.set_xlabel('Time', color=FG)
+    ax_f.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
+    ax_f.xaxis.set_major_locator(mdates.HourLocator(interval=2))
+    ax_f.grid(True, alpha=0.2, color='#445566', axis='x')
+
+    plt.tight_layout(h_pad=0.5)
+
+    GRAPH_DIR.mkdir(parents=True, exist_ok=True)
+    out = GRAPH_DIR / f'{d.isoformat()}.png'
+    plt.savefig(out, dpi=110, bbox_inches='tight', facecolor=fig.get_facecolor())
+    plt.close()
+    log.info(f'Graph saved: {out}')
+
+# ── Pironman5 fan control ────────────────────────────────────────────────────
+def _write_fan(on: bool):
+    """Write fan state to /var/lib/beaconbutty/watchdog/fan-state (read by bb0-display.py)."""
+    try:
+        FAN_STATE.write_text('on' if on else 'off')
+    except Exception as e:
+        log.warning(f'Fan state write failed: {e}')
+
+
+def _read_fan_override():
+    """Return True/False if a valid manual override is active, else None.
+    Expired or malformed overrides are deleted as a side effect."""
+    if not FAN_OVERRIDE.exists():
+        return None
+    try:
+        data = json.loads(FAN_OVERRIDE.read_text())
+        expires = datetime.fromisoformat(data['expires'])
+        if datetime.now() >= expires:
+            FAN_OVERRIDE.unlink(missing_ok=True)
+            log.info('Pironman5 fan override expired — resuming automatic control')
+            return None
+        return data['state'] == 'on'
+    except Exception as e:
+        log.warning(f'Fan override read failed, discarding: {e}')
+        try:
+            FAN_OVERRIDE.unlink(missing_ok=True)
+        except Exception:
+            pass
+        return None
+
+
+def fan_control(temp_c: float):
+    """Apply manual override if set, else hysteresis (ON >= FAN_ON_TEMP, OFF <= FAN_OFF_TEMP)."""
+    global _fan_on
+    override = _read_fan_override()
+    if override is not None:
+        if _fan_on != override:
+            _write_fan(override)
+            _fan_on = override
+            log.info(f'Pironman5 fan {"ON" if override else "OFF"} (manual override)')
+        return
+    if not _fan_on and temp_c >= FAN_ON_TEMP:
+        _write_fan(True)
+        _fan_on = True
+        log.info(f'Pironman5 fan ON  ({temp_c}C >= {FAN_ON_TEMP}C)')
+    elif _fan_on and temp_c <= FAN_OFF_TEMP:
+        _write_fan(False)
+        _fan_on = False
+        log.info(f'Pironman5 fan OFF ({temp_c}C <= {FAN_OFF_TEMP}C)')
+
+# ── Status command ────────────────────────────────────────────────────────────
+def cmd_status():
+    """Print current health status and reset LED to default."""
+    print()
+    if not STATUS_FILE.exists():
+        print('No health status on record yet.')
+        print('(Has bb-watchdog been running for at least 30 minutes?)')
+        print()
+        led_ok()
+        return
+
+    try:
+        status = json.loads(STATUS_FILE.read_text())
+    except Exception as e:
+        print(f'Could not read status file: {e}')
+        return
+
+    print(f"Last check : {status.get('last_check', 'unknown')}")
+    print(f"Status     : {status.get('status', 'unknown').upper()}")
+    print()
+
+    failures = status.get('failures', [])
+    warnings = status.get('warnings', [])
+
+    if failures:
+        print('Failures:')
+        for f in failures:
+            print(f'  {f}')
+        print()
+
+    if warnings:
+        print('Warnings:')
+        for w in warnings:
+            print(f'  {w}')
+        print()
+
+    if not failures and not warnings:
+        print('All checks passed.')
+        print()
+
+    # Reset LED and clear the alert flag
+    led_ok()
+    status['led_alert'] = False
+    try:
+        STATUS_FILE.write_text(json.dumps(status, indent=2))
+    except Exception:
+        pass
+
+# ── Daemon ────────────────────────────────────────────────────────────────────
+_running = True
+
+def _handle_signal(sig, frame):
+    global _running
+    log.info(f'Signal {sig} received, shutting down')
+    _running = False
+
+
+def run_daemon():
+    signal.signal(signal.SIGTERM, _handle_signal)
+    signal.signal(signal.SIGINT,  _handle_signal)
+
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    GRAPH_DIR.mkdir(parents=True, exist_ok=True)
+
+    log.info(f'Starting (tick={TICK_INTERVAL}s, health_every={HEALTH_CHECK_EVERY} ticks, '
+             f'fan on>={FAN_ON_TEMP}C off<={FAN_OFF_TEMP}C)')
+
+    # Backfill: if we (re)started after midnight, yesterday's graph may have been missed
+    yesterday = date.today() - timedelta(days=1)
+    if _data_file(yesterday).exists() and not (GRAPH_DIR / f'{yesterday.isoformat()}.png').exists():
+        log.info(f'Backfilling missing graph for {yesterday}')
+        try:
+            generate_graph(yesterday)
+        except Exception as e:
+            log.error(f'Backfill generate_graph failed: {e}')
+
+    tick      = HEALTH_CHECK_EVERY - 5  # skip immediate boot check; first check after 5 min
+    last_date = date.today()
+
+    while _running:
+        now   = datetime.now()
+        today = now.date()
+
+        # Date rollover: generate yesterday's graph
+        if today != last_date:
+            log.info(f'Date changed {last_date} -> {today}, generating graph')
+            try:
+                generate_graph(last_date)
+            except Exception as e:
+                log.error(f'generate_graph failed: {e}')
+            last_date = today
+
+        # Record data point
+        temp            = read_temperature()
+        rpi_fan, p5_fan = read_fan_states()
+        cpu_pct         = read_cpu_pct()
+        record = {
+            'time':         now.isoformat(timespec='seconds'),
+            'temp_c':       temp,
+            'cpu_pct':      cpu_pct,
+            'rpi_fan':      rpi_fan,
+            'pironman_fan': p5_fan,
+        }
+        try:
+            append_record(today, record)
+        except Exception as e:
+            log.error(f'append_record failed: {e}')
+
+        # Sustained-high-CPU detector — reads back the day file we just wrote
+        try:
+            check_high_cpu(today)
+        except Exception as e:
+            log.error(f'check_high_cpu failed: {e}')
+
+        # Future fan control
+        fan_control(temp)
+
+        # Health check every N ticks
+        if tick % HEALTH_CHECK_EVERY == 0:
+            try:
+                run_health_check()
+            except Exception as e:
+                log.error(f'run_health_check failed: {e}')
+
+        tick += 1
+
+        # Sleep to next minute boundary; check _running every second
+        now_s    = time.time()
+        next_s   = (now_s // TICK_INTERVAL + 1) * TICK_INTERVAL
+        deadline = time.monotonic() + (next_s - now_s)
+        while _running and time.monotonic() < deadline:
+            time.sleep(min(1.0, deadline - time.monotonic()))
+
+    log.info('Stopped')
+
+
+# ── Entry point ───────────────────────────────────────────────────────────────
+if __name__ == '__main__':
+    if len(sys.argv) > 1 and sys.argv[1] == 'status':
+        cmd_status()
+    else:
+        run_daemon()

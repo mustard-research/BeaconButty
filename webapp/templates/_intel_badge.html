@@ -1,0 +1,68 @@
+{# Renders a small "TI" badge with a bb-pop tooltip showing Shodan +
+   AbuseIPDB + Spamhaus DROP + Tor exit-list intel for an external IP.
+   Renders nothing if no intel cached.
+
+   Usage: {% from "_intel_badge.html" import intel_badge %}
+          {{ intel_badge(row.intel) }}                  — flush
+          {{ intel_badge(row.intel, margin='8px') }}    — with left margin
+#}
+{# Shodan tags that indicate the destination is genuinely worth looking at.
+   Excluded on purpose: `cdn`, `cloud`, `database`, `videogame`, `devops`
+   are infrastructure (high volume, no signal); `self-signed` and
+   `starttls` are normal for mail (smtp.gmail.com hits both); `eol-os`/
+   `eol-product` describe age, not threat. Those still appear in the
+   tooltip — they just don't trigger the red badge. #}
+{% set _hot_shodan_tags = ['tor', 'vpn', 'proxy', 'honeypot', 'compromised',
+                           'malware', 'ics', 'nuclear'] %}
+{% macro intel_badge(intel, margin='4px') -%}
+  {%- if intel and (intel.shodan or intel.abuseipdb or intel.spamhaus or intel.tor) -%}
+    {%- set ab = intel.abuseipdb or {} -%}
+    {%- set sh = intel.shodan or {} -%}
+    {%- set sp = intel.spamhaus or {} -%}
+    {%- set tor = intel.tor or {} -%}
+    {%- set score = (ab.score or 0) | int -%}
+    {%- set tags = sh.tags or [] -%}
+    {%- set vulns = sh.vulns or [] -%}
+    {%- set ports = (sh.ports or []) | length -%}
+    {%- set hostnames = sh.hostnames or [] -%}
+    {%- set hot_tags = tags | select('in', _hot_shodan_tags) | list -%}
+    {# Red threshold: AbuseIPDB score >= 75 matches AbuseIPDB's own
+       "high confidence" cutoff. Lower scores on shared-cloud IPs
+       (Microsoft 365 logins, GitHub Pages, CDN edges) reflect noisy
+       co-tenants, not the specific endpoint — keep those yellow.
+       Spamhaus DROP = high-confidence malicious netblock; Tor exit
+       = legitimate-but-suspicious destination — both red. #}
+    {%- if score >= 75 or hot_tags or vulns or sp.drop or tor.exit -%}
+      {%- set cls = 'badge-high' -%}
+    {%- elif score > 0 or tags or ports >= 50 -%}
+      {%- set cls = 'badge-med' -%}
+    {%- else -%}
+      {%- set cls = 'badge-none' -%}
+    {%- endif -%}
+    {%- set lines = [] -%}
+    {%- if sp.drop -%}
+      {%- set _ = lines.append('⚠ On Spamhaus DROP' ~ (' (' ~ sp.sbl ~ ')' if sp.sbl and sp.sbl != 'DROP' else '')) -%}
+    {%- endif -%}
+    {%- if tor.exit -%}{%- set _ = lines.append('⚠ Tor exit node') -%}{%- endif -%}
+    {%- if score or ab.total_reports -%}
+      {%- set last = (ab.last_reported or '')[:10] -%}
+      {%- set _ = lines.append('AbuseIPDB ' ~ score ~ '/100 · ' ~ (ab.total_reports or 0) ~ ' reports' ~ (' · last ' ~ last if last else '')) -%}
+    {%- endif -%}
+    {%- if ab.usage_type -%}{%- set _ = lines.append('Usage: ' ~ ab.usage_type) -%}{%- endif -%}
+    {%- if ab.isp -%}{%- set _ = lines.append('ISP: ' ~ ab.isp) -%}{%- endif -%}
+    {%- if ab.domain -%}{%- set _ = lines.append('Domain: ' ~ ab.domain) -%}{%- endif -%}
+    {%- if tags -%}{%- set _ = lines.append('Shodan tags: ' ~ tags | join(', ')) -%}{%- endif -%}
+    {%- if vulns -%}{%- set _ = lines.append('Shodan CVEs: ' ~ vulns | join(', ')) -%}{%- endif -%}
+    {%- if ports -%}{%- set _ = lines.append('Shodan open ports: ' ~ ports) -%}{%- endif -%}
+    {%- if hostnames -%}{%- set _ = lines.append('rDNS: ' ~ hostnames | join(', ')) -%}{%- endif -%}
+    {%- if not lines -%}
+      {%- set _ = lines.append('No abuse reports; no Shodan findings; not on Spamhaus DROP or Tor exit list.') -%}
+    {%- endif -%}
+    {%- set _ = lines.append('') -%}
+    {%- set _ = lines.append('Sources: Shodan InternetDB + AbuseIPDB + Spamhaus DROP + Tor (refreshed daily)') -%}
+    <span class="badge {{cls}} bb-pop" tabindex="0"
+          style="margin-left:{{margin}};font-size:9px;padding:1px 6px;letter-spacing:.05em;"
+          data-pop="{{ lines | join('\n') }}"
+          title="{{ lines | join(' | ') }}">TI</span>
+  {%- endif -%}
+{%- endmacro %}

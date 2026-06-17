@@ -1,0 +1,729 @@
+{% extends "base.html" %}
+{% from "_intel_badge.html" import intel_badge %}
+{% block title %}Network Intel{% endblock %}
+
+{% macro device_label(label) -%}
+  {%- set parts = label.split(' (', 1) -%}
+  {%- if parts | length == 2 -%}
+    <span class="mono">{{ parts[0] }}</span><span style="display:inline-block;margin-left:7px;padding:1px 7px;border-radius:10px;background:var(--surface);border:1px solid var(--border);color:var(--text);font-size:11px;vertical-align:middle;white-space:nowrap;">{{ parts[1][:-1] }}</span>
+  {%- else -%}
+    <span class="mono">{{ label }}</span>
+  {%- endif -%}
+{%- endmacro %}
+
+{% block content %}
+<style>
+  /* Inline click-to-FP affordance used in DNS-entropy examples and TLS-anomaly
+     IP lists. Subtle until hover so it doesn't shout at users who aren't
+     suppressing. */
+  .fp-inline {
+    cursor: pointer;
+    text-decoration: underline;
+    text-decoration-style: dotted;
+    text-decoration-color: var(--text-dim);
+    text-underline-offset: 2px;
+  }
+  .fp-inline:hover {
+    color: var(--text);
+    text-decoration-color: var(--yellow);
+    background: var(--surface);
+  }
+</style>
+{% set l2_critical_count = intel.l2_anomalies | selectattr('severity','equalto','critical') | list | length %}
+{% set ja4_threat_count = intel.ja4_threats | length %}
+{% set alert_count = (intel.tls_anomalies | length) + (intel.dns_anomalies | length) + (intel.new_beacons | length) + l2_critical_count + ja4_threat_count %}
+<div class="page-header">
+  <h1>Network Intelligence</h1>
+  <p>Zeek-derived signals — TLS anomalies, exfiltration candidates, night activity, DNS anomalies, beacon persistence, and more.
+     <span class="text-dim">Results cached for 5 min — reload to refresh.</span></p>
+</div>
+
+<h2 style="font-size:14px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-dim);margin:28px 0 12px 0;font-weight:600;">
+  Alerts
+  <span style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:2px 9px;margin-left:8px;font-size:12px;letter-spacing:.02em;text-transform:none;color:var(--text);">
+    {{ alert_count }} total — counts toward dashboard tile
+  </span>
+</h2>
+
+{# ── JA4 Threat Matches ── #}
+<div class="card">
+  <div class="card-title">JA4 Threat Matches <small>daily · ja4plus-mapping</small>
+    {% if intel.ja4_threats %}
+      <span class="badge badge-high">{{ ja4_threat_count }}</span>
+    {% else %}
+      <span class="badge badge-ok">0</span>
+    {% endif %}
+    <span style="margin-left:auto;font-weight:400;font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.04em;">Alert</span>
+  </div>
+  <p style="font-size:13px;color:var(--text-dim);margin-bottom:12px;">LAN devices whose TLS Client Hello matches a known threat family in FoxIO's <span class="mono">ja4plus-mapping.csv</span> — Cobalt Strike, Sliver, Havoc, Qakbot, Pikabot, Darkgate, IcedID, Lumma, ngrok, Mythic, Brute Ratel. Exact-hash matches only; cipher-family hits are excluded as too broad (legitimate clients commonly share cipher lists with malware) but still appear per-fingerprint in the JA4 Inventory card below. A single hit here is high-confidence and warrants immediate triage.</p>
+  {% if intel.ja4_threats %}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Source Device</th>
+          <th>Threat Match</th>
+          <th class="num">Conns</th>
+          <th>JA4</th>
+          <th>Source</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for t in intel.ja4_threats %}
+        <tr>
+          <td>{{ device_label(t.label) }}</td>
+          <td><span class="badge badge-high">{{ t.match }}</span></td>
+          <td class="num" style="font-weight:600;">{{ t.count }}</td>
+          <td class="mono" style="font-size:11px;">{{ t.ja4 }}</td>
+          <td class="text-dim" style="font-size:11px;">{{ t.source }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="empty-state" style="padding:24px;">
+    <p class="text-dim">No JA4 fingerprints matching known threat families today.</p>
+  </div>
+  {% endif %}
+</div>
+
+{# ── L2 Anomalies ── #}
+<div class="card">
+  <div class="card-title">L2 / ARP Anomalies <small>daily · arp.log</small>
+    {% if l2_critical_count %}
+      <span class="badge badge-high">{{ l2_critical_count }} critical</span>
+    {% elif intel.l2_anomalies %}
+      <span class="badge badge-warn">{{ intel.l2_anomalies | length }}</span>
+    {% else %}
+      <span class="badge badge-ok">0</span>
+    {% endif %}
+    <span style="margin-left:auto;font-weight:400;font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.04em;">Alert</span>
+  </div>
+  <p style="font-size:13px;color:var(--text-dim);margin-bottom:12px;">Reads the Zeek <span class="mono">arp.log</span> for three classes of L2 anomaly: <strong>gateway impersonation</strong> (any MAC other than the Pi's announcing 192.168.50.1 — router takeover, critical), <strong>MAC change</strong> (an IP claimed by more than one MAC today, with FP-listed MACs suppressed), and <strong>bad ARP</strong> (Zeek's malformed-packet event). Critical events also fire a Slack alert.</p>
+  {% if intel.l2_anomalies %}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Severity</th>
+          <th>Kind</th>
+          <th>IP</th>
+          <th>Device</th>
+          <th>MAC(s)</th>
+          <th>Detail</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for a in intel.l2_anomalies %}
+        <tr>
+          <td>
+            {% if a.severity == 'critical' %}
+              <span class="badge badge-high">critical</span>
+            {% elif a.severity == 'warning' %}
+              <span class="badge badge-warn">warning</span>
+            {% else %}
+              <span class="badge badge-none">info</span>
+            {% endif %}
+          </td>
+          <td class="text-dim" style="font-size:12px;">{{ a.kind }}</td>
+          <td class="mono">{{ a.ip }}</td>
+          <td>{{ device_label(a.label) if a.label else '—' }}</td>
+          <td class="mono" style="font-size:11px;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ a.mac }}</td>
+          <td class="text-dim" style="font-size:12px;">{{ a.detail }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="empty-state" style="padding:24px;">
+    <p class="text-dim">No L2 anomalies — every IP today maps to a single MAC, and only the Pi is announcing the gateway address.</p>
+  </div>
+  {% endif %}
+</div>
+
+{# ── TLS Anomalies ── #}
+<div class="card">
+  <div class="card-title">TLS Anomalies <small>daily</small>
+    {% if intel.tls_anomalies %}
+      <span class="badge badge-warn">{{ intel.tls_anomalies | length }}</span>
+    {% else %}
+      <span class="badge badge-ok">0</span>
+    {% endif %}
+    <span style="margin-left:auto;font-weight:400;font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.04em;">Alert</span>
+  </div>
+  <p style="font-size:13px;color:var(--text-dim);margin-bottom:12px;">Scans ssl.log for established LAN→WAN connections with no SNI (Server Name Indication), self-signed certificates, or expired certificates. Legitimate software almost always sends SNI and uses valid certs; malware C2 clients frequently do neither, making these strong indicators even when beacon scores are low.</p>
+  {% if intel.tls_anomalies %}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Source Device</th>
+          <th>Organisation</th>
+          <th>IPs</th>
+          <th>Issue</th>
+          <th class="num">Conns</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for src in intel.tls_anomalies %}
+          {% for ent in src.entities %}
+          <tr{% if loop.first %} style="border-top:2px solid var(--border);"{% endif %}>
+            {% if loop.first %}
+            <td rowspan="{{ src.entities | length }}"
+                style="vertical-align:middle;border-right:1px solid var(--border);">
+              {{ device_label(src.src_label) }}
+            </td>
+            {% endif %}
+            <td style="white-space:nowrap;">{{ ent.org }}</td>
+            <td class="mono text-dim" style="font-size:11px;max-width:280px;">
+              {% for ip in ent.ips %}
+                <span class="fp-inline" data-dest="{{ ip }}" data-org="{{ ent.org }}"
+                      onclick="nfpOpenDst(this)"
+                      title="Click to suppress — defaults to the literal IP; edit inline to e.g. {{ ip.rsplit('.', 1)[0] }}.* for the /24">{{ ip }}</span>{% if not loop.last %}, {% endif %}
+              {% endfor %}
+            </td>
+            <td>
+              {% if ent.issue == 'expired' %}
+                <span class="badge badge-high">Expired cert</span>
+              {% elif ent.issue == 'self-signed' %}
+                <span class="badge badge-med">Self-signed</span>
+              {% else %}
+                <span class="badge badge-warn">No SNI</span>
+              {% endif %}
+            </td>
+            <td class="num">{{ ent.count }}</td>
+          </tr>
+          {% endfor %}
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="empty-state" style="padding:24px;">
+    <p class="text-dim">No TLS anomalies found in today's ssl.log.</p>
+  </div>
+  {% endif %}
+</div>
+
+{# ── DNS Anomalies ── #}
+<div class="card">
+  <div class="card-title">DNS Anomalies
+    <small>daily · high NXDOMAIN rate · high-entropy labels (DGA indicator)</small>
+    {% if intel.dns_anomalies %}
+      <span class="badge badge-warn">{{ intel.dns_anomalies | length }}</span>
+    {% else %}
+      <span class="badge badge-ok">0</span>
+    {% endif %}
+    <span style="margin-left:auto;font-weight:400;font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.04em;">Alert</span>
+  </div>
+  <p style="font-size:13px;color:var(--text-dim);margin-bottom:12px;">Flags two DGA (Domain Generation Algorithm) patterns from dns.log: a high rate of NXDOMAIN responses (malware cycling through generated names until one resolves) and high Shannon entropy in domain labels (randomly generated names like <span class="mono">x7f3k2m9a2.com</span> look nothing like human-chosen ones). Either pattern on its own is worth investigating.</p>
+  {% if intel.dns_anomalies %}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Source Device</th>
+          <th class="num">Queries</th>
+          <th class="num">NXDOMAIN</th>
+          <th class="num">NXDOMAIN %</th>
+          <th>Flag</th>
+          <th>Example High-Entropy Domains</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in intel.dns_anomalies %}
+        <tr>
+          <td>{{ device_label(row.src_label) }}</td>
+          <td class="num text-dim">{{ row.total }}</td>
+          <td class="num">{{ row.nxdomain }}</td>
+          <td class="num" style="font-weight:600;{% if row.nxdomain_pct >= 50 %}color:var(--red){% elif row.nxdomain_pct >= 25 %}color:var(--yellow){% endif %}">
+            {{ row.nxdomain_pct }}%
+          </td>
+          <td>
+            {% if row.flag == 'both' %}
+              <span class="badge badge-high">NXDOMAIN + entropy</span>
+            {% elif row.flag == 'nxdomain' %}
+              <span class="badge badge-med">High NXDOMAIN</span>
+            {% else %}
+              <span class="badge badge-med">High entropy</span>
+            {% endif %}
+          </td>
+          <td class="mono text-dim" style="font-size:11px;">
+            {% for domain, ent in row.examples %}
+              <span class="fp-inline" data-dest="{{ domain }}"
+                    onclick="nfpOpenDst(this)"
+                    title="Click to suppress — adds *.parent.tld to the FP domain list">{{ domain }}</span>
+              <span style="color:var(--yellow);">({{ ent }})</span>{% if not loop.last %}, {% endif %}
+            {% endfor %}
+            {% if not row.examples %}—{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="empty-state" style="padding:24px;">
+    <p class="text-dim">No DNS anomalies found in today's dns.log.</p>
+  </div>
+  {% endif %}
+</div>
+
+{# ── New Beacons ── #}
+<div class="card">
+  <div class="card-title">New Beacons
+    <small>in today's report but not seen in the previous 7 days</small>
+    {% if intel.new_beacons %}
+      <span class="badge badge-warn">{{ intel.new_beacons | length }}</span>
+    {% else %}
+      <span class="badge badge-ok">0</span>
+    {% endif %}
+    <span style="margin-left:auto;font-weight:400;font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.04em;">Alert</span>
+  </div>
+  <p style="font-size:13px;color:var(--text-dim);margin-bottom:12px;">Finds beacon findings in today's RITA report whose (source, destination) pair has not appeared in any of the previous 7 days' reports. Novel external destinations are worth extra scrutiny — established beacons to known infrastructure are lower priority than a device suddenly contacting somewhere it has never contacted before.</p>
+  {% if intel.new_beacons %}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Source Device</th>
+          <th>Severity</th>
+          <th>Destination</th>
+          <th class="num">Score</th>
+          <th>Service</th>
+          <th>First Seen</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in intel.new_beacons %}
+        <tr{% if row.group_first %} style="border-top:2px solid var(--border);"{% endif %}>
+          {% if row.group_first %}
+          <td rowspan="{{ row.group_size }}"
+              style="vertical-align:middle;border-right:1px solid var(--border);">
+            {{ device_label(row.src_label) }}
+          </td>
+          {% endif %}
+          <td>
+            {% if row.severity == 'High' %}
+              <span class="badge badge-high">High</span>
+            {% elif row.severity == 'Medium' %}
+              <span class="badge badge-med">Med</span>
+            {% elif row.severity == 'Low' %}
+              <span class="badge badge-low">Low</span>
+            {% else %}
+              <span class="badge badge-none">{{ row.severity }}</span>
+            {% endif %}
+          </td>
+          <td class="mono text-dim" style="max-width:300px;">
+            <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ row.dest }}{{ intel_badge((row.dest_enrich or {}).get('intel')) }}</div>
+            {% set e = row.dest_enrich %}
+            {% if e and e.name %}
+              <div style="font-size:11px;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
+                   title="Pulled from Zeek {{ e.source }} log{% if e.when_days is not none %} — {% if e.when_days == 0 %}today{% elif e.when_days == 1 %}1 day ago{% else %}{{ e.when_days }} days ago{% endif %}{% endif %}. RITA's report only joins same-day DNS so cross-day FQDNs show as bare IPs here.">
+                <span style="color:var(--text);">→ {{ e.name }}</span>
+                <span class="text-dim" style="font-size:10px;margin-left:4px;text-transform:uppercase;letter-spacing:.04em;">{{ e.source }}{% if e.when_days is not none and e.when_days > 0 %} · {{ e.when_days }}d{% endif %}</span>
+              </div>
+            {% endif %}
+          </td>
+          <td class="num">
+            <span class="{% if row.score >= 0.9 %}text-red{% elif row.score >= 0.8 %}text-yellow{% else %}text-dim{% endif %}"
+                  style="font-weight:600;">{{ "%.3f"|format(row.score) }}</span>
+          </td>
+          <td class="mono text-dim" style="font-size:11px;">{{ row.svc }}</td>
+          <td class="text-dim" style="font-size:12px;">{{ row.first_seen }}</td>
+          <td style="text-align:right;white-space:nowrap;">
+            <button class="btn btn-sm"
+                    data-dest="{{ row.dest_key }}"
+                    data-org="{{ row.dst_org }}"
+                    data-enrich="{{ (row.dest_enrich.name if row.dest_enrich else '') | default('', true) }}"
+                    onclick="nfpOpenDst(this)" title="Suppress this destination">FP dst</button>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="empty-state" style="padding:24px;">
+    <p class="text-dim">No new beacon destinations compared to the past 7 days.</p>
+  </div>
+  {% endif %}
+</div>
+
+<h2 style="font-size:14px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-dim);margin:36px 0 12px 0;font-weight:600;">
+  Investigate
+  <span style="font-weight:400;font-size:12px;letter-spacing:.02em;text-transform:none;color:var(--text-dim);margin-left:8px;">
+    — context signals, often noisy, not counted toward the dashboard total
+  </span>
+</h2>
+
+{# ── JA4 Fingerprint Inventory ── #}
+<div class="card">
+  <div class="card-title">JA4 Fingerprint Inventory <small>daily · LAN devices</small>
+    {% if intel.ja4_inventory %}
+      <span class="badge badge-none">{{ intel.ja4_inventory | length }}</span>
+    {% else %}
+      <span class="badge badge-none">0</span>
+    {% endif %}
+  </div>
+  <p style="font-size:13px;color:var(--text-dim);margin-bottom:12px;">Distinct JA4 TLS client fingerprints observed per LAN device today, from the FoxIO ja4 Zeek package. A laptop or phone normally shows several fingerprints (browser, system services, multiple apps). A device with exactly one fingerprint over many connections is unusual — often an IoT device or a single dedicated client, but the same shape applies to malware C2. Outliers are flagged; cross-reference with the Beacon report's Investigate table.</p>
+  {% if intel.ja4_inventory %}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Source Device</th>
+          <th class="num">Distinct JA4</th>
+          <th class="num">TLS Conns</th>
+          <th>Top Fingerprints <span class="text-dim" style="font-weight:400;font-size:10px;text-transform:none;letter-spacing:0;">(★ = first seen today)</span></th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in intel.ja4_inventory %}
+        <tr>
+          <td>{{ device_label(row.label) }}</td>
+          <td class="num" style="font-weight:600;{% if row.outlier %}color:var(--yellow){% endif %}">{{ row.n_unique }}</td>
+          <td class="num text-dim">{{ row.n_total }}</td>
+          <td class="mono text-dim" style="font-size:11px;max-width:420px;">
+            {% for h, c, is_new, cli_label, cli_src, threat in row.top %}
+              <span style="display:block;margin-bottom:2px;{% if threat %}color:var(--red);font-weight:600;{% elif is_new %}color:var(--yellow);{% endif %}"
+                    title="{{ h }} — {{ c }} conns{% if is_new %} · new today{% endif %}{% if cli_label %} · {{ cli_label }} ({{ cli_src }}){% endif %}{% if threat %} · THREAT MATCH{% endif %}">
+                {% if threat %}🛑 {% elif is_new %}★ {% endif %}{{ h }}<span class="text-dim" style="margin-left:3px;">×{{ c }}</span>
+                {% if cli_label %}<span class="text-dim" style="margin-left:6px;font-size:10px;">— {{ cli_label }}</span>{% endif %}
+              </span>
+            {% endfor %}
+            {% if row.more %}<span class="text-dim">+{{ row.more }} more</span>{% endif %}
+          </td>
+          <td style="text-align:right;white-space:nowrap;">
+            {% if row.threat %}
+              {% set _tt = [] %}
+              {% for d in row.threat_details %}
+                {% set _ = _tt.append(d.label ~ '\n  ' ~ d.ja4 ~ ' (×' ~ d.count ~ ' conns today)') %}
+              {% endfor %}
+              {% set _pop = 'JA4 TLS client fingerprint matches a known threat family — exact hash, FoxIO ja4plus-mapping:\n\n' ~ (_tt | join('\n\n')) ~ '\n\nHigh-confidence. The bad hash may be outside the Top Fingerprints list. Cross-reference the Beacon Investigate table and triage this device.' %}
+              <span class="badge badge-high bb-pop" tabindex="0"
+                    data-pop="{{ _pop }}"
+                    title="{{ _pop }}">THREAT</span>
+            {% endif %}
+            {% if row.n_new_today %}
+              <span class="badge badge-warn" title="{{ row.n_new_today }} fingerprint(s) first seen today.">+{{ row.n_new_today }} new</span>
+            {% endif %}
+            {% if row.outlier %}
+              <span class="badge badge-warn" title="Single fingerprint, ≥5 connections — review whether this is expected for the device.">single-fp</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="empty-state" style="padding:24px;">
+    <p class="text-dim">No TLS connections observed yet (or ssl.log not yet populated with JA4 fields).</p>
+  </div>
+  {% endif %}
+</div>
+
+{# ── Exfiltration Candidates ── #}
+<div class="card">
+  <div class="card-title">Exfiltration Candidates
+    <small>daily · LAN→WAN outbound ≥ {{ "%.0f"|format(10) }} MB today, excluding known-safe ASNs</small>
+    {% if intel.exfil %}
+      <span class="badge badge-warn">{{ intel.exfil | length }}</span>
+    {% else %}
+      <span class="badge badge-ok">0</span>
+    {% endif %}
+  </div>
+  <p style="font-size:13px;color:var(--text-dim);margin-bottom:12px;">Sums outbound bytes per LAN device from conn.log, skipping known-safe ASNs (Apple, Google, Microsoft etc.). A device silently uploading hundreds of MB/day is often more alarming than a high beacon score — RITA's scoring catches regularity, but this catches volume.</p>
+  {% if intel.exfil %}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Source Device</th>
+          <th class="num">Sent (MB)</th>
+          <th class="num">Conns</th>
+          <th>Top Destination</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in intel.exfil %}
+        <tr>
+          <td>{{ device_label(row.src_label) }}</td>
+          <td class="num" style="font-weight:600;{% if row.total_mb >= 100 %}color:var(--red){% elif row.total_mb >= 50 %}color:var(--yellow){% endif %}">
+            {{ row.total_mb }}
+          </td>
+          <td class="num text-dim">{{ row.conns }}</td>
+          <td class="mono text-dim" style="max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ row.top_dst }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="empty-state" style="padding:24px;">
+    <p class="text-dim">No devices exceeded the outbound data threshold.</p>
+  </div>
+  {% endif %}
+</div>
+
+{# ── Night Activity ── #}
+<div class="card">
+  <div class="card-title">Night Activity
+    <small>daily · LAN→WAN connections 01:00–05:59 local time</small>
+    {% if intel.night %}
+      <span class="badge badge-warn">{{ intel.night | length }}</span>
+    {% else %}
+      <span class="badge badge-ok">0</span>
+    {% endif %}
+  </div>
+  <p style="font-size:13px;color:var(--text-dim);margin-bottom:12px;">Identifies LAN devices making outbound connections in the small hours when all users are asleep. Beaconing malware doesn't care about human schedules, so night-time network activity from a device that should be idle is a high-confidence signal with very few legitimate explanations.</p>
+  {% if intel.night %}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Source Device</th>
+          <th class="num">Connections</th>
+          <th class="num">Sent (MB)</th>
+          <th class="num">Unique Dests</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in intel.night %}
+        <tr>
+          <td>{{ device_label(row.src_label) }}</td>
+          <td class="num" style="font-weight:600;">{{ row.conns }}</td>
+          <td class="num text-dim">{{ row.mb }}</td>
+          <td class="num text-dim">{{ row.unique_dsts }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="empty-state" style="padding:24px;">
+    <p class="text-dim">No night-time activity detected.</p>
+  </div>
+  {% endif %}
+</div>
+
+{# ── Weird.log ── #}
+<div class="card">
+  <div class="card-title">Protocol Anomalies (weird.log) <small>daily</small>
+    {% if intel.weird %}
+      <span class="badge badge-info">{{ intel.weird | length }} type{{ 's' if intel.weird | length != 1 else '' }}</span>
+    {% else %}
+      <span class="badge badge-ok">0</span>
+    {% endif %}
+  </div>
+  <p style="font-size:13px;color:var(--text-dim);margin-bottom:12px;">Zeek logs anything that violates expected protocol behaviour to weird.log — malformed packets, unexpected TCP flags, protocol used on the wrong port, truncated handshakes. Most entries are benign quirks, but unusual entries on a small home LAN or entries correlated with a suspicious device deserve a second look.</p>
+  {% if intel.weird %}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Weird Name</th>
+          <th class="num">Count</th>
+          <th class="num">LAN Sources</th>
+          <th>LAN Devices</th>
+          <th>Detail</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in intel.weird %}
+        <tr>
+          <td class="mono" style="font-size:12px;">{{ row.name }}</td>
+          <td class="num" style="font-weight:600;">{{ row.count }}</td>
+          <td class="num text-dim">{{ row.src_count }}</td>
+          <td class="mono text-dim" style="font-size:11px;">{{ row.srcs }}</td>
+          <td class="text-dim" style="font-size:11px;">{{ row.addl }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="empty-state" style="padding:24px;">
+    <p class="text-dim">No protocol anomalies found in today's weird.log.</p>
+  </div>
+  {% endif %}
+</div>
+
+{# ── Beacon Persistence ── #}
+<div class="card">
+  <div class="card-title">Persistent Beacons
+    <small>same src→dest pair seen across 3+ report days</small>
+    {% if intel.persistence %}
+      <span class="badge badge-warn">{{ intel.persistence | length }}</span>
+    {% else %}
+      <span class="badge badge-ok">0</span>
+    {% endif %}
+  </div>
+  <p style="font-size:13px;color:var(--text-dim);margin-bottom:12px;">Cross-references up to 14 days of RITA reports to find (source, destination) beacon pairs that recur day after day. A single day's high score could be a fluke or a noisy app; the same pair appearing for 5+ consecutive days is much harder to dismiss — it indicates something is reliably phoning home on a schedule.</p>
+  {% if intel.persistence %}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Source Device</th>
+          <th>Destination</th>
+          <th class="num">Days Seen</th>
+          <th>Latest</th>
+          <th class="num">Max Score</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in intel.persistence %}
+        <tr>
+          <td>{{ device_label(row.src_label) }}</td>
+          <td class="mono text-dim" style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ row.dest }}</td>
+          <td class="num" style="font-weight:600;{% if row.days >= 7 %}color:var(--red){% elif row.days >= 5 %}color:var(--yellow){% endif %}">
+            {{ row.days }}
+          </td>
+          <td class="text-dim" style="font-size:12px;">{{ row.latest_date }}</td>
+          <td class="num">
+            <span class="{% if row.score >= 0.9 %}text-red{% elif row.score >= 0.8 %}text-yellow{% else %}text-dim{% endif %}"
+                  style="font-weight:600;">{{ "%.3f"|format(row.score) }}</span>
+          </td>
+          <td style="text-align:right;white-space:nowrap;">
+            <button class="btn btn-sm"
+                    data-dest="{{ row.dest_key }}"
+                    data-org="{{ row.dst_org }}"
+                    data-enrich="{{ (row.dest_enrich.name if row.dest_enrich else '') | default('', true) }}"
+                    onclick="nfpOpenDst(this)" title="Suppress this destination">FP dst</button>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="empty-state" style="padding:24px;">
+    <p class="text-dim">No beacon pairs seen on 3+ consecutive days.</p>
+  </div>
+  {% endif %}
+</div>
+
+{# ── Network-Intel FP dialog (generic — handles src device or dst domain) ── #}
+<div id="nfp-dialog" style="display:none;position:fixed;inset:0;z-index:1100;background:rgba(0,0,0,.5);align-items:center;justify-content:center;">
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:24px;width:380px;max-width:90vw;">
+    <div style="font-weight:600;margin-bottom:6px;">Add False Positive</div>
+    <div id="nfp-kind" style="font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px;">Destination pattern <span style="text-transform:none;letter-spacing:0;font-weight:400;">(editable — generalise with <code>*.parent.tld</code> if needed)</span></div>
+    <input id="nfp-target" class="mono" type="text" oninput="nfpUpdateSubmitEnabled()"
+           style="width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:13px;margin-bottom:16px;">
+    <label style="display:block;font-size:13px;margin-bottom:6px;">Reason <span style="color:var(--text-dim)">(required)</span></label>
+    <input id="nfp-reason" type="text" maxlength="50" placeholder="e.g. backup server, media streaming"
+           oninput="nfpUpdateSubmitEnabled()"
+           style="width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:13px;margin-bottom:16px;">
+    <div id="nfp-msg" style="display:none;font-size:12px;color:var(--text-dim);margin-bottom:10px;"></div>
+    <div style="display:flex;gap:10px;justify-content:flex-end;">
+      <button onclick="nfpClose()" class="btn">Cancel</button>
+      <button id="nfp-submit" onclick="nfpSubmit()" class="btn btn-primary">Add FP</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// FP add modal — destination patterns only (source-FP from /network was
+// removed because it silenced the device on every panel and dashboard
+// counts, which is rarely the intent on a per-panel investigation).
+// _nfp.btn is the originating button so we can fade out its row on
+// success. The pattern lives in the #nfp-target input (editable).
+var _nfp = {btn: null};
+
+function nfpOpenDst(btn) {
+  // Default the pattern to "*.<sld.tld>" derived from the FQDN. When RITA
+  // had no FQDN (bare IP), use the Zeek-recovered enrichment name so the
+  // suggested pattern is *.knock.app rather than 3.146.81.149 — far more
+  // useful as an FP. Last resort: the literal IP. Operator edits inline.
+  var raw     = (btn.dataset.dest    || '').trim();
+  var enrich  = (btn.dataset.enrich  || '').trim();
+  var nameSrc = (raw && !/^\d+\.\d+\.\d+\.\d+$/.test(raw)) ? raw : enrich;
+  var pat;
+  if (nameSrc && nameSrc.indexOf('.') !== -1) {
+    var parts = nameSrc.split('.');
+    pat = (parts.length > 2) ? '*.' + parts.slice(1).join('.') : nameSrc;
+  } else {
+    pat = raw;  // bare IP with no enrichment — fall back to literal
+  }
+  // Reason prefill: Zeek FQDN ("api.knock.app") beats GeoIP ASN org.
+  _nfp = {btn: btn,
+          prefill: (enrich || btn.dataset.org || '').slice(0, 50)};
+  document.getElementById('nfp-target').value = pat;
+  _nfpShow();
+}
+
+function _nfpShow() {
+  var reasonEl = document.getElementById('nfp-reason');
+  reasonEl.value = (_nfp.prefill || '');
+  document.getElementById('nfp-msg').style.display = 'none';
+  nfpUpdateSubmitEnabled();
+  document.getElementById('nfp-dialog').style.display = 'flex';
+  setTimeout(function() { reasonEl.focus(); reasonEl.select(); }, 50);
+}
+
+function nfpUpdateSubmitEnabled() {
+  var pat    = document.getElementById('nfp-target').value.trim();
+  var reason = document.getElementById('nfp-reason').value.trim();
+  document.getElementById('nfp-submit').disabled = !pat || !reason;
+}
+
+function nfpClose() {
+  document.getElementById('nfp-dialog').style.display = 'none';
+  _nfp = {btn: null};
+}
+
+function nfpSubmit() {
+  var pat    = document.getElementById('nfp-target').value.trim();
+  var reason = document.getElementById('nfp-reason').value.trim();
+  if (!pat)    { document.getElementById('nfp-target').focus(); return; }
+  if (!reason) { document.getElementById('nfp-reason').focus(); return; }
+  document.getElementById('nfp-submit').disabled = true;
+
+  var fd = new FormData();
+  fd.append('reason', reason);
+  fd.append('pattern', pat);
+
+  fetch('{{ url_for("fps_add_domain") }}', {method: 'POST', body: fd})
+    .then(function(r) { return r.headers.get('content-type') &&
+                              r.headers.get('content-type').indexOf('json') !== -1
+                              ? r.json() : {ok: r.ok}; })
+    .then(function(data) {
+      if (data.ok !== false) {
+        // Fade the originating element out so the user sees instant effect.
+        // Inline chips fade themselves (multiple per cell); full-row buttons
+        // fade the whole row.
+        if (_nfp.btn) {
+          var target = _nfp.btn.classList.contains('fp-inline')
+            ? _nfp.btn
+            : _nfp.btn.closest('tr');
+          if (target) {
+            target.style.transition = 'opacity .4s';
+            target.style.opacity = '0.25';
+          }
+        }
+        var msg = document.getElementById('nfp-msg');
+        msg.textContent = 'FP added — will be suppressed on next page load.';
+        msg.style.display = 'block';
+        setTimeout(nfpClose, 1500);
+      } else {
+        document.getElementById('nfp-submit').disabled = false;
+      }
+    })
+    .catch(function() { document.getElementById('nfp-submit').disabled = false; });
+}
+
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape' && document.getElementById('nfp-dialog').style.display !== 'none') {
+    nfpClose();
+  }
+});
+</script>
+
+{% endblock %}

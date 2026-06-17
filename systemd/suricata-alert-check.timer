@@ -1,0 +1,10 @@
+[Unit]
+Description=BeaconButty — hourly Suricata P1 alert check
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

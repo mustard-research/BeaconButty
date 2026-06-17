@@ -1,0 +1,14 @@
+[Unit]
+Description=BeaconButty — daily slow-cadence hunt digest
+Requires=beaconbutty-slow-cadence-digest.service
+
+[Timer]
+# Daily at 08:00 UTC (= 09:00 BST). Lines up with the morning report
+# cadence so the operator gets one tidy "morning briefing" rather than
+# two separate notifications scattered through the day.
+OnCalendar=*-*-* 08:00:00
+Persistent=true
+RandomizedDelaySec=2m
+
+[Install]
+WantedBy=timers.target

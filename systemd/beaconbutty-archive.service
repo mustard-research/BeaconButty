@@ -1,0 +1,11 @@
+[Unit]
+Description=BeaconButty — full rootfs archive
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/home/dm/BeaconButty/scripts/backup-archive.sh
+User=root
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=3600

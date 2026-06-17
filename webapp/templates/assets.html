@@ -1,0 +1,212 @@
+{% extends "base.html" %}
+{% block title %}Assets{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>LAN Assets</h1>
+  <p>{{ assets | length }} device{{ 's' if assets | length != 1 else '' }} discovered on the network.</p>
+</div>
+
+{% if not assets %}
+  <div class="card">
+    <div class="empty-state">
+      <div class="empty-icon">📭</div>
+      <p>No assets data found. Check <code>/var/lib/beaconbutty/assets.json</code>.</p>
+    </div>
+  </div>
+{% else %}
+<div class="card">
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>IP Address</th>
+          <th>Hostname</th>
+          <th>OS</th>
+          <th>MAC</th>
+          <th>Vendor</th>
+          <th>Open Ports</th>
+          <th>JA4</th>
+          <th>Last Seen</th>
+          <th>Source</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for ip, info in assets %}
+        <tr{% if info.ghost %} style="opacity:0.55;background:rgba(139,148,158,0.04);"{% endif %}>
+          <td class="mono text-blue">
+            {{ ip }}
+            {% if info.ghost %}
+              <span class="badge badge-none" style="font-size:10px;margin-left:6px;font-style:italic;"
+                    title="Not currently live — last seen {{ info.days_ago }}d ago ({{ info.last_seen }})">
+                ghost · {{ info.days_ago }}d
+              </span>
+            {% endif %}
+          </td>
+          <td>
+            {% if info.hostname %}
+              {{ info.hostname }}
+              {% if info.hostname_source == "manual" %}
+                <span class="bw-pill" title="From device-names.json">manual</span>
+              {% endif %}
+            {% else %}
+              <span class="text-dim">—</span>
+            {% endif %}
+          </td>
+          <td>
+            {% set j = ja4_summaries.get(ip) %}
+            {% if info.os %}
+              <span style="font-size:12px;">{{ info.os }}</span>
+              <span class="text-dim" style="font-size:10px;margin-left:4px;" title="OS source: nmap scan (assets.sh)">nmap</span>
+            {% elif j and j.client_label %}
+              <span style="font-size:12px;{% if j.client_threat %}color:var(--red);font-weight:600;{% endif %}">{{ j.client_label }}</span>
+              <span class="text-dim" style="font-size:10px;margin-left:4px;" title="JA4 fingerprint match — modal hash {{ j.modal }} ({{ j.client_src }})">JA4</span>
+            {% else %}
+              <span class="text-dim">—</span>
+            {% endif %}
+            {% if j and j.any_threat %}
+              {% set _tt = [] %}
+              {% for d in j.threat_details %}
+                {% set _ = _tt.append(d.label ~ '\n  ' ~ d.ja4 ~ (' (last seen ' ~ d.last_seen ~ ')' if d.last_seen else '')) %}
+              {% endfor %}
+              {% set _pop = 'JA4 fingerprint match (exact, ja4plus-mapping):\n\n' ~ (_tt | join('\n\n')) ~ '\n\nFades after ' ~ ja4_threat_fade_days ~ ' days if last_seen falls outside the window.' %}
+              <span class="badge badge-high bb-pop" tabindex="0"
+                    style="font-size:10px;margin-left:6px;"
+                    data-pop="{{ _pop }}"
+                    title="{{ _pop }}">THREAT</span>
+            {% endif %}
+          </td>
+          <td class="mono" style="font-size:11px;">
+            {% if info.mac %}
+              {{ info.mac }}
+            {% else %}
+              <span class="text-dim">—</span>
+            {% endif %}
+          </td>
+          <td style="font-size:12px;">
+            {% if info.mac_vendor %}
+              {{ info.mac_vendor }}
+            {% else %}
+              <span class="text-dim">—</span>
+            {% endif %}
+          </td>
+          <td style="font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+            {% if info.open_ports %}
+              {% if info.open_ports is string %}
+                <span class="mono text-dim">{{ info.open_ports }}</span>
+              {% else %}
+                <span class="mono text-dim">{{ info.open_ports | join(', ') }}</span>
+              {% endif %}
+            {% else %}
+              <span class="text-dim">—</span>
+            {% endif %}
+          </td>
+          <td style="font-size:11px;white-space:nowrap;">
+            {% set j = ja4_summaries.get(ip) %}
+            {% if j and j.n_total %}
+              <span class="mono" title="Modal fingerprint: {{ j.modal }} ({{ j.modal_count }} obs). First seen {{ j.first_seen or 'today' }}.">
+                {{ j.n_total }} fp
+              </span>
+              <span class="text-dim" style="font-size:10px;margin-left:4px;">· today {{ j.n_today }}</span>
+              {% if j.n_new_today %}
+                <span class="badge badge-warn" style="font-size:10px;margin-left:6px;"
+                      title="{{ j.n_new_today }} fingerprint(s) seen for the first time today on this device.">
+                  +{{ j.n_new_today }} new
+                </span>
+              {% endif %}
+            {% else %}
+              <span class="text-dim">—</span>
+            {% endif %}
+          </td>
+          <td style="font-size:12px;white-space:nowrap;">
+            {% if info.last_seen %}
+              <span class="text-dim">{{ info.last_seen }}</span>
+            {% else %}
+              <span class="text-dim">—</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if info.source %}
+              <span class="badge badge-info" style="font-size:10px;">{{ info.source }}</span>
+            {% else %}
+              <span class="text-dim">—</span>
+            {% endif %}
+          </td>
+          <td style="white-space:nowrap;">
+            {% if info.mac and info.mac.lower() in fp_macs %}
+              <span class="badge badge-warn" style="font-size:11px;">In FP list</span>
+            {% else %}
+              <button class="btn btn-sm"
+                      data-addr="{{ info.mac if info.mac else ip }}"
+                      data-reason="{{ (info.hostname or info.mac_vendor or ip)[:50] }}"
+                      onclick="openFpModal(this)">Add to FP</button>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{# ── Add-to-FP modal ── #}
+<div id="fp-modal"
+     style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.55);
+            z-index:1000;align-items:center;justify-content:center;">
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;
+              padding:28px 32px;min-width:360px;max-width:480px;width:90%;">
+    <div style="font-size:16px;font-weight:600;margin-bottom:4px;">Add False Positive</div>
+    <div id="fp-modal-addr" class="mono text-dim" style="font-size:12px;margin-bottom:20px;"></div>
+    <form method="post" action="{{ url_for('fps_add') }}">
+      <input type="hidden" id="fp-addr-input" name="addr">
+      <div style="margin-bottom:16px;">
+        <label for="fp-reason-input"
+               style="display:block;font-size:12px;text-transform:uppercase;
+                      letter-spacing:.05em;color:var(--text-dim);margin-bottom:6px;">
+          Reason <span style="font-weight:400;">(max 50 chars)</span>
+        </label>
+        <input type="text" id="fp-reason-input" name="reason" maxlength="50" required
+               style="width:100%;box-sizing:border-box;padding:8px 10px;
+                      background:var(--bg);border:1px solid var(--border);
+                      border-radius:6px;color:var(--text);font-size:13px;">
+      </div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;">
+        <button type="button" onclick="closeFpModal()"
+                style="padding:6px 16px;border-radius:6px;border:1px solid var(--border);
+                       background:transparent;color:var(--text-dim);cursor:pointer;font-size:13px;">
+          Cancel
+        </button>
+        <button type="submit" class="btn btn-primary">Add to FP</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+function openFpModal(btn) {
+  var addr   = btn.dataset.addr;
+  var reason = btn.dataset.reason;
+  document.getElementById('fp-addr-input').value   = addr;
+  document.getElementById('fp-modal-addr').textContent = addr;
+  document.getElementById('fp-reason-input').value = reason;
+  var modal = document.getElementById('fp-modal');
+  modal.style.display = 'flex';
+  var inp = document.getElementById('fp-reason-input');
+  inp.focus();
+  inp.select();
+}
+function closeFpModal() {
+  document.getElementById('fp-modal').style.display = 'none';
+}
+var modal = document.getElementById('fp-modal');
+if (modal) {
+  modal.addEventListener('click', function(e) {
+    if (e.target === this) closeFpModal();
+  });
+}
+</script>
+{% endblock %}

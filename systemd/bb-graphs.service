@@ -1,0 +1,14 @@
+[Unit]
+Description=BeaconButty web dashboard
+After=network.target
+
+[Service]
+Type=simple
+User=dm
+WorkingDirectory=/home/dm/BeaconButty/webapp
+ExecStart=/usr/bin/python3 /home/dm/BeaconButty/webapp/app.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

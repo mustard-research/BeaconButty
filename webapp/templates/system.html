@@ -1,0 +1,407 @@
+{% extends "base.html" %}
+{% block title %}System{% endblock %}
+
+{% block head %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>System</h1>
+  <p>Thermal, fan and CPU history from the bb-watchdog telemetry feed.</p>
+</div>
+
+<div class="card">
+  <div class="card-title">
+    Thermal &amp; Fan History
+    <small id="data-range"></small>
+  </div>
+
+  <div class="toggle-group" id="range-buttons">
+    <button class="btn btn-sm btn-active" data-days="1" onclick="setDays(1)">Today</button>
+    <button class="btn btn-sm"            data-days="3" onclick="setDays(3)">3 Days</button>
+    <button class="btn btn-sm"            data-days="7" onclick="setDays(7)">7 Days</button>
+  </div>
+
+  <div class="chart-container">
+    <canvas id="tempChart"></canvas>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-title">CPU Usage</div>
+  <div class="chart-container sm">
+    <canvas id="cpuChart"></canvas>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  let currentDays = 1;
+  let tempChart = null;
+  let cpuChart  = null;
+  let dayBoundaries = [];  // [{index, label}] for midnight dividers, shared by both charts
+
+  const DARK = {
+    bg:          'transparent',
+    grid:        'rgba(48,54,61,0.5)',
+    tick:        '#8b949e',
+    blue:        '#58a6ff',
+    green:       '#3fb950',
+    greenBg:     'rgba(63,185,80,0.12)',
+    yellow:      '#d29922',
+    yellowBg:    'rgba(210,153,34,0.12)',
+    purple:      '#bc8cff',
+    purpleBg:    'rgba(188,140,255,0.12)',
+  };
+
+  // Fan threshold reference lines
+  const THRESHOLDS = [
+    { temp: 54, label: 'RPi off',  color: DARK.green  },
+    { temp: 55, label: 'Pir off', color: DARK.yellow },
+    { temp: 58, label: 'RPi on',  color: DARK.green  },
+    { temp: 60, label: 'Pir on',  color: DARK.yellow },
+  ];
+
+  const thresholdPlugin = {
+    id: 'thresholdLines',
+    afterDraw: function(ch) {
+      const ctx   = ch.ctx;
+      const xAxis = ch.scales.x;
+      const yAxis = ch.scales.yTemp;
+      if (!xAxis || !yAxis) return;
+      ctx.save();
+      ctx.lineWidth = 1;
+      ctx.setLineDash([5, 5]);
+      ctx.font = '11px monospace';
+      ctx.textAlign = 'center';
+      THRESHOLDS.forEach(function(t) {
+        const y  = yAxis.getPixelForValue(t.temp);
+        if (y < yAxis.top || y > yAxis.bottom) return;
+        ctx.strokeStyle = t.color;
+        ctx.beginPath();
+        ctx.moveTo(xAxis.left, y);
+        ctx.lineTo(xAxis.right, y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        var text  = t.temp + '° ' + t.label;
+        var tw    = ctx.measureText(text).width;
+        var pad   = 4;
+        var cx    = (xAxis.left + xAxis.right) / 2;
+        var bh    = 15;
+        ctx.fillStyle = 'rgba(13,17,23,0.82)';
+        ctx.fillRect(cx - tw / 2 - pad, y - bh, tw + pad * 2, bh);
+        ctx.fillStyle = t.color;
+        ctx.fillText(text, cx, y - 3);
+        ctx.setLineDash([5, 5]);
+      });
+      ctx.restore();
+    },
+  };
+
+  // Midnight dividers — reused by both charts. yAxisId differs, so pick the scale dynamically.
+  function makeDayDivPlugin(yScaleId) {
+    return {
+      id: 'dayDividers_' + yScaleId,
+      afterDraw: function(ch) {
+        if (!dayBoundaries.length) return;
+        const ctx   = ch.ctx;
+        const xAxis = ch.scales.x;
+        const yAxis = ch.scales[yScaleId];
+        if (!xAxis || !yAxis) return;
+        ctx.save();
+        ctx.strokeStyle = 'rgba(139,148,158,0.35)';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([4, 4]);
+        ctx.font = '11px monospace';
+        dayBoundaries.forEach(function(b) {
+          const x = xAxis.getPixelForValue(b.index);
+          ctx.beginPath();
+          ctx.moveTo(x, yAxis.top);
+          ctx.lineTo(x, yAxis.bottom);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.textAlign = 'left';
+          var tw  = ctx.measureText(b.label).width;
+          var pad = 4;
+          var tx  = x + 4;
+          var ty  = yAxis.top + 13;
+          ctx.fillStyle = 'rgba(13,17,23,0.82)';
+          ctx.fillRect(tx - pad, ty - 11, tw + pad * 2, 14);
+          ctx.fillStyle = 'rgba(139,148,158,0.9)';
+          ctx.fillText(b.label, tx, ty);
+          ctx.setLineDash([4, 4]);
+        });
+        ctx.restore();
+      },
+    };
+  }
+
+  function setDays(days) {
+    currentDays = days;
+    document.querySelectorAll('#range-buttons .btn').forEach(function(b) {
+      b.classList.toggle('btn-active', parseInt(b.dataset.days) === days);
+    });
+    fetchAndRender(days);
+  }
+
+  function fetchAndRender(days) {
+    fetch('/api/system?days=' + days)
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        data = thinData(data, 150);
+        computeDayBoundaries(data);
+        updateDataRange(data);
+        renderTempChart(data);
+        renderCpuChart(data);
+      })
+      .catch(function(err) { console.error('System fetch error:', err); });
+  }
+
+  function thinData(arr, target) {
+    if (arr.length <= target) return arr;
+    const result = [];
+    const step = arr.length / target;
+    for (let i = 0; i < target; i++) result.push(arr[Math.floor(i * step)]);
+    return result;
+  }
+
+  function computeDayBoundaries(data) {
+    dayBoundaries = [];
+    if (currentDays <= 1) return;
+    const days = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    let prevDate = '';
+    data.forEach(function(rec, idx) {
+      const d = rec.time.slice(0, 10);
+      if (prevDate && d !== prevDate) {
+        const dt = new Date(d);
+        dayBoundaries.push({
+          index: idx,
+          label: days[dt.getDay()] + ' ' + dt.getDate() + ' ' + months[dt.getMonth()],
+        });
+      }
+      prevDate = d;
+    });
+  }
+
+  function updateDataRange(data) {
+    const el = document.getElementById('data-range');
+    if (!el) return;
+    if (data.length > 0) {
+      el.textContent =
+        '— ' + data[0].time.slice(0,16).replace('T',' ') +
+        ' → ' + data[data.length-1].time.slice(0,16).replace('T',' ');
+    } else {
+      el.textContent = '— no data';
+    }
+  }
+
+  function renderTempChart(data) {
+    const labels      = data.map(function(d) { return d.time; });
+    const temps       = data.map(function(d) { return d.temp_c; });
+    const rpiFanVals  = data.map(function(d) { return d.rpi_fan ? 1 : 0; });
+    const pirFanVals  = data.map(function(d) { return d.pironman_fan ? 1 : 0; });
+
+    const validTemps  = temps.filter(function(t) { return t !== null && t !== undefined; }).sort(function(a,b){return a-b;});
+    function pct(arr, p) { return arr[Math.floor((arr.length - 1) * p / 100)]; }
+    const p2    = validTemps.length ? pct(validTemps, 2)  : 0;
+    const p98   = validTemps.length ? pct(validTemps, 98) : 100;
+    const grace = (p98 - p2) * 0.2;
+    const minTemp = p2  - grace;
+    const maxTemp = p98 + grace;
+
+    const ctx = document.getElementById('tempChart').getContext('2d');
+    if (tempChart) { tempChart.destroy(); tempChart = null; }
+
+    tempChart = new Chart(ctx, {
+      type: 'line',
+      plugins: [makeDayDivPlugin('yTemp'), thresholdPlugin],
+      data: {
+        labels: labels,
+        datasets: [
+          {
+            label: 'Temperature (°C)',
+            data: temps,
+            borderColor: DARK.blue,
+            backgroundColor: 'rgba(88,166,255,0.08)',
+            borderWidth: 2,
+            pointRadius: 0,
+            pointHoverRadius: 4,
+            tension: 0.3,
+            fill: true,
+            yAxisID: 'yTemp',
+          },
+          {
+            label: 'RPi Fan',
+            data: rpiFanVals,
+            borderColor: DARK.green,
+            borderWidth: 1.5,
+            pointRadius: 0,
+            stepped: 'before',
+            fill: false,
+            yAxisID: 'yFan',
+          },
+          {
+            label: 'Pironman Fan',
+            data: pirFanVals,
+            borderColor: DARK.yellow,
+            borderWidth: 1.5,
+            pointRadius: 0,
+            stepped: 'before',
+            fill: false,
+            yAxisID: 'yFan',
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: {
+            labels: { color: DARK.tick, usePointStyle: true, pointStyleWidth: 12 },
+          },
+          tooltip: {
+            backgroundColor: '#161b22',
+            borderColor: '#30363d',
+            borderWidth: 1,
+            titleColor: '#c9d1d9',
+            bodyColor: '#8b949e',
+            callbacks: {
+              title: function(items) { return items[0].label.replace('T', ' ').slice(0, 16); },
+              label: function(item) {
+                if (item.datasetIndex === 0) {
+                  return ' Temp: ' + (item.raw !== null ? item.raw + ' °C' : '—');
+                } else if (item.datasetIndex === 1) {
+                  return ' RPi Fan: ' + (item.raw === 1 ? 'ON' : 'off');
+                } else {
+                  return ' Pironman Fan: ' + (item.raw === 1 ? 'ON' : 'off');
+                }
+              },
+            },
+          },
+        },
+        scales: {
+          x: {
+            ticks: {
+              color: DARK.tick,
+              maxTicksLimit: 12,
+              maxRotation: 0,
+              callback: function(val) {
+                const lbl = this.getLabelForValue(val);
+                return lbl ? lbl.slice(11, 16) : '';
+              },
+            },
+            grid: { color: DARK.grid },
+          },
+          yTemp: {
+            position: 'left',
+            min: minTemp,
+            max: maxTemp,
+            title: { display: true, text: '°C', color: DARK.tick, font: { size: 11 } },
+            ticks: { color: DARK.tick },
+            grid:  { color: DARK.grid },
+          },
+          yFan: {
+            position: 'right',
+            min: 0,
+            max: 1,
+            ticks: {
+              color: DARK.tick,
+              stepSize: 1,
+              callback: function(v) { return v === 1 ? 'ON' : 'off'; },
+            },
+            grid: { drawOnChartArea: false },
+          },
+        },
+      },
+    });
+  }
+
+  function renderCpuChart(data) {
+    const labels = data.map(function(d) { return d.time; });
+    const cpu    = data.map(function(d) { return d.cpu_pct; });
+
+    const ctx = document.getElementById('cpuChart').getContext('2d');
+    if (cpuChart) { cpuChart.destroy(); cpuChart = null; }
+
+    cpuChart = new Chart(ctx, {
+      type: 'line',
+      plugins: [makeDayDivPlugin('yCpu')],
+      data: {
+        labels: labels,
+        datasets: [
+          {
+            label: 'CPU (%)',
+            data: cpu,
+            borderColor: DARK.purple,
+            backgroundColor: DARK.purpleBg,
+            borderWidth: 2,
+            pointRadius: 0,
+            pointHoverRadius: 4,
+            tension: 0.3,
+            fill: true,
+            spanGaps: true,
+            yAxisID: 'yCpu',
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: {
+            labels: { color: DARK.tick, usePointStyle: true, pointStyleWidth: 12 },
+          },
+          tooltip: {
+            backgroundColor: '#161b22',
+            borderColor: '#30363d',
+            borderWidth: 1,
+            titleColor: '#c9d1d9',
+            bodyColor: '#8b949e',
+            callbacks: {
+              title: function(items) { return items[0].label.replace('T', ' ').slice(0, 16); },
+              label: function(item) {
+                return ' CPU: ' + (item.raw !== null ? item.raw + ' %' : '—');
+              },
+            },
+          },
+        },
+        scales: {
+          x: {
+            ticks: {
+              color: DARK.tick,
+              maxTicksLimit: 12,
+              maxRotation: 0,
+              callback: function(val) {
+                const lbl = this.getLabelForValue(val);
+                return lbl ? lbl.slice(11, 16) : '';
+              },
+            },
+            grid: { color: DARK.grid },
+          },
+          yCpu: {
+            position: 'left',
+            min: 0,
+            max: 100,
+            title: { display: true, text: '%', color: DARK.tick, font: { size: 11 } },
+            ticks: { color: DARK.tick, stepSize: 25 },
+            grid:  { color: DARK.grid },
+          },
+        },
+      },
+    });
+  }
+
+  // Initial load
+  fetchAndRender(1);
+  window.setDays = setDays;
+})();
+</script>
+{% endblock %}

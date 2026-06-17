@@ -1,0 +1,547 @@
+{% extends "base.html" %}
+{% block title %}Backup{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div class="header-row">
+    <div>
+      <h1>Backup</h1>
+      <p>Config snapshots, full archives, and full-disk clone</p>
+    </div>
+  </div>
+</div>
+
+{# ── Config snapshots ──────────────────────────────────────────────────────── #}
+<div class="card" style="margin-bottom:24px;">
+  <div class="card-header" style="display:flex;align-items:center;justify-content:space-between;">
+    <h2 style="margin:0;font-size:15px;">Config Snapshots</h2>
+    <button id="run-backup-btn" class="btn btn-sm" onclick="runBackup()">Run now</button>
+  </div>
+
+  <div id="backup-status-bar" style="display:none;padding:10px 16px;font-size:13px;
+       background:var(--bg);border-bottom:1px solid var(--border);color:var(--text-dim);">
+    <span id="backup-status-msg">Running backup…</span>
+  </div>
+
+  <p style="padding:0 16px 4px;color:var(--text-dim);font-size:13px;">
+    Stored in <code>/var/lib/beaconbutty/backups/</code> · last 14 kept (≈2 weeks) ·
+    daily timer runs at 02:00
+  </p>
+
+  {% if backups %}
+  <table class="data-table">
+    <thead>
+      <tr><th>Date</th><th>Time</th><th>File</th><th>Size</th><th></th></tr>
+    </thead>
+    {% for group in backup_groups %}
+      {% if group.is_current %}
+      <tbody>
+        {% for b in group.entries %}
+        <tr>
+          <td>{{ b.date }}</td>
+          <td style="color:var(--text-dim);">{{ b.mtime }}</td>
+          <td style="font-family:monospace;font-size:12px;color:var(--text-dim);">{{ b.filename }}</td>
+          <td>{{ b.size }}</td>
+          <td>
+            <a href="{{ url_for('backup_download', filename=b.filename) }}"
+               class="btn btn-sm" style="font-size:12px;">Download</a>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+      {% else %}
+      <tbody class="bg-week-group" data-collapsed="1">
+        <tr class="bg-week-header" onclick="toggleBackupWeek(this)">
+          <td colspan="5" style="padding:8px 12px;color:var(--text-dim);font-size:13px;
+              cursor:pointer;user-select:none;background:var(--bg);border-top:1px solid var(--border);">
+            <span class="bg-arrow" style="display:inline-block;width:14px;">›</span>
+            {{ group.label }}
+            <span style="color:var(--text-dim);font-weight:400;">({{ group.entries|length }})</span>
+          </td>
+        </tr>
+        {% for b in group.entries %}
+        <tr class="bg-week-row" style="display:none;">
+          <td>{{ b.date }}</td>
+          <td style="color:var(--text-dim);">{{ b.mtime }}</td>
+          <td style="font-family:monospace;font-size:12px;color:var(--text-dim);">{{ b.filename }}</td>
+          <td>{{ b.size }}</td>
+          <td>
+            <a href="{{ url_for('backup_download', filename=b.filename) }}"
+               class="btn btn-sm" style="font-size:12px;">Download</a>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+      {% endif %}
+    {% endfor %}
+  </table>
+  {% else %}
+  <p style="padding:16px;color:var(--text-dim);">No snapshots yet — click <strong>Run now</strong> to create the first one.</p>
+  {% endif %}
+</div>
+
+{# ── Full archive (rootfs tarball) ─────────────────────────────────────────── #}
+<div class="card" style="margin-bottom:24px;">
+  <div class="card-header" style="display:flex;align-items:center;justify-content:space-between;">
+    <h2 style="margin:0;font-size:15px;">Full Archive  <span style="font-weight:400;color:var(--text-dim);font-size:13px;">(rootfs + ClickHouse data)</span></h2>
+    <button id="run-archive-btn" class="btn btn-sm" onclick="runArchive()"
+            {% if archive_state.running %}disabled{% endif %}>
+      {% if archive_state.running %}Running…{% else %}Run now{% endif %}
+    </button>
+  </div>
+
+  <p style="padding:0 16px 4px;color:var(--text-dim);font-size:13px;">
+    Full tarball of the rootfs + ClickHouse history + logs, stored in
+    <code>/var/lib/beaconbutty/backups/</code> · last 4 kept · weekly timer runs Sunday 03:00.<br>
+    <strong style="color:var(--yellow);">ClickHouse is stopped for ~3–5 min during the archive</strong> —
+    the Beacons page will briefly fail while it runs.
+  </p>
+
+  {% if archives %}
+  <table class="data-table">
+    <thead>
+      <tr><th>Date</th><th>Time</th><th>File</th><th>Size</th><th></th></tr>
+    </thead>
+    <tbody>
+      {% for a in archives %}
+      <tr>
+        <td>{{ a.filename | replace('archive-','') | replace('.tar.gz','') }}</td>
+        <td style="color:var(--text-dim);">{{ a.mtime }}</td>
+        <td style="font-family:monospace;font-size:12px;color:var(--text-dim);">{{ a.filename }}</td>
+        <td>{{ a.size }}</td>
+        <td>
+          <a href="{{ url_for('backup_archive_download', filename=a.filename) }}"
+             class="btn btn-sm" style="font-size:12px;">Download</a>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p style="padding:16px;color:var(--text-dim);">No archives yet — click <strong>Run now</strong> to create the first one (takes several minutes).</p>
+  {% endif %}
+
+  <div id="archive-output-wrap" style="{% if not archive_state.running and archive_state.rc is none %}display:none;{% endif %}
+       border-top:1px solid var(--border);padding:14px 16px;">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
+      <span id="archive-status-label" style="font-size:13px;font-weight:600;">
+        {% if archive_state.running %}Archiving…
+        {% elif archive_state.rc == 0 %}Archive complete ✓
+        {% elif archive_state.rc is not none %}Archive failed (exit {{ archive_state.rc }})
+        {% endif %}
+      </span>
+      {% if archive_state.started %}
+      <span style="color:var(--text-dim);font-size:12px;">started {{ archive_state.started }}</span>
+      {% endif %}
+    </div>
+    <pre id="archive-log" style="background:var(--bg);border:1px solid var(--border);padding:10px 14px;
+         border-radius:6px;font-size:12px;line-height:1.5;max-height:320px;overflow-y:auto;
+         white-space:pre-wrap;color:var(--text);">{{ archive_state.lines | join('\n') }}</pre>
+  </div>
+</div>
+
+{# ── USB Clone (rpi-clone) ─────────────────────────────────────────────────── #}
+<div class="card">
+  <div class="card-header" style="display:flex;align-items:center;justify-content:space-between;">
+    <h2 style="margin:0;font-size:15px;">Full-Disk Clone  <span style="font-weight:400;color:var(--text-dim);font-size:13px;">(rpi-clone)</span></h2>
+    <span id="clone-running-badge" style="display:{% if clone_state.running %}inline-flex{% else %}none{% endif %};
+          align-items:center;gap:6px;font-size:12px;color:var(--yellow);font-weight:600;">
+      <span class="pulse-dot"></span>Cloning in progress…
+    </span>
+  </div>
+
+  {% if not rpi_clone %}
+  <div style="padding:16px;">
+    <p style="color:var(--yellow);margin-bottom:8px;">rpi-clone is not installed.</p>
+    <p style="color:var(--text-dim);font-size:13px;">Install it with:</p>
+    <pre style="background:var(--bg);border:1px solid var(--border);padding:10px 14px;border-radius:6px;
+                font-size:13px;color:var(--text);">sudo apt install rpi-clone</pre>
+    <p style="color:var(--text-dim);font-size:13px;margin-top:8px;">
+      If not in apt: <code>sudo curl -L https://raw.githubusercontent.com/geerlingguy/rpi-clone/master/rpi-clone -o /usr/local/bin/rpi-clone && sudo chmod +x /usr/local/bin/rpi-clone</code>
+    </p>
+  </div>
+
+  {% elif not usb_drives %}
+  <div style="padding:16px;">
+    <p style="color:var(--text-dim);">No removable drives detected.  Insert a USB drive (16 GB or larger) and
+       <a href="{{ url_for('backup') }}">refresh</a>.</p>
+  </div>
+
+  {% else %}
+  <p style="padding:0 16px 4px;color:var(--text-dim);font-size:13px;">
+    Creates a bootable copy of the entire NVMe onto the selected USB drive.
+    <strong style="color:var(--red);">All existing data on the target drive will be overwritten.</strong>
+  </p>
+
+  <div style="padding:12px 16px 16px;display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
+    <select id="clone-device" style="background:var(--bg);color:var(--text);border:1px solid var(--border);
+            border-radius:6px;padding:6px 10px;font-size:13px;">
+      {% for d in usb_drives %}
+      <option value="{{ d.name }}">{{ d.path }}  —  {{ d.size }}
+        {%- if d.label %}  ({{ d.label }}){% endif %}
+        {%- if d.mountpoints %}  [mounted: {{ d.mountpoints | join(', ') }}]{% endif %}
+      </option>
+      {% endfor %}
+    </select>
+    <button id="clone-btn" class="btn btn-sm" style="background:var(--red);border-color:var(--red);"
+            onclick="startClone()">Clone to USB</button>
+  </div>
+  {% endif %}
+
+  {# Clone progress — shown whenever a job is running or has completed #}
+  <div id="clone-output-wrap" style="{% if not clone_state.running and clone_state.rc is none %}display:none;{% endif %}
+       border-top:1px solid var(--border);padding:14px 16px;">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
+      <span id="clone-status-label" style="font-size:13px;font-weight:600;">
+        {% if clone_state.running %}Cloning…
+        {% elif clone_state.rc == 0 %}Clone complete
+        {% elif clone_state.rc is not none %}Clone failed (exit {{ clone_state.rc }})
+        {% endif %}
+      </span>
+      {% if clone_state.started %}
+      <span style="color:var(--text-dim);font-size:12px;">started {{ clone_state.started }}</span>
+      {% endif %}
+    </div>
+    <pre id="clone-log" style="background:var(--bg);border:1px solid var(--border);padding:10px 14px;
+         border-radius:6px;font-size:12px;line-height:1.5;max-height:320px;overflow-y:auto;
+         white-space:pre-wrap;color:var(--text);">{{ clone_state.lines | join('\n') }}</pre>
+  </div>
+</div>
+{# ── Restore instructions ──────────────────────────────────────────────────── #}
+<div class="card" style="margin-top:24px;">
+  <div class="card-header" style="cursor:pointer;user-select:none;" onclick="toggleRestore()">
+    <h2 style="margin:0;font-size:15px;display:flex;align-items:center;gap:8px;">
+      Restore Instructions
+      <span id="restore-chevron" style="font-size:12px;color:var(--text-dim);">&#9660;</span>
+    </h2>
+  </div>
+
+  <div id="restore-body" style="display:none;">
+
+    {# ── Option A ── #}
+    <div style="padding:16px 20px 0;">
+      <h3 style="font-size:14px;color:var(--accent);margin-bottom:12px;">Option A — Config snapshot restore</h3>
+      <p style="color:var(--text-dim);font-size:13px;margin-bottom:12px;">
+        Use this when the Pi hardware is intact but the OS is corrupted, or when migrating to a new Pi.
+        Requires a fresh Pi OS install first.
+      </p>
+
+      <ol style="font-size:13px;line-height:2;padding-left:20px;color:var(--text);">
+        <li>Flash a fresh <strong>Raspberry Pi OS Lite (64-bit)</strong> to a new NVMe using Raspberry Pi Imager.</li>
+        <li>Boot and run the BeaconButty setup scripts to reinstall dependencies (Zeek, ClickHouse, RITA, Suricata).</li>
+        <li>Copy your snapshot file to the Pi, then extract it over <code>/</code>:
+          <pre style="background:var(--bg);border:1px solid var(--border);padding:10px 14px;border-radius:6px;
+                      margin:6px 0 0;font-size:12px;color:var(--text);">sudo tar -xzf config-YYYY-MM-DD.tar.gz -C /</pre>
+        </li>
+        <li>Restore the package list:
+          <pre style="background:var(--bg);border:1px solid var(--border);padding:10px 14px;border-radius:6px;
+                      margin:6px 0 0;font-size:12px;color:var(--text);">sudo dpkg --set-selections &lt; packages-YYYY-MM-DD.txt
+sudo apt-get -y dselect-upgrade</pre>
+        </li>
+        <li>Reload systemd and re-enable services:
+          <pre style="background:var(--bg);border:1px solid var(--border);padding:10px 14px;border-radius:6px;
+                      margin:6px 0 0;font-size:12px;color:var(--text);">sudo systemctl daemon-reload
+sudo systemctl enable --now \
+  zeek.service bb-graphs.service bb-watchdog.service bb0-display.service \
+  beaconbutty-assets.timer beaconbutty-backup.timer beaconbutty-housekeeping.timer \
+  beacon-report.timer rita-analyze.timer suricata-update.timer wan-watchdog.timer \
+  iptables.service ip6tables.service log2ram.service log2ram-daily.timer</pre>
+        </li>
+        <li>Reboot.</li>
+      </ol>
+      <p style="color:var(--text-dim);font-size:12px;margin-top:10px;padding-bottom:16px;">
+        Note: ClickHouse beacon history is <strong>not</strong> included in the snapshot.
+        Historical data will be lost but the system will start collecting fresh data immediately.
+      </p>
+    </div>
+
+    <div style="border-top:1px solid var(--border);"></div>
+
+    {# ── Option B ── #}
+    <div style="padding:16px 20px 0;">
+      <h3 style="font-size:14px;color:var(--accent);margin-bottom:12px;">Option B — Full archive restore</h3>
+      <p style="color:var(--text-dim);font-size:13px;margin-bottom:12px;">
+        Use this when you want to recover the entire system — configs, ClickHouse history,
+        logs — without a bootable clone. Requires a fresh Pi OS Lite install first; the archive
+        is extracted over the top of it.
+      </p>
+
+      <ol style="font-size:13px;line-height:2;padding-left:20px;color:var(--text);">
+        <li>Flash a fresh <strong>Raspberry Pi OS Lite (64-bit)</strong> to a new NVMe using Raspberry Pi Imager. Boot it and create the <code>dm</code> user as before.</li>
+        <li>Copy <code>archive-YYYY-MM-DD.tar.gz</code> onto the Pi (or mount the USB drive it's stored on).</li>
+        <li>Stop services that hold files open and extract the archive over <code>/</code>:
+          <pre style="background:var(--bg);border:1px solid var(--border);padding:10px 14px;border-radius:6px;
+                      margin:6px 0 0;font-size:12px;color:var(--text);">sudo systemctl stop clickhouse-server zeek suricata bb-graphs || true
+sudo tar -xzpf archive-YYYY-MM-DD.tar.gz -C / --numeric-owner --xattrs</pre>
+        </li>
+        <li>Reload systemd and reboot:
+          <pre style="background:var(--bg);border:1px solid var(--border);padding:10px 14px;border-radius:6px;
+                      margin:6px 0 0;font-size:12px;color:var(--text);">sudo systemctl daemon-reload
+sudo reboot</pre>
+        </li>
+      </ol>
+      <p style="color:var(--text-dim);font-size:12px;margin-top:10px;padding-bottom:16px;">
+        ClickHouse history IS preserved. Package versions are carried in the archive as installed binaries;
+        if the fresh Pi OS has newer versions, extraction may overwrite them — run <code>sudo apt update &amp;&amp; sudo apt -f install</code> if services fail to start.
+      </p>
+    </div>
+
+    <div style="border-top:1px solid var(--border);"></div>
+
+    {# ── Option C ── #}
+    <div style="padding:16px 20px 0;">
+      <h3 style="font-size:14px;color:var(--accent);margin-bottom:12px;">Option C — Full-disk USB clone restore</h3>
+      <p style="color:var(--text-dim);font-size:13px;margin-bottom:12px;">
+        Use this for a complete bare-metal restore. Recovers everything including ClickHouse history.
+        The USB clone is itself a bootable Pi OS — boot from it first, then clone back to a new NVMe.
+      </p>
+
+      <h4 style="font-size:13px;font-weight:600;margin-bottom:8px;color:var(--text-dim);">Scenario A — NVMe failed, replacing it</h4>
+      <ol style="font-size:13px;line-height:2;padding-left:20px;color:var(--text);margin-bottom:16px;">
+        <li>Power off bb0. Remove the failed NVMe. Insert the USB clone stick.</li>
+        <li>Configure the Pi to boot from USB. On a Pi 5, USB boot should already be in the default boot order after NVMe. If not:
+          <pre style="background:var(--bg);border:1px solid var(--border);padding:10px 14px;border-radius:6px;
+                      margin:6px 0 0;font-size:12px;color:var(--text);">sudo rpi-eeprom-config --edit
+# Set: BOOT_ORDER=0xf416  (USB before NVMe, NVMe before SD)</pre>
+        </li>
+        <li>Power on — the Pi will boot from the USB clone.</li>
+        <li>Insert the new NVMe (via USB adapter or direct slot).</li>
+        <li>Clone from USB back to the new NVMe:
+          <pre style="background:var(--bg);border:1px solid var(--border);padding:10px 14px;border-radius:6px;
+                      margin:6px 0 0;font-size:12px;color:var(--text);">sudo rpi-clone nvme0n1</pre>
+        </li>
+        <li>Power off. Remove the USB stick. Reboot — Pi boots from restored NVMe.</li>
+      </ol>
+
+      <h4 style="font-size:13px;font-weight:600;margin-bottom:8px;color:var(--text-dim);">Scenario B — Migrating to a new Pi 5</h4>
+      <ol style="font-size:13px;line-height:2;padding-left:20px;color:var(--text);margin-bottom:16px;">
+        <li>Insert the USB clone into the new Pi 5 (no NVMe installed).</li>
+        <li>Boot the new Pi from USB.</li>
+        <li>Insert the new NVMe (via adapter or directly).</li>
+        <li>Clone USB → new NVMe:
+          <pre style="background:var(--bg);border:1px solid var(--border);padding:10px 14px;border-radius:6px;
+                      margin:6px 0 0;font-size:12px;color:var(--text);">sudo rpi-clone nvme0n1</pre>
+        </li>
+        <li>Power off. Remove USB. Boot from NVMe.</li>
+      </ol>
+
+      <div style="background:var(--bg);border:1px solid var(--border);border-radius:6px;
+                  padding:12px 14px;margin-bottom:16px;font-size:12px;color:var(--text-dim);">
+        <strong style="color:var(--yellow);">Pi 5 boot order reference</strong><br>
+        <code>BOOT_ORDER=0xf416</code> — USB → NVMe → SD → restart<br>
+        <code>BOOT_ORDER=0xf461</code> — NVMe → USB → SD → restart (default after NVMe install)<br>
+        Check current order: <code>sudo rpi-eeprom-config | grep BOOT_ORDER</code>
+      </div>
+    </div>
+
+  </div>{# /restore-body #}
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<style>
+.pulse-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--yellow);
+  animation: pulse-dot 1.2s ease-in-out infinite;
+  flex-shrink: 0;
+}
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%       { opacity: 0.4; transform: scale(0.7); }
+}
+</style>
+<script>
+// ── Config backup ──────────────────────────────────────────────────────────────
+function runBackup() {
+  const btn = document.getElementById('run-backup-btn');
+  const bar = document.getElementById('backup-status-bar');
+  const msg = document.getElementById('backup-status-msg');
+  btn.disabled = true;
+  btn.textContent = 'Running…';
+  bar.style.display = 'block';
+  msg.textContent = 'Starting backup…';
+
+  fetch('/backup/config/run', {method: 'POST'})
+    .then(r => r.json())
+    .then(data => {
+      if (data.error) {
+        msg.textContent = 'Error: ' + data.error;
+        btn.disabled = false;
+        btn.textContent = 'Run now';
+        return;
+      }
+      pollBackupStatus();
+    })
+    .catch(e => {
+      msg.textContent = 'Request failed: ' + e;
+      btn.disabled = false;
+      btn.textContent = 'Run now';
+    });
+}
+
+function pollBackupStatus() {
+  fetch('/backup/config/status')
+    .then(r => r.json())
+    .then(data => {
+      const msg = document.getElementById('backup-status-msg');
+      const btn = document.getElementById('run-backup-btn');
+      const log = data.log || [];
+      const lastLine = log[log.length - 1] || '';
+      if (data.active === 'active' || data.active === 'activating') {
+        msg.textContent = lastLine || 'Running…';
+        setTimeout(pollBackupStatus, 1500);
+      } else {
+        // Done — reload to show new file in list
+        const done = log.find(l => l.includes('Done.')) || lastLine;
+        msg.textContent = done || 'Complete.';
+        btn.disabled = false;
+        btn.textContent = 'Run now';
+        setTimeout(() => location.reload(), 2000);
+      }
+    });
+}
+
+// ── rpi-clone ──────────────────────────────────────────────────────────────────
+function startClone() {
+  const device = document.getElementById('clone-device')?.value;
+  if (!device) return;
+  bbConfirm('Clone the entire NVMe to /dev/' + device + '?\n\nAll data on the target drive will be overwritten.', function() {
+    document.getElementById('clone-btn').disabled = true;
+    document.getElementById('clone-btn').textContent = 'Cloning…';
+    document.getElementById('clone-output-wrap').style.display = 'block';
+    document.getElementById('clone-status-label').textContent = 'Cloning…';
+
+    const body = new URLSearchParams({device});
+    fetch('/backup/clone/start', {method: 'POST', body})
+      .then(r => r.json())
+      .then(data => {
+        if (data.error) {
+          document.getElementById('clone-status-label').textContent = 'Error: ' + data.error;
+          document.getElementById('clone-btn').disabled = false;
+          document.getElementById('clone-btn').textContent = 'Clone to USB';
+          return;
+        }
+        pollCloneStatus();
+      });
+  });
+}
+
+function pollCloneStatus() {
+  fetch('/backup/clone/status')
+    .then(r => r.json())
+    .then(data => {
+      const log = document.getElementById('clone-log');
+      const label = document.getElementById('clone-status-label');
+      const btn = document.getElementById('clone-btn');
+
+      log.textContent = (data.lines || []).join('\n');
+      log.scrollTop = log.scrollHeight;
+
+      const badge = document.getElementById('clone-running-badge');
+      if (data.running) {
+        label.textContent = 'Cloning…';
+        if (badge) badge.style.display = 'inline-flex';
+        setTimeout(pollCloneStatus, 2000);
+      } else {
+        if (badge) badge.style.display = 'none';
+        if (data.rc === 0) {
+          label.style.color = 'var(--green)';
+          label.textContent = 'Clone complete ✓';
+          btn.disabled = false;
+          btn.textContent = 'Clone to USB';
+        } else if (data.rc !== null) {
+          label.style.color = 'var(--red)';
+          label.textContent = 'Clone failed (exit ' + data.rc + ')';
+          btn.disabled = false;
+          btn.textContent = 'Clone to USB';
+        }
+      }
+    });
+}
+
+// Auto-poll if a clone is currently running on page load
+{% if clone_state.running %}
+document.addEventListener('DOMContentLoaded', pollCloneStatus);
+{% endif %}
+
+// ── Full archive ───────────────────────────────────────────────────────────────
+function runArchive() {
+  bbConfirm('Create a full archive?\n\nClickHouse will be stopped for ~3–5 min.', function() {
+    const btn = document.getElementById('run-archive-btn');
+    btn.disabled = true;
+    btn.textContent = 'Running…';
+    document.getElementById('archive-output-wrap').style.display = 'block';
+    document.getElementById('archive-status-label').textContent = 'Archiving…';
+    document.getElementById('archive-status-label').style.color = '';
+
+    fetch('/backup/archive/run', {method: 'POST'})
+      .then(r => r.json())
+      .then(data => {
+        if (data.error) {
+          document.getElementById('archive-status-label').textContent = 'Error: ' + data.error;
+          btn.disabled = false;
+          btn.textContent = 'Run now';
+          return;
+        }
+        pollArchiveStatus();
+      });
+  });
+}
+
+function pollArchiveStatus() {
+  fetch('/backup/archive/status')
+    .then(r => r.json())
+    .then(data => {
+      const log = document.getElementById('archive-log');
+      const label = document.getElementById('archive-status-label');
+      const btn = document.getElementById('run-archive-btn');
+
+      log.textContent = (data.lines || []).join('\n');
+      log.scrollTop = log.scrollHeight;
+
+      if (data.running) {
+        label.textContent = 'Archiving…';
+        setTimeout(pollArchiveStatus, 2000);
+      } else if (data.rc === 0) {
+        label.style.color = 'var(--green)';
+        label.textContent = 'Archive complete ✓';
+        btn.disabled = false;
+        btn.textContent = 'Run now';
+        setTimeout(() => location.reload(), 2000);
+      } else if (data.rc !== null) {
+        label.style.color = 'var(--red)';
+        label.textContent = 'Archive failed (exit ' + data.rc + ')';
+        btn.disabled = false;
+        btn.textContent = 'Run now';
+      }
+    });
+}
+
+{% if archive_state.running %}
+document.addEventListener('DOMContentLoaded', pollArchiveStatus);
+{% endif %}
+
+// ── Older-week collapse on Config Snapshots ───────────────────────────────────
+function toggleBackupWeek(headerCell) {
+  const tbody = headerCell.closest('tbody');
+  const collapsed = tbody.getAttribute('data-collapsed') === '1';
+  tbody.querySelectorAll('.bg-week-row').forEach(r => {
+    r.style.display = collapsed ? '' : 'none';
+  });
+  const arrow = tbody.querySelector('.bg-arrow');
+  if (arrow) arrow.textContent = collapsed ? '⌄' : '›';
+  tbody.setAttribute('data-collapsed', collapsed ? '0' : '1');
+}
+
+// ── Restore section toggle ─────────────────────────────────────────────────────
+function toggleRestore() {
+  const body = document.getElementById('restore-body');
+  const chevron = document.getElementById('restore-chevron');
+  const open = body.style.display !== 'none';
+  body.style.display = open ? 'none' : 'block';
+  chevron.innerHTML = open ? '&#9660;' : '&#9650;';
+}
+</script>
+{% endblock %}

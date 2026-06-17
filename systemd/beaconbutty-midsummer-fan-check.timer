@@ -1,0 +1,13 @@
+[Unit]
+Description=BeaconButty — one-shot midsummer fan-threshold check (2026-07-15)
+Documentation=https://github.com/mustard-research/BeaconButty/blob/master/obsidian/BeaconButty/Hardware/Fan%%20Control.md
+
+[Timer]
+# Fires once on 2026-07-15 at 10:00 Europe/London.
+# Persistent=true catches up if bb0 was off at that moment.
+OnCalendar=2026-07-15 10:00:00
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

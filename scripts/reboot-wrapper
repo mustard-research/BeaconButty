@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Wrapper: intercepts 'sudo reboot' and calls bb-reboot for a clean shutdown.
+# Pass --force (or -f) to skip bb-reboot and call the real binary directly.
+
+for arg in "$@"; do
+    if [[ "$arg" == "--force" || "$arg" == "-f" ]]; then
+        exec /usr/sbin/reboot "$@"
+    fi
+done
+
+exec /usr/local/bin/bb-reboot

@@ -1,0 +1,9 @@
+[Unit]
+Description=BeaconButty L2 / ARP anomaly alert check
+After=zeek.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/beaconbutty-l2-alert-check.sh
+StandardOutput=append:/var/log/beaconbutty/l2-alert.log
+StandardError=append:/var/log/beaconbutty/l2-alert.log

@@ -1,0 +1,10 @@
+[Unit]
+Description=BeaconButty JA4 database (FoxIO ja4plus-mapping) refresh
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/beaconbutty-ja4db-refresh.sh
+StandardOutput=append:/var/log/beaconbutty/ja4db-refresh.log
+StandardError=append:/var/log/beaconbutty/ja4db-refresh.log

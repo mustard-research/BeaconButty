@@ -1,0 +1,10 @@
+[Unit]
+Description=BeaconButty — update Suricata rules from Emerging Threats Open
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/suricata-update
+# Reload Suricata after updating so new rules take effect without a full restart
+ExecStartPost=/bin/systemctl reload-or-restart suricata

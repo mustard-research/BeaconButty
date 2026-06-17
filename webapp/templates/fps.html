@@ -1,0 +1,196 @@
+{% extends "base.html" %}
+{% block title %}False Positives{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>False Positives</h1>
+  <p>Suppressed from beacon reports. Devices are keyed by MAC to survive DHCP changes.</p>
+</div>
+
+{# ── Devices ── #}
+<div class="card">
+  <div class="card-title">Devices <small>suppresses all beacon traffic from a device</small></div>
+
+  <form method="post" action="{{ url_for('fps_add') }}" style="margin-bottom:16px;">
+    <div class="form-row">
+      <div class="form-group">
+        <label for="fp-addr">IP or MAC Address</label>
+        <input type="text" id="fp-addr" name="addr"
+               placeholder="192.168.50.42 or aa:bb:cc:dd:ee:ff"
+               pattern="^([0-9A-Fa-f]{2}[:\-]){5}[0-9A-Fa-f]{2}$|^(\d{1,3}\.){3}\d{1,3}$"
+               required>
+      </div>
+      <div class="form-group">
+        <label for="fp-reason">Reason <span class="text-dim">(max 50 chars)</span></label>
+        <input type="text" id="fp-reason" name="reason"
+               placeholder="Peloton bike — normal telemetry"
+               maxlength="50" required style="min-width:260px;">
+      </div>
+      <div class="form-group" style="justify-content:flex-end;">
+        <label>&nbsp;</label>
+        <button type="submit" class="btn btn-primary">Add Device</button>
+      </div>
+    </div>
+  </form>
+
+  {% if rows %}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>MAC Address</th>
+          <th>Current IP</th>
+          <th>Reason</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+        <tr>
+          <td class="mono">{{ row.mac }}</td>
+          <td class="mono">
+            {% if row.label %}{{ row.label }}
+            {% elif row.ip %}{{ row.ip }}
+            {% else %}<span class="text-dim">not on LAN</span>{% endif %}
+          </td>
+          <td>{{ row.reason }}</td>
+          <td style="text-align:right;">
+            <form method="post" action="{{ url_for('fps_remove') }}" class="bb-confirm-form">
+              <input type="hidden" name="mac" value="{{ row.mac }}">
+              <button type="button" class="btn btn-danger"
+                      onclick="bbConfirmForm(this, 'Remove {{ row.mac }} from false positives?')">Remove</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+    <div class="empty-state">
+      <div class="empty-icon">🔍</div>
+      <p>No device false positives registered.</p>
+    </div>
+  {% endif %}
+</div>
+
+{# ── Domains ── #}
+<div class="card">
+  <div class="card-title">Domains <small>suppresses beacons to matching destinations</small></div>
+
+  <form method="post" action="{{ url_for('fps_add_domain') }}" style="margin-bottom:16px;">
+    <div class="form-row">
+      <div class="form-group">
+        <label for="fp-domain-pat">Pattern</label>
+        <input type="text" id="fp-domain-pat" name="pattern"
+               placeholder="*.apple.com or ocsp.digicert.com"
+               required style="min-width:220px;">
+      </div>
+      <div class="form-group">
+        <label for="fp-domain-reason">Reason <span class="text-dim">(max 50 chars)</span></label>
+        <input type="text" id="fp-domain-reason" name="reason"
+               placeholder="Apple CDN"
+               maxlength="50" required style="min-width:240px;">
+      </div>
+      <div class="form-group" style="justify-content:flex-end;">
+        <label>&nbsp;</label>
+        <button type="submit" class="btn btn-primary">Add Domain</button>
+      </div>
+    </div>
+  </form>
+
+  {% if domain_rows %}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Pattern</th>
+          <th>Reason</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in domain_rows %}
+        <tr>
+          <td class="mono">{{ row.pattern }}</td>
+          <td>{{ row.reason }}</td>
+          <td style="text-align:right;">
+            <form method="post" action="{{ url_for('fps_remove_domain') }}" class="bb-confirm-form">
+              <input type="hidden" name="pattern" value="{{ row.pattern }}">
+              <button type="button" class="btn btn-danger"
+                      onclick="bbConfirmForm(this, 'Remove domain FP: {{ row.pattern }}?')">Remove</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+    <div class="empty-state">
+      <div class="empty-icon">🌐</div>
+      <p>No domain false positives registered.</p>
+    </div>
+  {% endif %}
+</div>
+
+{# ── Protocols ── #}
+<div class="card">
+  <div class="card-title">Protocols <small>suppresses beacons on matching service</small></div>
+
+  <form method="post" action="{{ url_for('fps_add_protocol') }}" style="margin-bottom:16px;">
+    <div class="form-row">
+      <div class="form-group">
+        <label for="fp-proto-svc">Service</label>
+        <input type="text" id="fp-proto-svc" name="svc"
+               placeholder="123:udp:ntp"
+               required style="min-width:180px;">
+      </div>
+      <div class="form-group">
+        <label for="fp-proto-reason">Reason <span class="text-dim">(max 50 chars)</span></label>
+        <input type="text" id="fp-proto-reason" name="reason"
+               placeholder="NTP time sync"
+               maxlength="50" required style="min-width:240px;">
+      </div>
+      <div class="form-group" style="justify-content:flex-end;">
+        <label>&nbsp;</label>
+        <button type="submit" class="btn btn-primary">Add Protocol</button>
+      </div>
+    </div>
+  </form>
+
+  {% if protocol_rows %}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Service</th>
+          <th>Reason</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in protocol_rows %}
+        <tr>
+          <td class="mono">{{ row.svc }}</td>
+          <td>{{ row.reason }}</td>
+          <td style="text-align:right;">
+            <form method="post" action="{{ url_for('fps_remove_protocol') }}" class="bb-confirm-form">
+              <input type="hidden" name="svc" value="{{ row.svc }}">
+              <button type="button" class="btn btn-danger"
+                      onclick="bbConfirmForm(this, 'Remove protocol FP: {{ row.svc }}?')">Remove</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+    <div class="empty-state">
+      <div class="empty-icon">🔌</div>
+      <p>No protocol false positives registered.</p>
+    </div>
+  {% endif %}
+</div>
+{% endblock %}

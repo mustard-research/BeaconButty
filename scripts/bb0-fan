@@ -1,0 +1,35 @@
+#!/usr/bin/env python3
+"""bb0-fan — control the Pironman5 GPIO fan via bb0-display.py.
+
+Usage:
+  bb0-fan on
+  bb0-fan off
+  bb0-fan status
+"""
+
+import sys
+from pathlib import Path
+
+STATE_FILE = Path("/var/lib/beaconbutty/watchdog/fan-state")
+
+
+def main():
+    if len(sys.argv) != 2 or sys.argv[1] not in ("on", "off", "status"):
+        print("Usage: bb0-fan on|off|status")
+        sys.exit(1)
+
+    cmd = sys.argv[1]
+
+    if cmd == "status":
+        if STATE_FILE.exists():
+            print(STATE_FILE.read_text().strip())
+        else:
+            print("off")
+        return
+
+    STATE_FILE.write_text(cmd + "\n")
+    print(f"Fan {cmd}")
+
+
+if __name__ == "__main__":
+    main()

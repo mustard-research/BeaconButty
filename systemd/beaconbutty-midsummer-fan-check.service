@@ -1,0 +1,14 @@
+[Unit]
+Description=BeaconButty — one-shot midsummer fan-threshold check
+Documentation=https://github.com/mustard-research/BeaconButty/blob/master/obsidian/BeaconButty/Hardware/Fan%%20Control.md
+
+[Service]
+Type=oneshot
+User=dm
+Group=dm
+SupplementaryGroups=video
+WorkingDirectory=/home/dm/BeaconButty
+ExecStart=/usr/local/bin/beaconbutty-midsummer-fan-check.py
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=120

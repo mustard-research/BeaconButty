@@ -1,0 +1,19 @@
+# BeaconButty local custom rules
+# Managed by BeaconButty project - do not edit by hand
+
+# Vo1d Android TV botnet (2024-2025)
+
+# DNS lookup for known Vo1d C2 domain
+alert dns any any -> any any (msg:"Vo1d Botnet DNS Beacon - fecebbbk.xyz"; dns.query; content:"fecebbbk.xyz"; nocase; classtype:trojan-activity; sid:1000030; rev:1;)
+
+# Vo1d binary protocol magic bytes on UDP/16000
+alert udp any any -> any 16000 (msg:"Vo1d Botnet UDP Heartbeat - Magic Bytes"; content:"|00 00 cd|"; offset:1; depth:3; classtype:trojan-activity; sid:1000031; rev:1;)
+
+# Vo1d fake OTA registration server
+alert http any any -> 111.230.36.129 8080 (msg:"Vo1d Botnet Fake OTA Registration"; flow:to_server,established; classtype:trojan-activity; sid:1000032; rev:1;)
+
+# Vo1d C2 registration server
+alert tcp any any -> 38.55.17.113 12000 (msg:"Vo1d Botnet C2 Registration"; flow:to_server,established; classtype:trojan-activity; sid:1000033; rev:1;)
+
+# DNS beaconing pattern - 3+ queries to fecebbbk.xyz within 5 minutes
+alert dns any any -> any 53 (msg:"Vo1d Botnet DNS Beaconing Pattern"; dns.query; content:"fecebbbk"; nocase; threshold: type both, track by_src, count 3, seconds 300; classtype:trojan-activity; sid:1000034; rev:1;)

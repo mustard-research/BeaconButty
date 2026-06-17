@@ -1,0 +1,15 @@
+[Unit]
+Description=BeaconButty — WAN connectivity watchdog
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/wan-watchdog.sh
+User=root
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=60
+
+# Pass the WAN interface name through (override in environment if non-default)
+Environment=WAN_IFACE=eth0

@@ -1,0 +1,10 @@
+[Unit]
+Description=BeaconButty JA4 fingerprint history — daily 00:30
+
+[Timer]
+OnCalendar=*-*-* 00:30:00
+Persistent=true
+RandomizedDelaySec=2min
+
+[Install]
+WantedBy=timers.target

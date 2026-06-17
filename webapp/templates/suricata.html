@@ -1,0 +1,540 @@
+{% extends "base.html" %}
+{% from "_intel_badge.html" import intel_badge %}
+{% block title %}Suricata{% endblock %}
+
+{% block content %}
+
+{# Tile shows raw alert-line counts per priority so it matches the 7-day trend
+   and hourly timeline (all count fast.log lines, post STREAM/QUIC filter). #}
+{% set ns = namespace(has_p12=false, p1=0, p2=0, p3=0, p4=0) %}
+{% for sig in sig_list %}
+  {% if sig.priority == 1 %}{% set ns.p1 = ns.p1 + sig.count %}{% set ns.has_p12 = true %}
+  {% elif sig.priority == 2 %}{% set ns.p2 = ns.p2 + sig.count %}{% set ns.has_p12 = true %}
+  {% elif sig.priority == 3 %}{% set ns.p3 = ns.p3 + sig.count %}
+  {% else %}{% set ns.p4 = ns.p4 + sig.count %}{% endif %}
+{% endfor %}
+
+<div class="page-header">
+  <div class="header-row">
+    <div>
+      <h1>Suricata
+        {% if total_alerts == 0 %}
+          <span class="badge badge-ok" style="font-size:14px;vertical-align:middle;margin-left:8px;">0 alerts today</span>
+        {% else %}
+          {% if ns.p1 > 0 %}
+            <span class="badge badge-p1" style="font-size:14px;vertical-align:middle;margin-left:8px;">{{ ns.p1 }} P1 today</span>
+            {% if ns.p2 > 0 %}<span class="badge badge-p2" style="font-size:14px;vertical-align:middle;margin-left:6px;">{{ ns.p2 }} P2</span>{% endif %}
+            {% if ns.p3 + ns.p4 > 0 %}<span class="badge badge-p3" style="font-size:14px;vertical-align:middle;margin-left:6px;">{{ ns.p3 + ns.p4 }} P3</span>{% endif %}
+          {% elif ns.p2 > 0 %}
+            <span class="badge badge-p2" style="font-size:14px;vertical-align:middle;margin-left:8px;">{{ ns.p2 }} P2 today</span>
+            {% if ns.p3 + ns.p4 > 0 %}<span class="badge badge-p3" style="font-size:14px;vertical-align:middle;margin-left:6px;">{{ ns.p3 + ns.p4 }} P3</span>{% endif %}
+          {% elif ns.p3 + ns.p4 > 0 %}
+            <span class="badge badge-p3" style="font-size:14px;vertical-align:middle;margin-left:8px;">{{ ns.p3 + ns.p4 }} P3 today</span>
+          {% endif %}
+        {% endif %}
+      </h1>
+      <p>IDS alerts from today's fast.log, traced to LAN devices via Zeek connection logs.</p>
+      <p style="font-size:11px;color:var(--text-dim);margin-top:2px;">SURICATA STREAM &amp; QUIC infrastructure-noise rules are suppressed from every count on this page.</p>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;">
+      <a href="{{ url_for('suricata_rules') }}" class="btn btn-sm">Manage Rules</a>
+      {% if total_alerts > 0 %}
+      <button id="p3-toggle" onclick="toggleP3()" class="btn btn-sm">Show P3</button>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+{% if total_alerts == 0 %}
+  <div class="card">
+    <div class="empty-state">
+      <div class="empty-icon">✅</div>
+      <p>No Suricata alerts today.</p>
+    </div>
+  </div>
+{% else %}
+
+{# Shown when no P1/P2 alerts exist (or all are hidden) #}
+<div id="no-high-msg" class="card" {% if ns.has_p12 %}style="display:none;"{% endif %}>
+  <div class="empty-state">
+    <div class="empty-icon">✅</div>
+    <p>No P1 or P2 alerts today.</p>
+  </div>
+</div>
+
+<div style="display:flex;flex-direction:column;gap:20px;">
+
+  {# ── Alert signatures ── #}
+  <div class="card">
+    <div class="card-title">Today's Alert Signatures</div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Priority</th>
+            <th class="num">Count</th>
+            <th class="num">Unique Src</th>
+            <th>Last Seen</th>
+            <th>Signature</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for sig in sig_list %}
+          <tr class="sig-row" data-priority="{{ sig.priority }}" data-alert-count="{{ sig.count }}"{% if sig.priority >= 3 %} style="display:none;"{% endif %}>
+            <td>
+              {% if sig.priority == 1 %}
+                <span class="badge badge-p1">P{{ sig.priority }}</span>
+              {% elif sig.priority == 2 %}
+                <span class="badge badge-p2">P{{ sig.priority }}</span>
+              {% elif sig.priority == 3 %}
+                <span class="badge badge-p3">P{{ sig.priority }}</span>
+              {% else %}
+                <span class="badge badge-p4">P{{ sig.priority }}</span>
+              {% endif %}
+            </td>
+            <td class="num" style="font-weight:600;">{{ sig.count }}</td>
+            <td class="num text-dim">{{ sig.unique_srcs }}</td>
+            <td class="mono text-dim" style="white-space:nowrap;">{{ sig.last_seen }}</td>
+            <td style="font-size:12px;">{{ sig.rule }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  {# ── Traced to LAN devices ── #}
+  <div class="card">
+    <div class="card-title">Traced to LAN Devices</div>
+    {% if lan_rows %}
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>LAN Device / External IP</th>
+            <th>Signature</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for device in lan_rows %}
+            {# Determine whether this device has any P1/P2 alerts #}
+            {% set dns = namespace(has_high=false) %}
+            {% for alert in device.alerts %}{% if alert.priority <= 2 %}{% set dns.has_high = true %}{% endif %}{% endfor %}
+            <tr class="device-group-row {% if loop.first %}first-group{% endif %}"
+                data-has-high="{{ 'true' if dns.has_high else 'false' }}"
+                {% if not dns.has_high %} style="display:none;"{% endif %}>
+              <td colspan="2" class="mono text-blue" style="padding-top:12px;">
+                {{ device.lan_label }}
+              </td>
+            </tr>
+            {% for alert in device.alerts %}
+            <tr class="alert-sub-row" data-priority="{{ alert.priority }}"
+                {% if alert.priority >= 3 %} style="display:none;"{% endif %}>
+              <td class="mono text-dim" style="max-width:280px;">
+                <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+                  ↳ {{ alert.ext_ip }}{{ intel_badge(alert.ext_intel) }}{% if alert.count > 1 %} <span class="text-dim" style="font-size:11px;">(×{{ alert.count }})</span>{% endif %}
+                </div>
+                {% if alert.ext_enrich %}
+                  <div style="font-size:11px;margin-top:1px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
+                       title="From Zeek {{ alert.ext_source }} log">
+                    → {{ alert.ext_enrich }}
+                    <span class="text-dim" style="font-size:10px;text-transform:uppercase;letter-spacing:.04em;">{{ alert.ext_source }}</span>
+                  </div>
+                {% endif %}
+              </td>
+              <td style="font-size:12px;">
+                {% if alert.priority == 1 %}
+                  <span class="badge badge-p1" style="margin-right:6px;">P{{ alert.priority }}</span>
+                {% elif alert.priority == 2 %}
+                  <span class="badge badge-p2" style="margin-right:6px;">P{{ alert.priority }}</span>
+                {% elif alert.priority == 3 %}
+                  <span class="badge badge-p3" style="margin-right:6px;">P{{ alert.priority }}</span>
+                {% else %}
+                  <span class="badge badge-p4" style="margin-right:6px;">P{{ alert.priority }}</span>
+                {% endif %}
+                {{ alert.rule }}
+              </td>
+            </tr>
+            {% endfor %}
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+      <div class="empty-state" style="padding:24px;">
+        <p class="text-dim">No alerts could be traced to LAN devices.</p>
+      </div>
+    {% endif %}
+  </div>
+
+</div>
+
+{# ── Unresolved / inbound alerts ── #}
+{% if unresolved %}
+<div class="card" style="margin-top:20px;">
+  <div class="card-title">Unresolved Alerts <small>no LAN device identified</small></div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Source IP</th>
+          <th>Destination IP</th>
+          <th>Priority</th>
+          <th>Signature</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for a in unresolved %}
+        <tr data-priority="{{ a.priority }}"{% if a.priority >= 3 %} style="display:none;"{% endif %}>
+          <td class="mono" style="max-width:220px;">
+            <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ a.src_ip }}{{ intel_badge(a.src_intel) }}</div>
+            {% if a.src_enrich %}
+              <div class="text-dim" style="font-size:11px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
+                   title="From Zeek {{ a.src_source }} log">→ {{ a.src_enrich }}
+                <span style="font-size:10px;text-transform:uppercase;letter-spacing:.04em;">{{ a.src_source }}</span></div>
+            {% endif %}
+          </td>
+          <td class="mono" style="max-width:220px;">
+            <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ a.dst_ip }}{{ intel_badge(a.dst_intel) }}</div>
+            {% if a.dst_enrich %}
+              <div class="text-dim" style="font-size:11px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
+                   title="From Zeek {{ a.dst_source }} log">→ {{ a.dst_enrich }}
+                <span style="font-size:10px;text-transform:uppercase;letter-spacing:.04em;">{{ a.dst_source }}</span></div>
+            {% endif %}
+          </td>
+          <td>
+            {% if a.priority == 1 %}
+              <span class="badge badge-p1">P{{ a.priority }}</span>
+            {% elif a.priority == 2 %}
+              <span class="badge badge-p2">P{{ a.priority }}</span>
+            {% elif a.priority == 3 %}
+              <span class="badge badge-p3">P{{ a.priority }}</span>
+            {% else %}
+              <span class="badge badge-p4">P{{ a.priority }}</span>
+            {% endif %}
+          </td>
+          <td style="font-size:12px;">{{ a.rule }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+{# ─────────────── Extras (always shown, not gated on total_alerts) ─────────── #}
+
+{# ── Beacon cross-reference ── #}
+{% if extras.cross_ref %}
+<div class="card card-red" style="margin-top:20px;">
+  <div class="card-title text-red">⚠ Beacon + IDS Cross-Reference — {{ extras.cross_ref | length }} device{{ 's' if extras.cross_ref | length != 1 else '' }}</div>
+  <p style="font-size:13px;color:var(--text-dim);margin-bottom:12px;">These LAN devices have <strong style="color:var(--text)">both</strong> active RITA beacon scores and today's Suricata alerts — highest investigation priority.</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>LAN Device</th></tr></thead>
+      <tbody>
+        {% for item in extras.cross_ref %}
+        <tr><td class="mono">{{ item.label }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+{# ── Alert context from eve.json ── #}
+{% set has_enrichment = namespace(val=false) %}
+{% for rule, ctx in extras.eve_enriched.items() %}
+  {% if ctx.http or ctx.dns_query or ctx.tls_sni %}{% set has_enrichment.val = true %}{% endif %}
+{% endfor %}
+{% if has_enrichment.val %}
+<div class="card" style="margin-top:20px;">
+  <div class="card-title">Alert Context <small>HTTP · DNS · TLS details from eve.json</small></div>
+  <p style="font-size:13px;color:var(--text-dim);margin-bottom:12px;">fast.log only records a rule name and IP pair; eve.json captures the actual payload metadata. This table enriches each fired signature with the HTTP hostname, URL, and User-Agent or DNS query or TLS SNI that triggered it — turning a vague rule name into an actionable indicator.</p>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Signature</th>
+          <th>HTTP Host / URL</th>
+          <th>User-Agent</th>
+          <th>DNS Query</th>
+          <th>TLS SNI</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for rule, ctx in extras.eve_enriched.items() %}
+        {% if ctx.http or ctx.dns_query or ctx.tls_sni %}
+        <tr>
+          <td style="font-size:11px;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="{{ rule }}">{{ rule }}</td>
+          <td class="mono text-dim" style="font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+            {% if ctx.http %}{{ ctx.http.hostname }}{{ ctx.http.url }}{% else %}—{% endif %}
+          </td>
+          <td class="mono text-dim" style="font-size:11px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+            {{ ctx.http.user_agent if ctx.http and ctx.http.user_agent else '—' }}
+          </td>
+          <td class="mono text-dim" style="font-size:11px;">{{ ctx.dns_query or '—' }}</td>
+          <td class="mono text-dim" style="font-size:11px;">{{ ctx.tls_sni or '—' }}</td>
+        </tr>
+        {% endif %}
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+{# ── Category breakdown + 7-day trend ── #}
+<div class="two-col" style="margin-top:20px;">
+
+  {% if extras.category_breakdown %}
+  <div class="card">
+    <div class="card-title">Alert Categories</div>
+    <p style="font-size:13px;color:var(--text-dim);margin-bottom:12px;">Breaks down today's alerts by rule-name prefix (ET SCAN, ET TROJAN, ET POLICY, etc.). A page full of ET SCAN is very different from ET TROJAN — this tells you at a glance whether you're looking at reconnaissance from outside or active malware behaviour from inside.</p>
+    {% set max_cat = [extras.category_breakdown[0].count, 1] | max %}
+    <table>
+      <thead><tr><th>Category</th><th class="num">Count</th><th style="width:40%"></th></tr></thead>
+      <tbody>
+        {% for item in extras.category_breakdown[:15] %}
+        <tr>
+          <td style="font-size:12px;">{{ item.cat }}</td>
+          <td class="num" style="font-weight:600;{% if loop.first %}color:var(--red){% endif %}">{{ item.count }}</td>
+          <td>
+            <div class="bar-container" style="margin-top:0;">
+              <div class="bar-fill {% if loop.first %}bar-err{% elif loop.index <= 3 %}bar-warn{% else %}bar-ok{% endif %}"
+                   style="width:{{ ((item.count / max_cat) * 100) | round | int }}%"></div>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="card"><div class="empty-state" style="padding:24px;"><p class="text-dim">No alert data.</p></div></div>
+  {% endif %}
+
+  <div class="card">
+    <div class="card-title">7-Day Alert Trend</div>
+    <p style="font-size:13px;color:var(--text-dim);margin-bottom:12px;">Total Suricata alerts per day over the past week, drawn from the full fast.log history. Useful for spotting whether today is a spike above your normal baseline or just routine noise — a sudden doubling warrants investigation even if the absolute numbers look small.</p>
+    {% set max_trend = ([extras.trend_data | map(attribute='count') | max, 1] | max) if extras.trend_data else 1 %}
+    <table>
+      <thead><tr><th>Date</th><th class="num">Alerts</th><th style="width:40%"></th></tr></thead>
+      <tbody>
+        {% for day in extras.trend_data %}
+        <tr{% if day.no_data %} style="opacity:0.55;"{% endif %}>
+          <td style="font-size:12px;white-space:nowrap;">{{ day.date }}</td>
+          <td class="num {% if day.no_data or day.count == 0 %}text-dim{% endif %}"
+              style="font-weight:{% if day.count > 0 and not day.no_data %}600{% else %}400{% endif %};">
+            {% if day.no_data %}
+              —
+            {% elif day.count > 0 %}
+              <a href="#" class="trend-count-link"
+                 data-date="{{ day.date }}"
+                 onclick="trendDetailsOpen(this); return false;"
+                 title="Click to see alert details for {{ day.date }}">{{ day.count }}</a>
+            {% else %}
+              {{ day.count }}
+            {% endif %}
+          </td>
+          <td>
+            {% if day.no_data %}
+              <span class="text-dim" style="font-size:11px;font-style:italic;" title="No fast.log source for this day (logrotate gap or log2ram migration).">no data</span>
+            {% elif day.count > 0 %}
+            <div class="bar-container" style="margin-top:0;">
+              <div class="bar-fill bar-warn"
+                   style="width:{{ ((day.count / max_trend) * 100) | round | int }}%"></div>
+            </div>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+</div>
+
+{# ── Hourly timeline ── #}
+<div class="card" style="margin-top:0;">
+  <div class="card-title">Hourly Timeline <small>today</small></div>
+  <p style="font-size:13px;color:var(--text-dim);margin-bottom:12px;">Alert count for each hour of today, with the 01:00–05:59 window highlighted in red. The time-of-day pattern matters: a cluster of alerts at 03:00 when no users are active suggests automated malware behaviour, whereas the same alerts at 14:00 are more likely to be a user browsing something suspicious.</p>
+  {% set max_hour = ([extras.hourly_data | map(attribute='count') | max, 1] | max) if extras.hourly_data else 1 %}
+  <div style="display:grid;grid-template-columns:repeat(24,1fr);gap:3px;align-items:end;height:64px;margin-bottom:4px;">
+    {% for h in extras.hourly_data %}
+    <div title="{{ '%02d'|format(h.hour) }}:00 — {{ h.count }} alert{{ 's' if h.count != 1 else '' }}"
+         style="background:{% if h.count == 0 %}var(--border){% elif h.hour >= 1 and h.hour <= 5 %}var(--red){% else %}var(--yellow){% endif %};
+                height:{{ [((h.count / max_hour) * 60) | round | int, 3] | max if h.count > 0 else 2 }}px;
+                border-radius:2px 2px 0 0;align-self:end;">
+    </div>
+    {% endfor %}
+  </div>
+  <div style="display:grid;grid-template-columns:repeat(24,1fr);gap:3px;">
+    {% for h in extras.hourly_data %}
+    <div style="font-size:9px;color:var(--text-dim);text-align:center;">{{ '%02d'|format(h.hour) }}</div>
+    {% endfor %}
+  </div>
+</div>
+
+{# ── External repeat offenders ── #}
+{% if extras.offenders %}
+<div class="card">
+  <div class="card-title">External Repeat Offenders <small>IPs triggering 2+ distinct rules</small></div>
+  <p style="font-size:13px;color:var(--text-dim);margin-bottom:12px;">External IPs that appear in multiple distinct Suricata signatures today. A single alert from an IP could be incidental; the same IP triggering an ET SCAN rule and then an ET EXPLOIT rule is a coordinated attack pattern. These are the external sources most worth blocking or investigating further.</p>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>External IP</th>
+          <th class="num">Distinct Rules</th>
+          <th>Sample Rules</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for o in extras.offenders %}
+        <tr>
+          <td class="mono">{{ o.ip_display }}</td>
+          <td class="num" style="font-weight:600;color:var(--red);">{{ o.rule_count }}</td>
+          <td style="font-size:11px;color:var(--text-dim);">
+            {% for r in o.rules %}{{ r }}{% if not loop.last %}<br>{% endif %}{% endfor %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+{# ── 7-day trend: per-day detail modal ── #}
+<div id="trend-details-dialog" style="display:none;position:fixed;inset:0;z-index:1100;background:rgba(0,0,0,.5);align-items:center;justify-content:center;" onclick="if(event.target===this)trendDetailsClose();">
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:20px;width:min(820px,94vw);max-height:80vh;display:flex;flex-direction:column;">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+      <div>
+        <div style="font-weight:600;font-size:15px;">Alerts on <span id="trend-details-date"></span></div>
+        <div id="trend-details-summary" style="font-size:12px;color:var(--text-dim);margin-top:2px;"></div>
+      </div>
+      <button onclick="trendDetailsClose()" class="btn btn-sm">Close</button>
+    </div>
+    <div id="trend-details-body" style="overflow:auto;flex:1;"></div>
+  </div>
+</div>
+
+<script type="application/json" id="trend-details-data">{{ extras.trend_details | tojson }}</script>
+<script>
+(function () {
+  var data = JSON.parse(document.getElementById('trend-details-data').textContent || '{}');
+
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function(c){
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];
+  }); }
+
+  function prioBadge(p) {
+    var cls = p === 1 ? 'badge-p1' : p === 2 ? 'badge-p2' : 'badge-p3';
+    return '<span class="badge ' + cls + '">P' + p + '</span>';
+  }
+
+  window.trendDetailsOpen = function (el) {
+    var date = el.dataset.date;
+    var rows = data[date] || [];
+    document.getElementById('trend-details-date').textContent = date;
+    document.getElementById('trend-details-summary').textContent =
+      rows.length + ' alert' + (rows.length === 1 ? '' : 's') +
+      ' (SURICATA STREAM & QUIC noise suppressed)';
+
+    var body = document.getElementById('trend-details-body');
+    if (rows.length === 0) {
+      body.innerHTML = '<p class="text-dim" style="font-size:13px;">No alerts recorded for this day.</p>';
+    } else {
+      var html = '<table><thead><tr>' +
+        '<th style="width:80px;">Time</th>' +
+        '<th style="width:50px;">Prio</th>' +
+        '<th>Rule</th>' +
+        '<th>Source → Destination</th>' +
+        '</tr></thead><tbody>';
+      rows.forEach(function (r) {
+        html += '<tr>' +
+          '<td class="mono" style="font-size:12px;">' + esc(r.time) + '</td>' +
+          '<td>' + prioBadge(r.priority) + '</td>' +
+          '<td style="font-size:12px;">' + esc(r.rule) + '</td>' +
+          '<td style="font-size:12px;"><span class="mono">' + esc(r.src) + '</span>' +
+          (r.dst ? ' → <span class="mono">' + esc(r.dst) + '</span>' : '') + '</td>' +
+          '</tr>';
+      });
+      html += '</tbody></table>';
+      body.innerHTML = html;
+    }
+    document.getElementById('trend-details-dialog').style.display = 'flex';
+  };
+
+  window.trendDetailsClose = function () {
+    document.getElementById('trend-details-dialog').style.display = 'none';
+  };
+
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' &&
+        document.getElementById('trend-details-dialog').style.display !== 'none') {
+      window.trendDetailsClose();
+    }
+  });
+})();
+</script>
+
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+{% if total_alerts > 0 %}
+<script>
+(function () {
+  let showingP3 = false;
+
+  // Sum P3/P4 alert-line counts from sig rows (data-alert-count). Matches the
+  // tile and 7-day trend which also count raw lines, not distinct signatures.
+  let p3count = 0;
+  document.querySelectorAll(
+    'tr.sig-row[data-priority="3"], tr.sig-row[data-priority="4"]'
+  ).forEach(function (row) {
+    p3count += parseInt(row.dataset.alertCount || '0', 10);
+  });
+  const btn = document.getElementById('p3-toggle');
+  if (btn && p3count > 0) {
+    btn.textContent = 'Show P3 (' + p3count + ')';
+  } else if (btn) {
+    btn.style.display = 'none';
+  }
+
+  window.toggleP3 = function () {
+    showingP3 = !showingP3;
+
+    // Sig rows and unresolved rows
+    document.querySelectorAll('tr[data-priority]').forEach(function (row) {
+      if (parseInt(row.dataset.priority) >= 3) {
+        row.style.display = showingP3 ? '' : 'none';
+      }
+    });
+
+    // Device group rows that have no P1/P2 alerts
+    document.querySelectorAll('.device-group-row[data-has-high="false"]').forEach(function (row) {
+      row.style.display = showingP3 ? '' : 'none';
+    });
+
+    // "No P1/P2" message: show when hiding P3s and there are no P1/P2 rows
+    const hasP12 = document.querySelectorAll(
+      'tr[data-priority="1"], tr[data-priority="2"]'
+    ).length > 0;
+    const noHighMsg = document.getElementById('no-high-msg');
+    if (noHighMsg) {
+      noHighMsg.style.display = (!showingP3 && !hasP12) ? '' : 'none';
+    }
+
+    if (btn) {
+      btn.textContent = showingP3
+        ? 'Hide P3 (' + p3count + ')'
+        : 'Show P3 (' + p3count + ')';
+    }
+  };
+})();
+</script>
+{% endif %}
+{% endblock %}

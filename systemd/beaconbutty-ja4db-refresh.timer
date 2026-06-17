@@ -1,0 +1,10 @@
+[Unit]
+Description=BeaconButty JA4 database refresh — weekly Sun 04:30
+
+[Timer]
+OnCalendar=Sun *-*-* 04:30:00
+Persistent=true
+RandomizedDelaySec=15min
+
+[Install]
+WantedBy=timers.target

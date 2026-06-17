@@ -1,0 +1,816 @@
+{% extends "base.html" %}
+{% block title %}Suricata Rules{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div class="header-row">
+    <div>
+      <h1>Suricata Rules</h1>
+      <p>Local custom rules you manage directly. Changes are saved and reloaded live. <a href="{{ url_for('suricata') }}" style="color:var(--text-dim);font-size:13px;">← Back to Suricata alerts</a></p>
+    </div>
+    <div>
+      <button onclick="document.getElementById('add-form').style.display = document.getElementById('add-form').style.display === 'none' ? 'block' : 'none'"
+              class="btn btn-primary">+ Add Rule</button>
+    </div>
+  </div>
+</div>
+
+{# ── Add rule form (hidden by default) ── #}
+<div id="add-form" style="display:none;">
+<div class="card">
+  <div class="card-title">Add Local Rule</div>
+
+  {# Template picker #}
+  <div style="margin-bottom:14px;">
+    <span style="font-size:12px;color:var(--text-dim);margin-right:8px;">Quick template:</span>
+    <button class="btn btn-sm" onclick="setTemplate('ip')">Alert on IP</button>
+    <button class="btn btn-sm" style="margin-left:6px;" onclick="setTemplate('dns')">Alert on Domain</button>
+    <button class="btn btn-sm" style="margin-left:6px;" onclick="setTemplate('content')">Alert on Content</button>
+    <button class="btn btn-sm" style="margin-left:6px;" onclick="setTemplate('raw')">Raw rule</button>
+  </div>
+
+  {# Guided fields (shown for ip/dns/content templates) #}
+  <div id="guided-fields">
+    <div class="form-row" style="flex-wrap:wrap;gap:10px;align-items:flex-end;">
+      <div class="form-group">
+        <label>Action</label>
+        <select id="f-action" style="padding:6px 8px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:inherit;">
+          <option value="alert">alert</option>
+          <option value="drop">drop</option>
+          <option value="pass">pass</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Protocol</label>
+        <select id="f-proto" style="padding:6px 8px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:inherit;">
+          <option value="tcp">tcp</option>
+          <option value="udp">udp</option>
+          <option value="dns">dns</option>
+          <option value="http">http</option>
+          <option value="tls">tls</option>
+          <option value="ip">ip</option>
+          <option value="icmp">icmp</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Destination IP</label>
+        <input id="f-dst-ip" type="text" placeholder="1.2.3.4 or any" value="any" style="width:160px;">
+      </div>
+      <div class="form-group">
+        <label>Destination Port</label>
+        <input id="f-dst-port" type="text" placeholder="443 or any" value="any" style="width:100px;">
+      </div>
+    </div>
+    <div class="form-row" style="flex-wrap:wrap;gap:10px;align-items:flex-end;margin-top:4px;">
+      <div class="form-group" style="flex:1;min-width:240px;">
+        <label>Message <span class="text-dim">(shown in alerts)</span></label>
+        <input id="f-msg" type="text" placeholder="My Custom Rule" style="width:100%;">
+      </div>
+      <div class="form-group">
+        <label>Content match <span class="text-dim">(optional)</span></label>
+        <input id="f-content" type="text" placeholder='example.com or |de ad be ef|' style="width:220px;">
+      </div>
+      <div class="form-group">
+        <label>Classtype</label>
+        <select id="f-classtype" style="padding:6px 8px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:inherit;">
+          <optgroup label="P1 — High">
+            <option>trojan-activity</option>
+            <option>command-and-control</option>
+            <option>domain-c2</option>
+            <option>exploit-kit</option>
+            <option>targeted-activity</option>
+            <option>web-application-attack</option>
+            <option>shellcode-detect</option>
+            <option>credential-theft</option>
+            <option>attempted-admin</option>
+            <option>successful-admin</option>
+            <option>attempted-user</option>
+            <option>successful-user</option>
+            <option>unsuccessful-user</option>
+            <option>policy-violation</option>
+            <option>inappropriate-content</option>
+          </optgroup>
+          <optgroup label="P2 — Medium">
+            <option>bad-unknown</option>
+            <option>misc-attack</option>
+            <option>attempted-recon</option>
+            <option>successful-recon-limited</option>
+            <option>successful-recon-largescale</option>
+            <option>attempted-dos</option>
+            <option>successful-dos</option>
+            <option>denial-of-service</option>
+            <option>web-application-activity</option>
+            <option>suspicious-filename-detect</option>
+            <option>suspicious-login</option>
+            <option>system-call-detect</option>
+            <option>unusual-client-port-connection</option>
+            <option>non-standard-protocol</option>
+            <option>pup-activity</option>
+            <option>coin-mining</option>
+            <option>social-engineering</option>
+            <option>external-ip-check</option>
+            <option>default-login-attempt</option>
+          </optgroup>
+          <optgroup label="P3 — Low">
+            <option>network-scan</option>
+            <option>protocol-command-decode</option>
+            <option>misc-activity</option>
+            <option>string-detect</option>
+            <option>icmp-event</option>
+            <option>not-suspicious</option>
+            <option>unknown</option>
+          </optgroup>
+          <optgroup label="P4 — Info">
+            <option>tcp-connection</option>
+          </optgroup>
+        </select>
+      </div>
+    </div>
+    <div style="margin-top:10px;">
+      <label style="font-size:12px;color:var(--text-dim);display:block;margin-bottom:4px;">Generated rule</label>
+      <code id="rule-preview" style="display:block;padding:8px 10px;background:var(--surface);border:1px solid var(--border);border-radius:4px;font-size:12px;word-break:break-all;min-height:32px;"></code>
+    </div>
+  </div>
+
+  {# Raw textarea (shown for raw template) #}
+  <div id="raw-fields" style="display:none;">
+    <label style="font-size:12px;color:var(--text-dim);display:block;margin-bottom:4px;">Rule text</label>
+    <textarea id="raw-rule" rows="3"
+              style="width:100%;box-sizing:border-box;padding:8px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:inherit;font-family:monospace;font-size:12px;"
+              placeholder='alert tcp any any -> 1.2.3.4 any (msg:"My Rule"; classtype:trojan-activity; sid:1000099; rev:1;)'></textarea>
+  </div>
+
+  <div style="display:flex;gap:8px;margin-top:14px;align-items:center;">
+    <button id="add-btn" class="btn btn-primary" onclick="submitRule()">Save &amp; Reload</button>
+    <button class="btn" onclick="document.getElementById('add-form').style.display='none'">Cancel</button>
+    <span id="add-msg" style="font-size:12px;margin-left:8px;"></span>
+  </div>
+</div>
+</div>
+
+{# ── Local rules ── #}
+<div class="card">
+  <div class="card-title">
+    Local Rules
+    <small>{{ local_rules | length }} rule{{ 's' if local_rules | length != 1 else '' }}</small>
+  </div>
+
+  {% if local_rules %}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th style="width:60px;">Status</th>
+          <th style="width:56px;">SID</th>
+          <th style="width:60px;">Action</th>
+          <th>Message</th>
+          <th>Classtype</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for rule in local_rules %}
+        <tr id="rule-{{ rule.sid }}" {% if not rule.enabled %}style="opacity:.5;"{% endif %}>
+          <td>
+            {% if rule.enabled %}
+              <span class="badge badge-ok" style="font-size:10px;">enabled</span>
+            {% else %}
+              <span class="badge badge-none" style="font-size:10px;">disabled</span>
+            {% endif %}
+          </td>
+          <td class="mono" style="font-size:11px;">
+            <span style="cursor:pointer;text-decoration:underline dotted;color:var(--accent,#7c6af7);"
+                  data-sid="{{ rule.sid }}" data-raw="{{ rule.raw | e }}"
+                  onclick="openEditModal(this.dataset.sid, this.dataset.raw)">{{ rule.sid }}</span>
+          </td>
+          <td><span class="badge {% if rule.action == 'drop' %}badge-high{% elif rule.action == 'pass' %}badge-ok{% else %}badge-p2{% endif %}" style="font-size:10px;">{{ rule.action }}</span></td>
+          <td style="font-size:13px;">{{ rule.msg }}</td>
+          <td class="text-dim" style="font-size:11px;">{{ rule.classtype }}</td>
+          <td style="text-align:right;white-space:nowrap;">
+            <button class="btn btn-sm" style="font-size:11px;"
+                    onclick="toggleRule('{{ rule.sid }}', this)">
+              {{ 'Disable' if rule.enabled else 'Enable' }}
+            </button>
+            <button class="btn btn-sm btn-danger" style="font-size:11px;margin-left:4px;"
+                    onclick="deleteRule('{{ rule.sid }}', this)"
+                    title="{{ rule.raw }}">Delete</button>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="empty-state">
+    <div class="empty-icon">📋</div>
+    <p>No local rules yet. Click <strong>+ Add Rule</strong> to create one.</p>
+  </div>
+  {% endif %}
+</div>
+
+{# ── ET ruleset stats + search ── #}
+<div class="card">
+  <div class="card-title">Emerging Threats Ruleset <small>read-only</small></div>
+  <div class="stat-grid" style="grid-template-columns:repeat(3,minmax(120px,1fr));margin-bottom:16px;">
+    <div class="stat-card">
+      <div class="stat-label">Rules</div>
+      <div class="stat-value stat-value-blue">{{ "{:,}".format(et_stats.count) }}</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">File Size</div>
+      <div class="stat-value text-dim">{{ et_stats.size_mb }} MB</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Last Updated</div>
+      <div class="stat-value text-dim" style="font-size:16px;">{{ et_stats.modified }}</div>
+    </div>
+  </div>
+
+  <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;">
+    <input id="et-search" type="text" placeholder="Search rules (min 3 chars)…"
+           style="flex:1;max-width:400px;padding:6px 10px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:inherit;"
+           oninput="etSearch(this.value)">
+    <span id="et-count" class="text-dim" style="font-size:12px;"></span>
+  </div>
+  <div id="et-results" style="display:none;">
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Rule</th></tr></thead>
+        <tbody id="et-tbody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+{# ── Edit rule modal ── #}
+<div id="edit-modal" style="display:none;position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,.6);align-items:center;justify-content:center;"
+     onclick="if(event.target===this)closeEditModal()">
+  <div style="background:var(--card-bg,#1e1e2e);border:1px solid var(--border,#444);border-radius:8px;padding:20px 24px;max-width:720px;width:94%;max-height:90vh;overflow-y:auto;">
+
+    {# title + raw toggle #}
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+      <span style="font-weight:600;">Edit Rule <span id="edit-sid-label" class="mono text-dim" style="font-size:13px;"></span></span>
+      <div style="display:flex;align-items:center;gap:10px;">
+        <span style="font-size:11px;color:var(--text-dim);" id="edit-mode-label">structured</span>
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;color:var(--text-dim);">
+          <input type="checkbox" id="edit-raw-toggle" onchange="editToggleRaw(this.checked)" style="cursor:pointer;">
+          Raw
+        </label>
+        <button onclick="closeEditModal()" style="background:none;border:none;color:inherit;font-size:1.2em;cursor:pointer;padding:0;">✕</button>
+      </div>
+    </div>
+
+    {# ── Structured view ── #}
+    <div id="edit-structured">
+      <div style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--text-dim);margin-bottom:6px;">Header</div>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:14px;">
+        <div>
+          <label style="font-size:11px;color:var(--text-dim);display:block;">Action</label>
+          <select id="e-action" onchange="editRebuild()" class="edit-sel">
+            <option>alert</option><option>drop</option><option>pass</option><option>reject</option>
+          </select>
+        </div>
+        <div>
+          <label style="font-size:11px;color:var(--text-dim);display:block;">Protocol</label>
+          <select id="e-proto" onchange="editRebuild()" class="edit-sel">
+            <option>tcp</option><option>udp</option><option>icmp</option><option>ip</option>
+            <option>http</option><option>dns</option><option>tls</option><option>smtp</option>
+            <option>ssh</option><option>ftp</option><option>pkthdr</option>
+          </select>
+        </div>
+        <div>
+          <label style="font-size:11px;color:var(--text-dim);display:block;">Src IP</label>
+          <input id="e-src-ip" type="text" value="any" oninput="editRebuild()" class="edit-inp" style="width:110px;">
+        </div>
+        <div>
+          <label style="font-size:11px;color:var(--text-dim);display:block;">Src Port</label>
+          <input id="e-src-port" type="text" value="any" oninput="editRebuild()" class="edit-inp" style="width:70px;">
+        </div>
+        <div>
+          <label style="font-size:11px;color:var(--text-dim);display:block;">Dir</label>
+          <select id="e-dir" onchange="editRebuild()" class="edit-sel">
+            <option>-&gt;</option><option>&lt;&gt;</option>
+          </select>
+        </div>
+        <div>
+          <label style="font-size:11px;color:var(--text-dim);display:block;">Dst IP</label>
+          <input id="e-dst-ip" type="text" value="any" oninput="editRebuild()" class="edit-inp" style="width:130px;">
+        </div>
+        <div>
+          <label style="font-size:11px;color:var(--text-dim);display:block;">Dst Port</label>
+          <input id="e-dst-port" type="text" value="any" oninput="editRebuild()" class="edit-inp" style="width:70px;">
+        </div>
+      </div>
+
+      <div style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--text-dim);margin-bottom:6px;">Options</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 16px;margin-bottom:10px;">
+        <div>
+          <label style="font-size:11px;color:var(--text-dim);display:block;margin-bottom:3px;">Message (msg)</label>
+          <input id="e-msg" type="text" oninput="editRebuild()" class="edit-inp" style="width:100%;box-sizing:border-box;">
+        </div>
+        <div>
+          <label style="font-size:11px;color:var(--text-dim);display:block;margin-bottom:3px;">Classtype</label>
+          <select id="e-classtype" onchange="editRebuild()" class="edit-sel" style="width:100%;">
+            <option value="">— none —</option>
+            <optgroup label="P1 — High">
+              <option>trojan-activity</option>
+              <option>command-and-control</option>
+              <option>domain-c2</option>
+              <option>exploit-kit</option>
+              <option>targeted-activity</option>
+              <option>web-application-attack</option>
+              <option>shellcode-detect</option>
+              <option>credential-theft</option>
+              <option>attempted-admin</option>
+              <option>successful-admin</option>
+              <option>attempted-user</option>
+              <option>successful-user</option>
+              <option>unsuccessful-user</option>
+              <option>policy-violation</option>
+              <option>inappropriate-content</option>
+            </optgroup>
+            <optgroup label="P2 — Medium">
+              <option>bad-unknown</option>
+              <option>misc-attack</option>
+              <option>attempted-recon</option>
+              <option>successful-recon-limited</option>
+              <option>successful-recon-largescale</option>
+              <option>attempted-dos</option>
+              <option>successful-dos</option>
+              <option>denial-of-service</option>
+              <option>web-application-activity</option>
+              <option>suspicious-filename-detect</option>
+              <option>suspicious-login</option>
+              <option>system-call-detect</option>
+              <option>unusual-client-port-connection</option>
+              <option>non-standard-protocol</option>
+              <option>pup-activity</option>
+              <option>coin-mining</option>
+              <option>social-engineering</option>
+              <option>external-ip-check</option>
+              <option>default-login-attempt</option>
+            </optgroup>
+            <optgroup label="P3 — Low">
+              <option>network-scan</option>
+              <option>protocol-command-decode</option>
+              <option>misc-activity</option>
+              <option>string-detect</option>
+              <option>icmp-event</option>
+              <option>not-suspicious</option>
+              <option>unknown</option>
+            </optgroup>
+            <optgroup label="P4 — Info">
+              <option>tcp-connection</option>
+            </optgroup>
+          </select>
+        </div>
+        <div>
+          <label style="font-size:11px;color:var(--text-dim);display:block;margin-bottom:3px;">Flow</label>
+          <select id="e-flow" onchange="editRebuild()" class="edit-sel" style="width:100%;">
+            <option value="">— none —</option>
+            <option>to_server,established</option>
+            <option>to_client,established</option>
+            <option>established</option>
+            <option>to_server</option>
+            <option>to_client</option>
+            <option>stateless</option>
+          </select>
+        </div>
+        <div>
+          <label style="font-size:11px;color:var(--text-dim);display:block;margin-bottom:3px;">Content match</label>
+          <div style="display:flex;gap:6px;align-items:center;">
+            <input id="e-content" type="text" oninput="editRebuild()" class="edit-inp" style="flex:1;">
+            <label style="font-size:11px;white-space:nowrap;"><input type="checkbox" id="e-nocase" onchange="editRebuild()"> nocase</label>
+            <label style="font-size:11px;white-space:nowrap;"><input type="checkbox" id="e-dnsquery" onchange="editRebuild()"> dns.query</label>
+          </div>
+        </div>
+        <div>
+          <label style="font-size:11px;color:var(--text-dim);display:block;margin-bottom:3px;">SID</label>
+          <input id="e-sid" type="text" oninput="editRebuild()" class="edit-inp" style="width:100%;box-sizing:border-box;">
+        </div>
+        <div>
+          <label style="font-size:11px;color:var(--text-dim);display:block;margin-bottom:3px;">Rev</label>
+          <input id="e-rev" type="number" min="1" value="1" oninput="editRebuild()" class="edit-inp" style="width:80px;">
+        </div>
+      </div>
+      <div>
+        <label style="font-size:11px;color:var(--text-dim);display:block;margin-bottom:3px;">Extra options <span style="font-weight:normal;">(other keywords, verbatim — e.g. <code>offset:0; depth:10</code>)</span></label>
+        <input id="e-extra" type="text" oninput="editRebuild()" class="edit-inp" style="width:100%;box-sizing:border-box;" placeholder="e.g. threshold: type both, track by_src, count 3, seconds 300">
+      </div>
+    </div>
+
+    {# ── Raw view (hidden by default) ── #}
+    <div id="edit-raw" style="display:none;">
+      <label style="font-size:12px;color:var(--text-dim);display:block;margin-bottom:6px;">Rule text</label>
+      <textarea id="edit-rule-raw" rows="4" oninput="editRawChanged()"
+                style="width:100%;box-sizing:border-box;padding:8px 10px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:inherit;font-family:monospace;font-size:12px;line-height:1.5;resize:vertical;"></textarea>
+    </div>
+
+    {# Live preview #}
+    <div style="margin-top:12px;">
+      <label style="font-size:11px;color:var(--text-dim);display:block;margin-bottom:4px;">Preview</label>
+      <code id="edit-preview" style="display:block;padding:8px 10px;background:var(--surface);border:1px solid var(--border);border-radius:4px;font-size:11px;word-break:break-all;min-height:28px;"></code>
+    </div>
+
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px;align-items:center;">
+      <span id="edit-msg" style="font-size:12px;flex:1;"></span>
+      <button onclick="closeEditModal()" class="btn">Cancel</button>
+      <button id="edit-save-btn" onclick="saveEdit()" class="btn btn-primary">Save &amp; Reload</button>
+    </div>
+  </div>
+</div>
+
+<style>
+.edit-sel { padding:5px 7px; background:var(--surface); border:1px solid var(--border); border-radius:4px; color:inherit; font-size:13px; }
+.edit-inp { padding:5px 7px; background:var(--surface); border:1px solid var(--border); border-radius:4px; color:inherit; font-size:13px; }
+</style>
+
+<script>
+var _editSid = null;
+var _editRawMode = false;
+
+// ── Rule parser ──────────────────────────────────────────────────────────────
+
+function parseRuleOptions(optStr) {
+  // Tokenise on ; but not inside double-quotes
+  var tokens = [], cur = '', inQ = false;
+  for (var i = 0; i < optStr.length; i++) {
+    var c = optStr[i];
+    if (c === '"') inQ = !inQ;
+    if (c === ';' && !inQ) { if (cur.trim()) tokens.push(cur.trim()); cur = ''; }
+    else cur += c;
+  }
+  if (cur.trim()) tokens.push(cur.trim());
+
+  var opts = {};
+  tokens.forEach(function(t) {
+    var ci = t.indexOf(':');
+    if (ci === -1) { opts[t.trim()] = true; }
+    else {
+      var k = t.slice(0, ci).trim();
+      var v = t.slice(ci + 1).trim();
+      if (v.startsWith('"') && v.endsWith('"')) v = v.slice(1, -1);
+      opts[k] = v;
+    }
+  });
+  return opts;
+}
+
+function parseRule(text) {
+  var r = { action:'alert', proto:'tcp', srcIp:'any', srcPort:'any', dir:'->', dstIp:'any', dstPort:'any', opts:{} };
+  text = text.trim().replace(/^#\s*/, '');
+  var hm = text.match(/^(\w+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(->|<>)\s+(\S+)\s+(\S+)\s*\(/i);
+  if (hm) {
+    r.action = hm[1]; r.proto = hm[2];
+    r.srcIp  = hm[3]; r.srcPort = hm[4];
+    r.dir    = hm[5];
+    r.dstIp  = hm[6]; r.dstPort = hm[7];
+  }
+  var om = text.match(/\(([\s\S]+)\)\s*;?\s*$/);
+  if (om) r.opts = parseRuleOptions(om[1]);
+  return r;
+}
+
+// ── Rule builder ─────────────────────────────────────────────────────────────
+
+var KNOWN_OPTS = ['msg','flow','dns.query','content','nocase','classtype','sid','rev'];
+
+function buildRuleFromParsed(r) {
+  var parts = [];
+  if (r.opts.msg)      parts.push('msg:"' + r.opts.msg + '"');
+  if (r.opts.flow)     parts.push('flow:' + r.opts.flow);
+  if (r.opts['dns.query'] === true) parts.push('dns.query');
+  if (r.opts.content)  parts.push('content:"' + r.opts.content + '"');
+  if (r.opts.nocase === true) parts.push('nocase');
+
+  // Extra (anything not in KNOWN_OPTS)
+  Object.keys(r.opts).forEach(function(k) {
+    if (KNOWN_OPTS.indexOf(k) === -1) {
+      parts.push(r.opts[k] === true ? k : k + ':' + r.opts[k]);
+    }
+  });
+
+  if (r.opts.classtype) parts.push('classtype:' + r.opts.classtype);
+  if (r.opts.sid)       parts.push('sid:' + r.opts.sid);
+  if (r.opts.rev)       parts.push('rev:' + r.opts.rev);
+
+  return r.action + ' ' + r.proto + ' ' + r.srcIp + ' ' + r.srcPort +
+         ' ' + r.dir + ' ' + r.dstIp + ' ' + r.dstPort +
+         ' (' + parts.join('; ') + ';)';
+}
+
+// ── Form population ──────────────────────────────────────────────────────────
+
+function setSelectOrText(id, val) {
+  var el = document.getElementById(id);
+  if (!el) return;
+  var found = false;
+  for (var i = 0; i < el.options.length; i++) {
+    if (el.options[i].value === val || el.options[i].text === val) {
+      el.selectedIndex = i; found = true; break;
+    }
+  }
+  if (!found && el.tagName === 'SELECT') el.selectedIndex = 0;
+}
+
+function populateStructured(parsed) {
+  setSelectOrText('e-action', parsed.action);
+  setSelectOrText('e-proto',  parsed.proto);
+  document.getElementById('e-src-ip').value   = parsed.srcIp;
+  document.getElementById('e-src-port').value = parsed.srcPort;
+  setSelectOrText('e-dir', parsed.dir);
+  document.getElementById('e-dst-ip').value   = parsed.dstIp;
+  document.getElementById('e-dst-port').value = parsed.dstPort;
+
+  document.getElementById('e-msg').value      = parsed.opts.msg      || '';
+  setSelectOrText('e-flow', parsed.opts.flow  || '');
+  document.getElementById('e-content').value  = parsed.opts.content  || '';
+  document.getElementById('e-nocase').checked  = !!parsed.opts.nocase;
+  document.getElementById('e-dnsquery').checked = !!parsed.opts['dns.query'];
+  setSelectOrText('e-classtype', parsed.opts.classtype || '');
+  document.getElementById('e-sid').value = parsed.opts.sid || '';
+  document.getElementById('e-rev').value = parsed.opts.rev || '1';
+
+  // Extra: everything not in KNOWN_OPTS
+  var extraParts = [];
+  Object.keys(parsed.opts).forEach(function(k) {
+    if (KNOWN_OPTS.indexOf(k) === -1) {
+      extraParts.push(parsed.opts[k] === true ? k : k + ':' + parsed.opts[k]);
+    }
+  });
+  document.getElementById('e-extra').value = extraParts.join('; ');
+}
+
+// ── Rebuild from form fields ─────────────────────────────────────────────────
+
+function editRebuild() {
+  var parsed = {
+    action:   document.getElementById('e-action').value,
+    proto:    document.getElementById('e-proto').value,
+    srcIp:    document.getElementById('e-src-ip').value.trim()   || 'any',
+    srcPort:  document.getElementById('e-src-port').value.trim() || 'any',
+    dir:      document.getElementById('e-dir').value,
+    dstIp:    document.getElementById('e-dst-ip').value.trim()   || 'any',
+    dstPort:  document.getElementById('e-dst-port').value.trim() || 'any',
+    opts: {}
+  };
+
+  var msg      = document.getElementById('e-msg').value.trim();
+  var flow     = document.getElementById('e-flow').value;
+  var content  = document.getElementById('e-content').value.trim();
+  var nocase   = document.getElementById('e-nocase').checked;
+  var dnsquery = document.getElementById('e-dnsquery').checked;
+  var classtype = document.getElementById('e-classtype').value;
+  var sid      = document.getElementById('e-sid').value.trim();
+  var rev      = document.getElementById('e-rev').value.trim() || '1';
+  var extra    = document.getElementById('e-extra').value.trim();
+
+  if (msg)       parsed.opts.msg = msg;
+  if (flow)      parsed.opts.flow = flow;
+  if (dnsquery)  parsed.opts['dns.query'] = true;
+  if (content)   parsed.opts.content = content;
+  if (nocase)    parsed.opts.nocase = true;
+
+  // Parse extra options into the opts map so they're ordered correctly
+  if (extra) {
+    var extraTokens = extra.split(';').map(function(s){ return s.trim(); }).filter(Boolean);
+    extraTokens.forEach(function(t) {
+      var ci = t.indexOf(':');
+      if (ci === -1) parsed.opts[t] = true;
+      else { parsed.opts[t.slice(0,ci).trim()] = t.slice(ci+1).trim(); }
+    });
+  }
+
+  if (classtype) parsed.opts.classtype = classtype;
+  if (sid)       parsed.opts.sid = sid;
+  parsed.opts.rev = rev;
+
+  var rule = buildRuleFromParsed(parsed);
+  document.getElementById('edit-preview').textContent = rule;
+  document.getElementById('edit-rule-raw').value = rule;
+}
+
+function editRawChanged() {
+  document.getElementById('edit-preview').textContent =
+    document.getElementById('edit-rule-raw').value.trim();
+}
+
+// ── Raw / structured toggle ──────────────────────────────────────────────────
+
+function editToggleRaw(isRaw) {
+  _editRawMode = isRaw;
+  document.getElementById('edit-structured').style.display = isRaw ? 'none' : 'block';
+  document.getElementById('edit-raw').style.display        = isRaw ? 'block' : 'none';
+  document.getElementById('edit-mode-label').textContent   = isRaw ? 'raw' : 'structured';
+  if (isRaw) {
+    // Copy current preview into raw textarea
+    document.getElementById('edit-rule-raw').value =
+      document.getElementById('edit-preview').textContent;
+  } else {
+    // Re-parse raw textarea back into structured form
+    var raw = document.getElementById('edit-rule-raw').value.trim();
+    if (raw) populateStructured(parseRule(raw));
+    editRebuild();
+  }
+}
+
+// ── Modal open/close/save ────────────────────────────────────────────────────
+
+function openEditModal(sid, raw) {
+  _editSid = sid;
+  document.getElementById('edit-sid-label').textContent = sid;
+  document.getElementById('edit-msg').textContent = '';
+  document.getElementById('edit-save-btn').disabled = false;
+  document.getElementById('edit-raw-toggle').checked = false;
+  editToggleRaw(false);
+
+  var parsed = parseRule(raw);
+  populateStructured(parsed);
+  editRebuild();
+
+  document.getElementById('edit-modal').style.display = 'flex';
+}
+
+function closeEditModal() {
+  document.getElementById('edit-modal').style.display = 'none';
+}
+
+function saveEdit() {
+  var rule = _editRawMode
+    ? document.getElementById('edit-rule-raw').value.trim()
+    : document.getElementById('edit-preview').textContent.trim();
+  if (!rule) return;
+
+  var btn = document.getElementById('edit-save-btn');
+  var msg = document.getElementById('edit-msg');
+  btn.disabled = true;
+  msg.textContent = 'Saving…';
+
+  var fd = new FormData();
+  fd.append('sid', _editSid);
+  fd.append('rule', rule);
+  fetch('{{ url_for("suricata_rules_update") }}', {method:'POST', body:fd})
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      msg.textContent = d.msg;
+      msg.style.color = d.ok ? 'var(--green,#4caf50)' : 'var(--red)';
+      btn.disabled = false;
+      if (d.ok) setTimeout(function(){ location.reload(); }, 1000);
+    })
+    .catch(function() { msg.textContent = 'Request failed'; btn.disabled = false; });
+}
+
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape') closeEditModal();
+});
+</script>
+
+<script>
+var _mode = 'ip';
+var _searchTimer = null;
+
+function setTemplate(mode) {
+  _mode = mode;
+  document.getElementById('guided-fields').style.display = mode === 'raw' ? 'none' : 'block';
+  document.getElementById('raw-fields').style.display    = mode === 'raw' ? 'block' : 'none';
+  if (mode === 'ip') {
+    document.getElementById('f-proto').value    = 'tcp';
+    document.getElementById('f-dst-port').value = 'any';
+    document.getElementById('f-content').value  = '';
+  } else if (mode === 'dns') {
+    document.getElementById('f-proto').value    = 'dns';
+    document.getElementById('f-dst-port').value = 'any';
+    document.getElementById('f-dst-ip').value   = 'any';
+  } else if (mode === 'content') {
+    document.getElementById('f-proto').value    = 'http';
+    document.getElementById('f-dst-port').value = 'any';
+  }
+  updatePreview();
+}
+
+function updatePreview() {
+  if (_mode === 'raw') return;
+  var action  = document.getElementById('f-action').value;
+  var proto   = document.getElementById('f-proto').value;
+  var dstIp   = document.getElementById('f-dst-ip').value.trim() || 'any';
+  var dstPort = document.getElementById('f-dst-port').value.trim() || 'any';
+  var msg     = document.getElementById('f-msg').value.trim() || 'Custom Rule';
+  var content = document.getElementById('f-content').value.trim();
+  var cls     = document.getElementById('f-classtype').value;
+
+  var opts = 'msg:"' + msg + '"; ';
+  if (content) {
+    if (proto === 'dns') {
+      opts += 'dns.query; content:"' + content + '"; nocase; ';
+    } else {
+      opts += 'content:"' + content + '"; nocase; ';
+    }
+  }
+  if (proto === 'http' || proto === 'tls') {
+    opts += 'flow:to_server,established; ';
+  }
+  opts += 'classtype:' + cls + '; sid:AUTO; rev:1;';
+  var rule = action + ' ' + proto + ' any any -> ' + dstIp + ' ' + dstPort + ' (' + opts + ')';
+  document.getElementById('rule-preview').textContent = rule;
+}
+
+// Wire up guided field changes
+['f-action','f-proto','f-dst-ip','f-dst-port','f-msg','f-content','f-classtype'].forEach(function(id) {
+  var el = document.getElementById(id);
+  if (el) el.addEventListener('input', updatePreview);
+});
+
+// Initialise
+setTemplate('ip');
+document.getElementById('f-dst-ip').value = 'any';
+
+function submitRule() {
+  var rule;
+  if (_mode === 'raw') {
+    rule = document.getElementById('raw-rule').value.trim();
+  } else {
+    rule = document.getElementById('rule-preview').textContent.trim();
+  }
+  if (!rule) return;
+
+  var btn = document.getElementById('add-btn');
+  var msg = document.getElementById('add-msg');
+  btn.disabled = true;
+  msg.textContent = 'Saving…';
+
+  var fd = new FormData();
+  fd.append('rule', rule);
+  fetch('{{ url_for("suricata_rules_add") }}', {method:'POST', body:fd})
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      msg.textContent = d.msg;
+      msg.style.color = d.ok ? 'var(--green, #4caf50)' : 'var(--red)';
+      btn.disabled = false;
+      if (d.ok) setTimeout(function(){ location.reload(); }, 1200);
+    })
+    .catch(function() { msg.textContent = 'Request failed'; btn.disabled = false; });
+}
+
+function toggleRule(sid, btn) {
+  btn.disabled = true;
+  var fd = new FormData();
+  fd.append('sid', sid);
+  fetch('{{ url_for("suricata_rules_toggle") }}', {method:'POST', body:fd})
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      btn.disabled = false;
+      if (d.ok) { location.reload(); }
+      else { alert(d.msg); }
+    });
+}
+
+function deleteRule(sid, btn) {
+  bbConfirm('Delete rule SID ' + sid + '?', function() {
+    btn.disabled = true;
+    var fd = new FormData();
+    fd.append('sid', sid);
+    fetch('{{ url_for("suricata_rules_delete") }}', {method:'POST', body:fd})
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        if (d.ok) {
+          var row = document.getElementById('rule-' + sid);
+          if (row) row.remove();
+        } else {
+          alert(d.msg);
+          btn.disabled = false;
+        }
+      });
+  });
+}
+
+function etSearch(val) {
+  clearTimeout(_searchTimer);
+  if (val.length < 3) {
+    document.getElementById('et-results').style.display = 'none';
+    document.getElementById('et-count').textContent = '';
+    return;
+  }
+  _searchTimer = setTimeout(function() {
+    fetch('{{ url_for("suricata_rules_search") }}?q=' + encodeURIComponent(val))
+      .then(function(r) { return r.json(); })
+      .then(function(rows) {
+        var tbody = document.getElementById('et-tbody');
+        tbody.innerHTML = '';
+        rows.forEach(function(r) {
+          var tr = document.createElement('tr');
+          var td = document.createElement('td');
+          td.style.fontFamily = 'monospace';
+          td.style.fontSize = '11px';
+          td.style.wordBreak = 'break-all';
+          td.textContent = r;
+          tr.appendChild(td);
+          tbody.appendChild(tr);
+        });
+        document.getElementById('et-count').textContent =
+          rows.length === 50 ? 'showing first 50 matches' : rows.length + ' match' + (rows.length !== 1 ? 'es' : '');
+        document.getElementById('et-results').style.display = rows.length ? 'block' : 'none';
+      });
+  }, 350);
+}
+</script>
+{% endblock %}

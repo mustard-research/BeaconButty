@@ -1,0 +1,11 @@
+[Unit]
+Description=BeaconButty — daily config snapshot
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/beaconbutty-backup.sh
+User=root
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=300

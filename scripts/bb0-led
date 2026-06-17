@@ -1,0 +1,131 @@
+#!/usr/bin/env python3
+"""bb0-led — control the Pironman5 WS2812 LEDs via bb0-display.py.
+
+Usage:
+  pt-led on [--color NAME|#rrggbb] [--brightness 0-100] [--style STYLE] [--speed 0-100]
+  pt-led off
+  pt-led status
+
+Styles:  solid, breathing, flow, flow_reverse, rainbow, rainbow_reverse, hue_cycle
+Colours: red, green, blue, white, yellow, cyan, magenta, orange, pink, purple,
+         teal, lime, amber, indigo, violet  (or any #rrggbb hex)
+"""
+
+import sys
+import json
+import argparse
+from pathlib import Path
+
+STATE_FILE = Path("/var/lib/beaconbutty/watchdog/led-state.json")
+
+STYLES = ['solid', 'breathing', 'flow', 'flow_reverse', 'rainbow', 'rainbow_reverse', 'hue_cycle']
+
+COLOURS = {
+    "red":     "#ff0000",
+    "green":   "#00ff00",
+    "blue":    "#0000ff",
+    "white":   "#ffffff",
+    "black":   "#000000",
+    "yellow":  "#ffff00",
+    "cyan":    "#00ffff",
+    "magenta": "#ff00ff",
+    "orange":  "#ff6600",
+    "pink":    "#ff0066",
+    "purple":  "#8800ff",
+    "teal":    "#008080",
+    "lime":    "#00ff80",
+    "amber":   "#ffbf00",
+    "indigo":  "#4b0082",
+    "violet":  "#ee82ee",
+}
+DEFAULTS = {
+    "enable": False,
+    "color": "#0a1aff",
+    "brightness": 50,
+    "style": "breathing",
+    "speed": 50,
+}
+
+
+def load_state():
+    if STATE_FILE.exists():
+        try:
+            return json.loads(STATE_FILE.read_text())
+        except Exception:
+            pass
+    return dict(DEFAULTS)
+
+
+def save_state(state):
+    STATE_FILE.write_text(json.dumps(state))
+
+
+def main():
+    if len(sys.argv) < 2 or sys.argv[1] not in ("on", "off", "status"):
+        print("Usage: pt-led on|off|status")
+        print("  pt-led on [--color NAME|#rrggbb] [--brightness 0-100] [--style STYLE] [--speed 0-100]")
+        print(f"  Styles:  {', '.join(STYLES)}")
+        print(f"  Colours: {', '.join(COLOURS)}")
+        sys.exit(1)
+
+    cmd = sys.argv[1]
+
+    if cmd == "status":
+        state = load_state()
+        if not state.get("enable", False):
+            print("off")
+        else:
+            print(
+                f"on  color={state.get('color')}  "
+                f"brightness={state.get('brightness')}  "
+                f"style={state.get('style')}  "
+                f"speed={state.get('speed')}"
+            )
+        return
+
+    if cmd == "off":
+        state = load_state()
+        state["enable"] = False
+        save_state(state)
+        print("LEDs off")
+        return
+
+    # cmd == "on"
+    p = argparse.ArgumentParser(add_help=False)
+    p.add_argument("--color",      default=None)
+    p.add_argument("--brightness", type=int, default=None)
+    p.add_argument("--style",      default=None)
+    p.add_argument("--speed",      type=int, default=None)
+    args, _ = p.parse_known_args(sys.argv[2:])
+
+    state = load_state()
+    state["enable"] = True
+
+    if args.color is not None:
+        c = args.color.strip().lower()
+        if c in COLOURS:
+            c = COLOURS[c]
+        elif not c.startswith("#"):
+            c = "#" + c
+        state["color"] = c
+    if args.brightness is not None:
+        state["brightness"] = max(0, min(100, args.brightness))
+    if args.style is not None:
+        if args.style not in STYLES:
+            print(f"Unknown style. Choose from: {', '.join(STYLES)}")
+            sys.exit(1)
+        state["style"] = args.style
+    if args.speed is not None:
+        state["speed"] = max(0, min(100, args.speed))
+
+    save_state(state)
+    print(
+        f"LEDs on  color={state['color']}  "
+        f"brightness={state['brightness']}  "
+        f"style={state['style']}  "
+        f"speed={state['speed']}"
+    )
+
+
+if __name__ == "__main__":
+    main()

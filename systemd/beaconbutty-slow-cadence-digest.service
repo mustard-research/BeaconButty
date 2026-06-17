@@ -1,0 +1,12 @@
+[Unit]
+Description=BeaconButty — daily Slack digest of slow-cadence hunt candidates
+After=beaconbutty-slow-cadence.service
+Wants=beaconbutty-slow-cadence.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/beaconbutty-slow-cadence-digest.py
+User=root
+StandardOutput=append:/var/log/beaconbutty/slow-cadence.log
+StandardError=append:/var/log/beaconbutty/slow-cadence.log
+TimeoutStartSec=60

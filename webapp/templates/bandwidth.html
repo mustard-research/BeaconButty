@@ -1,0 +1,566 @@
+{% extends "base.html" %}
+{% block title %}Bandwidth{% endblock %}
+
+{% block head %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+  .bw-device-btn {
+    background: transparent;
+    border: none;
+    color: var(--accent);
+    padding: 0;
+    font: inherit;
+    cursor: pointer;
+  }
+  .bw-device-btn:hover { text-decoration: underline; }
+
+  .bw-dir-btn {
+    background: transparent;
+    border: none;
+    color: var(--text);
+    padding: 0;
+    font: inherit;
+    cursor: pointer;
+    text-decoration: underline dotted rgba(139,148,158,0.5);
+    text-underline-offset: 2px;
+  }
+  .bw-dir-btn:hover { color: var(--accent); text-decoration-color: var(--accent); }
+  .bw-dir-btn.bw-dir-active { color: var(--accent); text-decoration-style: solid; }
+
+  .bw-dest-row td { padding: 0; background: rgba(88,166,255,0.04); }
+  .bw-dest-wrap {
+    padding: 10px 14px 14px;
+    border-left: 3px solid var(--accent);
+  }
+  .bw-dest-wrap h5 {
+    margin: 0 0 8px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .bw-dest-wrap table {
+    width: 100%;
+    font-size: 13px;
+    border-collapse: collapse;
+  }
+  .bw-dest-wrap th, .bw-dest-wrap td {
+    padding: 4px 8px;
+    border-bottom: 1px solid var(--border);
+  }
+  .bw-dest-wrap th { text-align: left; color: var(--text-dim); font-weight: 500; }
+  .bw-dest-wrap td.num { text-align: right; }
+  .bw-dest-empty { color: var(--text-dim); padding: 6px 0; }
+
+  .bw-bar {
+    background: rgba(88,166,255,0.15);
+    height: 6px;
+    border-radius: 3px;
+    overflow: hidden;
+    margin-top: 2px;
+  }
+  .bw-bar > span {
+    display: block;
+    height: 100%;
+    background: var(--accent);
+  }
+
+  .bw-filter-banner {
+    display: none;
+    margin-bottom: 16px;
+    padding: 8px 14px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    border-radius: 4px;
+    font-size: 13px;
+  }
+  .bw-filter-banner.active { display: flex; align-items: center; gap: 12px; }
+  .bw-filter-banner button {
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    padding: 2px 8px;
+    border-radius: 3px;
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .bw-filter-banner button:hover { color: var(--text); border-color: var(--text-dim); }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Bandwidth</h1>
+  <p>Per-device WAN traffic from Zeek conn logs in ClickHouse. Updated hourly by RITA import.</p>
+</div>
+
+<div class="bw-filter-banner" id="filter-banner">
+  <span>Filtered to <strong id="filter-label">—</strong></span>
+  <button onclick="clearFilter()">Show all devices</button>
+</div>
+
+<div class="stat-grid">
+  <div class="stat-card">
+    <div class="stat-label">Total WAN</div>
+    <div class="stat-value stat-value-blue" id="stat-total">—</div>
+    <div class="stat-sub" id="stat-total-sub">&nbsp;</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Peak Hour</div>
+    <div class="stat-value" id="stat-peak">—</div>
+    <div class="stat-sub" id="stat-peak-sub">&nbsp;</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Top Device</div>
+    <div class="stat-value" id="stat-top" style="font-size:18px;line-height:1.3;">—</div>
+    <div class="stat-sub" id="stat-top-sub">&nbsp;</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Devices Seen</div>
+    <div class="stat-value" id="stat-devices">—</div>
+    <div class="stat-sub">WAN-bound this window</div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-title">
+    Bandwidth by Device <small id="data-range"></small>
+  </div>
+
+  <div class="toggle-group" id="range-buttons">
+    <button class="btn btn-sm btn-active" data-days="1" onclick="setDays(1)">Today</button>
+    <button class="btn btn-sm"            data-days="3" onclick="setDays(3)">3 Days</button>
+    <button class="btn btn-sm"            data-days="7" onclick="setDays(7)">7 Days</button>
+  </div>
+
+  <div class="chart-container">
+    <canvas id="bwChart"></canvas>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-title">Top Talkers <small id="talkers-note"></small></div>
+  <div class="table-wrap">
+    <table id="talkers-table">
+      <thead>
+        <tr>
+          <th>Device</th>
+          <th class="num" data-sort="up_bytes">Up ↑</th>
+          <th class="num" data-sort="down_bytes">Down ↓</th>
+          <th class="num" data-sort="total_bytes" data-default>Total</th>
+          <th class="num" data-sort="flows">Flows</th>
+          <th class="num" data-sort="external_dests">External IPs</th>
+          <th data-sort="last_active">Last seen</th>
+        </tr>
+      </thead>
+      <tbody id="talkers-body"></tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-title">Top Destinations</div>
+  <div class="table-wrap">
+    <table id="destinations-table">
+      <thead>
+        <tr>
+          <th>Destination IP</th>
+          <th>Org (ASN)</th>
+          <th>Country / City</th>
+          <th class="num">Total</th>
+          <th class="num">Flows</th>
+          <th class="num">LAN devs</th>
+        </tr>
+      </thead>
+      <tbody id="destinations-body"></tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  const DARK = {
+    grid:   'rgba(48,54,61,0.5)',
+    tick:   '#8b949e',
+    text:   '#c9d1d9',
+    dim:    '#8b949e',
+  };
+
+  // Colour palette for up to 8 device series (+ "Other")
+  const DEVICE_COLOURS = [
+    '#58a6ff', '#3fb950', '#d29922', '#f85149',
+    '#bc8cff', '#ff7b72', '#56d4dd', '#db61a2',
+  ];
+  const OTHER_COLOUR = '#5a636c';
+
+  let currentDays = 1;
+  let deviceFilter = null;   // ip or null
+  let lastData = null;
+  let chart = null;
+
+  function fmtBytes(n) {
+    if (n === null || n === undefined) return '—';
+    const GB = 1024 * 1024 * 1024;
+    const MB = 1024 * 1024;
+    const KB = 1024;
+    if (n >= GB) return (n / GB).toFixed(2) + ' GB';
+    if (n >= MB) return (n / MB).toFixed(1) + ' MB';
+    if (n >= KB) return (n / KB).toFixed(0) + ' KB';
+    return n + ' B';
+  }
+
+  function fmtTime(iso) {
+    return iso ? iso.replace('T', ' ').slice(0, 16) : '—';
+  }
+
+  function fmtRelative(unixSec) {
+    if (!unixSec) return '—';
+    const diff = Math.floor(Date.now() / 1000 - unixSec);
+    if (diff < 60) return diff + 's ago';
+    if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+    if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+    return Math.floor(diff / 86400) + 'd ago';
+  }
+
+  function setDays(days) {
+    currentDays = days;
+    document.querySelectorAll('#range-buttons .btn').forEach(function(b) {
+      b.classList.toggle('btn-active', parseInt(b.dataset.days) === days);
+    });
+    fetchData(days);
+  }
+
+  function fetchData(days) {
+    fetch('/api/bandwidth?days=' + days)
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        lastData = data;
+        renderAll(data);
+      })
+      .catch(function(err) { console.error('Bandwidth fetch error:', err); });
+  }
+
+  function renderAll(d) {
+    renderSummary(d.summary);
+    renderChart(d);
+    renderTalkers(d.talkers, d.summary.total_bytes);
+    renderDestinations(d.destinations);
+  }
+
+  function renderSummary(s) {
+    document.getElementById('stat-total').textContent = fmtBytes(s.total_bytes);
+    document.getElementById('stat-total-sub').textContent =
+      '↑ ' + fmtBytes(s.up_bytes) + '  ↓ ' + fmtBytes(s.down_bytes);
+    document.getElementById('stat-peak').textContent =
+      s.peak_hour ? s.peak_hour.slice(11, 16) : '—';
+    document.getElementById('stat-peak-sub').textContent =
+      s.peak_hour
+        ? fmtBytes(s.peak_hour_bytes) + ' · ' + s.peak_hour.slice(0, 10)
+        : '';
+    document.getElementById('stat-top').textContent = s.top_device_label || '—';
+    document.getElementById('stat-top-sub').textContent =
+      s.top_device_bytes ? fmtBytes(s.top_device_bytes) : '';
+    document.getElementById('stat-devices').textContent = s.device_count;
+
+    const range = document.getElementById('data-range');
+    range.textContent = s.window_days > 1
+      ? '— last ' + s.window_days + ' days (hourly)'
+      : '— today (hourly)';
+  }
+
+  function renderChart(d) {
+    const labels = d.timeseries.map(function(r) { return r.time; });
+    const datasets = [];
+    const order = d.series_order.slice();
+    if (deviceFilter) {
+      // Show only the filtered device, full-colour
+      const ip = deviceFilter;
+      const colourIdx = d.series_order.indexOf(ip);
+      datasets.push({
+        label: d.series_labels[ip] || ip,
+        data: d.timeseries.map(function(r) { return r[ip] || 0; }),
+        borderColor: DEVICE_COLOURS[colourIdx >= 0 ? colourIdx : 0],
+        backgroundColor: DEVICE_COLOURS[colourIdx >= 0 ? colourIdx : 0] + '40',
+        borderWidth: 2,
+        pointRadius: 0,
+        tension: 0.25,
+        fill: true,
+      });
+    } else {
+      // Stacked area: top-N + "Other"
+      order.forEach(function(key, i) {
+        const label = d.series_labels[key] || key;
+        const colour = key === '__other__'
+          ? OTHER_COLOUR
+          : DEVICE_COLOURS[i % DEVICE_COLOURS.length];
+        datasets.push({
+          label: label,
+          data: d.timeseries.map(function(r) { return r[key] || 0; }),
+          borderColor: colour,
+          backgroundColor: colour + '60',
+          borderWidth: 1,
+          pointRadius: 0,
+          tension: 0.2,
+          fill: true,
+        });
+      });
+    }
+
+    const ctx = document.getElementById('bwChart').getContext('2d');
+    if (chart) { chart.destroy(); chart = null; }
+
+    chart = new Chart(ctx, {
+      type: 'line',
+      data: { labels: labels, datasets: datasets },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: {
+            position: 'bottom',
+            labels: { color: DARK.tick, usePointStyle: true, pointStyleWidth: 12, boxHeight: 8 },
+          },
+          tooltip: {
+            backgroundColor: '#161b22',
+            borderColor: '#30363d',
+            borderWidth: 1,
+            titleColor: DARK.text,
+            bodyColor: DARK.dim,
+            itemSort: function(a, b) { return (b.raw || 0) - (a.raw || 0); },
+            callbacks: {
+              title: function(items) { return fmtTime(items[0].label); },
+              label: function(item) {
+                return ' ' + item.dataset.label + ': ' + fmtBytes(item.raw);
+              },
+              footer: function(items) {
+                if (deviceFilter) return '';
+                const sum = items.reduce(function(a, i) { return a + (i.raw || 0); }, 0);
+                return 'Total: ' + fmtBytes(sum);
+              },
+            },
+          },
+        },
+        scales: {
+          x: {
+            ticks: {
+              color: DARK.tick, maxTicksLimit: 12, maxRotation: 0,
+              callback: function(val) {
+                const lbl = this.getLabelForValue(val);
+                if (!lbl) return '';
+                return currentDays > 1 ? lbl.slice(5, 13).replace('T', ' ') : lbl.slice(11, 16);
+              },
+            },
+            grid: { color: DARK.grid },
+            stacked: deviceFilter ? false : true,
+          },
+          y: {
+            stacked: deviceFilter ? false : true,
+            ticks: { color: DARK.tick, callback: function(v) { return fmtBytes(v); } },
+            grid:  { color: DARK.grid },
+            beginAtZero: true,
+          },
+        },
+      },
+    });
+  }
+
+  // ── Talkers table ─────────────────────────────────────────────────────
+
+  let talkerSortKey = 'total_bytes';
+  let talkerSortDir = 'desc';
+
+  function renderTalkers(talkers, grandTotal) {
+    const tbody = document.getElementById('talkers-body');
+    const sorted = talkers.slice().sort(function(a, b) {
+      const av = a[talkerSortKey], bv = b[talkerSortKey];
+      if (av < bv) return talkerSortDir === 'asc' ? -1 : 1;
+      if (av > bv) return talkerSortDir === 'asc' ?  1 : -1;
+      return 0;
+    });
+    const rows = sorted.map(function(t) {
+      const pct = grandTotal ? (t.total_bytes * 100 / grandTotal) : 0;
+      return '<tr data-ip="' + t.ip + '">' +
+        '<td><button class="bw-device-btn" data-ip="' + t.ip + '">' +
+          escapeHtml(t.label) + '</button></td>' +
+        '<td class="num mono"><button class="bw-dir-btn" data-ip="' + t.ip +
+          '" data-dir="up" data-label="' + escapeHtml(t.label) +
+          '" title="Top destinations by upload">' + fmtBytes(t.up_bytes) + '</button></td>' +
+        '<td class="num mono"><button class="bw-dir-btn" data-ip="' + t.ip +
+          '" data-dir="down" data-label="' + escapeHtml(t.label) +
+          '" title="Top destinations by download">' + fmtBytes(t.down_bytes) + '</button></td>' +
+        '<td class="num mono">' + fmtBytes(t.total_bytes) +
+          '<div class="bw-bar"><span style="width:' + pct.toFixed(1) + '%"></span></div></td>' +
+        '<td class="num mono">' + t.flows.toLocaleString() + '</td>' +
+        '<td class="num mono">' + t.external_dests.toLocaleString() + '</td>' +
+        '<td class="mono">' + fmtRelative(t.last_active) + '</td>' +
+      '</tr>';
+    });
+    tbody.innerHTML = rows.join('') ||
+      '<tr><td colspan="7" style="text-align:center;color:var(--text-dim);padding:24px;">No traffic in this window.</td></tr>';
+
+    tbody.querySelectorAll('.bw-device-btn').forEach(function(b) {
+      b.addEventListener('click', function() { applyFilter(this.dataset.ip); });
+    });
+    tbody.querySelectorAll('.bw-dir-btn').forEach(function(b) {
+      b.addEventListener('click', function() {
+        toggleDeviceDestinations(this.dataset.ip, this.dataset.dir, this.dataset.label, this);
+      });
+    });
+
+    document.getElementById('talkers-note').textContent =
+      talkers.length ? '— ' + talkers.length + ' devices' : '';
+  }
+
+  function wireSortableHeaders() {
+    document.querySelectorAll('#talkers-table th[data-sort]').forEach(function(th) {
+      th.style.cursor = 'pointer';
+      th.addEventListener('click', function() {
+        const k = th.dataset.sort;
+        if (talkerSortKey === k) {
+          talkerSortDir = talkerSortDir === 'asc' ? 'desc' : 'asc';
+        } else {
+          talkerSortKey = k;
+          talkerSortDir = 'desc';
+        }
+        if (lastData) renderTalkers(lastData.talkers, lastData.summary.total_bytes);
+      });
+    });
+  }
+
+  // ── Per-device destinations expander ──────────────────────────────────
+
+  function closeAllDeviceDestinations() {
+    document.querySelectorAll('#talkers-body .bw-dest-row').forEach(function(r) {
+      r.remove();
+    });
+    document.querySelectorAll('#talkers-body .bw-dir-active').forEach(function(b) {
+      b.classList.remove('bw-dir-active');
+    });
+  }
+
+  function toggleDeviceDestinations(ip, direction, label, btn) {
+    const tbody = document.getElementById('talkers-body');
+    const parentRow = btn.closest('tr');
+    const existing = parentRow.nextElementSibling;
+    const sameRowOpen = existing && existing.classList.contains('bw-dest-row');
+    const sameDirOpen = sameRowOpen && existing.dataset.dir === direction;
+
+    closeAllDeviceDestinations();
+    if (sameDirOpen) return;  // toggle off
+
+    btn.classList.add('bw-dir-active');
+    const expander = document.createElement('tr');
+    expander.className = 'bw-dest-row';
+    expander.dataset.ip = ip;
+    expander.dataset.dir = direction;
+    const cell = document.createElement('td');
+    cell.colSpan = 7;
+    cell.innerHTML =
+      '<div class="bw-dest-wrap">' +
+        '<h5>Top destinations for ' + escapeHtml(label) +
+          ' &middot; ' + (direction === 'up' ? 'upload (bytes sent)' : 'download (bytes received)') +
+        '</h5>' +
+        '<div class="bw-dest-empty">Loading…</div>' +
+      '</div>';
+    expander.appendChild(cell);
+    parentRow.insertAdjacentElement('afterend', expander);
+
+    const url = '/api/bandwidth/device-destinations?ip=' + encodeURIComponent(ip) +
+                '&direction=' + encodeURIComponent(direction) +
+                '&days=' + currentDays;
+    fetch(url)
+      .then(function(r) { return r.json(); })
+      .then(function(rows) { renderDeviceDestinations(cell, rows, direction); })
+      .catch(function(err) {
+        console.error('device-destinations fetch error:', err);
+        cell.querySelector('.bw-dest-empty').textContent = 'Failed to load.';
+      });
+  }
+
+  function renderDeviceDestinations(cell, rows, direction) {
+    const wrap = cell.querySelector('.bw-dest-wrap');
+    const empty = wrap.querySelector('.bw-dest-empty');
+    if (!rows || !rows.length) {
+      empty.textContent = 'No external traffic in this window.';
+      return;
+    }
+    const upHi  = direction === 'up'   ? ' style="color:var(--accent);"' : '';
+    const dnHi  = direction === 'down' ? ' style="color:var(--accent);"' : '';
+    const trs = rows.map(function(r) {
+      const where = [r.city, r.country].filter(function(x) { return x; }).join(', ');
+      return '<tr>' +
+        '<td class="mono">' + escapeHtml(r.ip) + '</td>' +
+        '<td>' + escapeHtml(r.org || '—') + '</td>' +
+        '<td>' + escapeHtml(where || '—') + '</td>' +
+        '<td class="num mono"' + upHi + '>' + fmtBytes(r.up_bytes) + '</td>' +
+        '<td class="num mono"' + dnHi + '>' + fmtBytes(r.down_bytes) + '</td>' +
+        '<td class="num mono">' + r.flows.toLocaleString() + '</td>' +
+      '</tr>';
+    }).join('');
+    empty.outerHTML =
+      '<table>' +
+        '<thead><tr>' +
+          '<th>Destination IP</th><th>Org</th><th>Where</th>' +
+          '<th class="num">Up ↑</th><th class="num">Down ↓</th><th class="num">Flows</th>' +
+        '</tr></thead>' +
+        '<tbody>' + trs + '</tbody>' +
+      '</table>';
+  }
+
+  // ── Destinations table ────────────────────────────────────────────────
+
+  function renderDestinations(dests) {
+    const tbody = document.getElementById('destinations-body');
+    const rows = dests.map(function(d) {
+      const where = [d.city, d.country].filter(function(x) { return x; }).join(', ');
+      return '<tr>' +
+        '<td class="mono">' + escapeHtml(d.ip) + '</td>' +
+        '<td>' + escapeHtml(d.org || '—') + '</td>' +
+        '<td>' + escapeHtml(where || '—') + '</td>' +
+        '<td class="num mono">' + fmtBytes(d.total_bytes) + '</td>' +
+        '<td class="num mono">' + d.flows.toLocaleString() + '</td>' +
+        '<td class="num mono">' + d.distinct_sources + '</td>' +
+      '</tr>';
+    });
+    tbody.innerHTML = rows.join('') ||
+      '<tr><td colspan="6" style="text-align:center;color:var(--text-dim);padding:24px;">No destinations in this window.</td></tr>';
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, function(c) {
+      return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c];
+    });
+  }
+
+  // ── Device filter ─────────────────────────────────────────────────────
+
+  function applyFilter(ip) {
+    deviceFilter = ip;
+    const banner = document.getElementById('filter-banner');
+    const t = (lastData.talkers || []).find(function(x) { return x.ip === ip; });
+    document.getElementById('filter-label').textContent = t ? t.label : ip;
+    banner.classList.add('active');
+    if (lastData) renderChart(lastData);
+  }
+
+  function clearFilter() {
+    deviceFilter = null;
+    document.getElementById('filter-banner').classList.remove('active');
+    if (lastData) renderChart(lastData);
+  }
+
+  window.setDays = setDays;
+  window.clearFilter = clearFilter;
+
+  wireSortableHeaders();
+  fetchData(1);
+})();
+</script>
+{% endblock %}

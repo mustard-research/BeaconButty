@@ -1,0 +1,15 @@
+[Unit]
+Description=BeaconButty triggered PCAP capture daemon
+After=zeek.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/beaconbutty-pcap-watch.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:/var/log/beaconbutty/pcap-watch.log
+StandardError=append:/var/log/beaconbutty/pcap-watch.log
+
+[Install]
+WantedBy=multi-user.target

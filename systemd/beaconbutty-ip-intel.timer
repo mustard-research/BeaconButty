@@ -1,0 +1,9 @@
+[Unit]
+Description=BeaconButty external IP threat-intel refresh — daily
+
+[Timer]
+OnCalendar=*-*-* 07:30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

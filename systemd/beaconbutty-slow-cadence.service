@@ -1,0 +1,12 @@
+[Unit]
+Description=BeaconButty — multi-day slow-cadence beacon detector
+After=clickhouse-server.service rita-analyze.service
+Requires=clickhouse-server.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/beaconbutty-slow-cadence.py
+User=root
+StandardOutput=append:/var/log/beaconbutty/slow-cadence.log
+StandardError=append:/var/log/beaconbutty/slow-cadence.log
+TimeoutStartSec=600

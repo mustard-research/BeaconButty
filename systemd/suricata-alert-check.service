@@ -1,0 +1,11 @@
+[Unit]
+Description=BeaconButty — check Suricata fast.log for P1 alerts and notify
+After=suricata.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/beaconbutty-suricata-alert-check.sh
+User=root
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=60

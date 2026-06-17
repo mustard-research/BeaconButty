@@ -1,0 +1,14 @@
+# MaxMind GeoLite2 update configuration
+# Get your free account + license key at: https://www.maxmind.com/en/geolite2/signup
+#
+# To set up on a new device:
+#   1. Copy this file: cp config/GeoIP.conf.template config/GeoIP.conf
+#   2. Fill in your AccountID and LicenseKey
+#   3. Run: sudo geoipupdate
+#
+# The actual config/GeoIP.conf is gitignored (contains credentials).
+
+AccountID YOUR_ACCOUNT_ID_HERE
+LicenseKey YOUR_LICENSE_KEY_HERE
+
+EditionIDs GeoLite2-ASN GeoLite2-City

@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BeaconButty · {% block title %}{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='bb.css') }}">
+  {% block head %}{% endblock %}
+</head>
+<body>
+
+<nav>
+  <a class="nav-logo" href="{{ url_for('dashboard') }}">
+    <img src="{{ url_for('static', filename='logo.png') }}" alt="Mustard" style="height:32px;width:auto;vertical-align:middle;border-radius:4px;">
+    <span style="margin-left:10px;font-size:16px;font-weight:600;color:var(--text);">Beacon Butty</span>
+  </a>
+  <ul class="nav-links">
+    <li>
+      <a href="{{ url_for('dashboard') }}"
+         class="{% if request.endpoint == 'dashboard' %}active{% endif %}">
+        Dashboard
+      </a>
+    </li>
+    <li>
+      <a href="{{ url_for('system') }}"
+         class="{% if request.endpoint == 'system' %}active{% endif %}">
+        System
+      </a>
+    </li>
+    <li>
+      <a href="{{ url_for('bandwidth') }}"
+         class="{% if request.endpoint == 'bandwidth' %}active{% endif %}">
+        Bandwidth
+      </a>
+    </li>
+    <li>
+      <a href="{{ url_for('beacons') }}"
+         class="{% if request.endpoint == 'beacons' %}active{% endif %}">
+        Beacons
+      </a>
+    </li>
+    <li>
+      <a href="{{ url_for('beacons_slow') }}"
+         class="{% if request.endpoint == 'beacons_slow' %}active{% endif %}">
+        Slow Beacons
+      </a>
+    </li>
+    <li>
+      <a href="{{ url_for('suricata') }}"
+         class="{% if request.endpoint == 'suricata' %}active{% endif %}">
+        Suricata
+      </a>
+    </li>
+    <li>
+      <a href="{{ url_for('assets') }}"
+         class="{% if request.endpoint == 'assets' %}active{% endif %}">
+        Assets
+      </a>
+    </li>
+    <li>
+      <a href="{{ url_for('fps') }}"
+         class="{% if request.endpoint == 'fps' %}active{% endif %}">
+        False Positives
+      </a>
+    </li>
+    <li>
+      <a href="{{ url_for('network') }}"
+         class="{% if request.endpoint == 'network' %}active{% endif %}">
+        Network Intel
+      </a>
+    </li>
+    <li>
+      <a href="{{ url_for('health') }}"
+         class="{% if request.endpoint == 'health' %}active{% endif %}">
+        Health
+      </a>
+    </li>
+    <li>
+      <a href="{{ url_for('backup') }}"
+         class="{% if request.endpoint == 'backup' %}active{% endif %}">
+        Backup
+      </a>
+    </li>
+  </ul>
+</nav>
+
+<main>
+  {% block content %}{% endblock %}
+</main>
+
+{% block scripts %}{% endblock %}
+
+{# ── Shared confirm modal ──────────────────────────────────────────────────── #}
+<div id="bb-confirm-modal" style="display:none;position:fixed;inset:0;
+     background:rgba(0,0,0,.6);z-index:9000;align-items:center;justify-content:center;">
+  <div style="background:#1e1e2e;border:1px solid var(--border,#333);border-radius:8px;
+              padding:24px 28px;max-width:400px;width:90%;box-shadow:0 8px 32px rgba(0,0,0,.5);">
+    <p style="font-size:13px;font-weight:600;color:var(--text-dim,#aaa);
+              margin:0 0 10px;text-transform:uppercase;letter-spacing:.05em;">Beacon Butty</p>
+    <p id="bb-confirm-msg" style="font-size:14px;color:var(--text,#eee);margin:0 0 22px;
+                                   line-height:1.5;white-space:pre-line;"></p>
+    <div style="display:flex;gap:10px;justify-content:flex-end;">
+      <button id="bb-confirm-cancel" class="btn btn-sm"
+              onclick="bbConfirmResolve(false)">Cancel</button>
+      <button id="bb-confirm-ok" class="btn btn-sm"
+              style="background:var(--red,#e53935);border-color:var(--red,#e53935);"
+              onclick="bbConfirmResolve(true)">OK</button>
+    </div>
+  </div>
+</div>
+<script>
+(function() {
+  var _resolve = null;
+  window.bbConfirm = function(msg, onOk, onCancel) {
+    document.getElementById('bb-confirm-msg').textContent = msg;
+    document.getElementById('bb-confirm-modal').style.display = 'flex';
+    _resolve = function(ok) {
+      document.getElementById('bb-confirm-modal').style.display = 'none';
+      _resolve = null;
+      if (ok && onOk) onOk();
+      else if (!ok && onCancel) onCancel();
+    };
+  };
+  window.bbConfirmResolve = function(ok) { if (_resolve) _resolve(ok); };
+  window.bbConfirmForm = function(btn, msg) {
+    bbConfirm(msg, function() { btn.closest('form').submit(); });
+  };
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape' && _resolve) _resolve(false);
+  });
+})();
+</script>
+
+<style>
+  body.nav-loading, body.nav-loading * { cursor: wait !important; }
+</style>
+<script>
+  document.querySelectorAll('.nav-links a').forEach(function(link) {
+    link.addEventListener('click', function(e) {
+      var href = this.href;
+      e.preventDefault();
+      document.body.classList.add('nav-loading');
+      requestAnimationFrame(function() {
+        requestAnimationFrame(function() {
+          window.location.href = href;
+        });
+      });
+    });
+  });
+  window.addEventListener('pageshow', function() {
+    document.body.classList.remove('nav-loading');
+  });
+</script>
+
+<script>
+/* bb-pop tooltip portal — renders .bb-pop[data-pop] tooltips into one
+   body-level position:fixed element so they escape overflow-clipping
+   containers like .table-wrap (a CSS ::after pseudo-element cannot).
+   Shown on hover and on keyboard/tap focus; data-pop is the source text. */
+(function() {
+  var tip = null;
+  function portal() {
+    if (!tip) {
+      tip = document.createElement('div');
+      tip.className = 'bb-pop-portal';
+      document.body.appendChild(tip);
+    }
+    return tip;
+  }
+  function show(el) {
+    var txt = el.getAttribute('data-pop');
+    if (!txt) return;
+    var t = portal();
+    t.textContent = txt;
+    t.style.display = 'block';
+    t.style.left = '0px';
+    t.style.top = '0px';
+    var r = el.getBoundingClientRect();
+    var tr = t.getBoundingClientRect();
+    var left = r.left + r.width / 2 - tr.width / 2;
+    left = Math.max(6, Math.min(left, window.innerWidth - tr.width - 6));
+    var top = r.top - tr.height - 8;
+    if (top < 6) top = r.bottom + 8;            /* flip below if no room above */
+    t.style.left = left + 'px';
+    t.style.top = top + 'px';
+  }
+  function hide() { if (tip) tip.style.display = 'none'; }
+  document.addEventListener('mouseover', function(e) {
+    var el = e.target.closest && e.target.closest('.bb-pop');
+    if (el) show(el);
+  });
+  document.addEventListener('mouseout', function(e) {
+    var el = e.target.closest && e.target.closest('.bb-pop');
+    if (el && !el.contains(e.relatedTarget)) hide();
+  });
+  document.addEventListener('focusin', function(e) {
+    var el = e.target.closest && e.target.closest('.bb-pop');
+    if (el) show(el);
+  });
+  document.addEventListener('focusout', hide);
+  window.addEventListener('scroll', hide, true);
+  window.addEventListener('resize', hide);
+})();
+</script>
+</body>
+</html>

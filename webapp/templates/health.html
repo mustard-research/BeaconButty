@@ -1,0 +1,1013 @@
+{% extends "base.html" %}
+{% block title %}Health{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div class="header-row">
+    <div>
+      <h1>Health Report</h1>
+      <p>Output of <code>beaconbutty-health.sh</code></p>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;">
+      <button id="test-alert-btn" class="btn btn-sm" onclick="sendTestAlert()">Test Alert</button>
+      <button id="clear-slack-btn" class="btn btn-sm" onclick="clearSlackChannel()" disabled>Clear Notifications…</button>
+      <a href="{{ url_for('health') }}" class="btn btn-sm">Refresh</a>
+    </div>
+  </div>
+</div>
+
+<div id="alert-feedback" style="display:none;margin-bottom:12px;" class="card">
+  <span id="alert-feedback-msg" style="font-size:13px;"></span>
+</div>
+
+<div class="card" style="margin-bottom:16px;">
+  <h3 style="margin:0 0 12px;">Alert Criteria</h3>
+  <p style="font-size:13px;color:var(--text-muted,#888);margin:0 0 12px;">
+    Alerts are sent to Slack via AWS Lambda. Duplicates are suppressed for
+    <strong>6 hours</strong> (high) or <strong>1 hour</strong> (medium).
+  </p>
+  <table style="width:100%;border-collapse:collapse;font-size:13px;">
+    <thead>
+      <tr style="border-bottom:1px solid var(--border,#333);">
+        <th style="text-align:left;padding:4px 10px 6px 0;color:var(--text-muted,#888);font-weight:600;">Trigger</th>
+        <th style="text-align:left;padding:4px 10px 6px 0;color:var(--text-muted,#888);font-weight:600;">Severity</th>
+        <th style="text-align:left;padding:4px 10px 6px 0;color:var(--text-muted,#888);font-weight:600;">Source</th>
+        <th style="text-align:left;padding:4px 0 6px 0;color:var(--text-muted,#888);font-weight:600;">Enabled</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% set rows = [
+        ("service_down",        "Zeek / ClickHouse / dnsmasq / Suricata not running",  "High",   "Health check"),
+        ("service_down",        "WAN unreachable (cannot ping 1.1.1.1)",                "High",   "Health check"),
+        ("disk_critical",       "Disk usage &gt; 90%",                                  "High",   "Health check"),
+        ("high_score_beacon",   "Beacon score = 1.0 (perfect score only)",               "High",   "Daily report — 07:00"),
+        ("persistent_beacon",   "Strobe detected (persistent high-rate connection)",     "High",   "Daily report — 07:00"),
+        ("threat_intel_hit",    "Threat intelligence hit",                               "High",   "Daily report — 07:00"),
+        ("tor_contact",         "Tor exit node contact",                                 "High",   "Daily report — 07:00"),
+        ("suricata_p1_lan",     "LAN device triggers a P1 Suricata rule",               "High",   "Suricata check — hourly"),
+        ("suricata_p1_repeated","Same P1 Suricata rule fires &ge; 5&times; in a day",   "High",   "Suricata check — hourly"),
+        ("health_check_fail",   "Any health check failure not covered above",            "High",   "Health timer — 09:30"),
+        ("new_device",          "New device MAC seen in ARP / DHCP <small style='color:var(--text-muted,#888);'>(LAA-randomised MACs gated)</small>", "Medium", "Asset scan"),
+        ("sustained_high_cpu",  "CPU mean &ge; 60% over a rolling 60-min window",        "Medium", "bb-watchdog — per minute"),
+        ("slow_cadence_digest", "Daily roll-up of slow-cadence hunt candidates",         "Low",    "Daily digest — 08:00 UTC"),
+      ] %}
+      {% for atype, trigger, severity, source in rows %}
+      <tr style="border-bottom:1px solid var(--border,#333);">
+        <td style="padding:6px 10px 6px 0;">{{ trigger | safe }}</td>
+        <td style="padding:6px 10px 6px 0;white-space:nowrap;">
+          <span style="color:{% if severity == 'High' %}#f44336{% elif severity == 'Medium' %}#ff9800{% else %}#4caf50{% endif %};">{{ severity }}</span>
+        </td>
+        <td style="padding:6px 10px 6px 0;color:var(--text-muted,#888);white-space:nowrap;">{{ source }}</td>
+        <td style="padding:6px 0;">
+          <label class="alert-toggle" style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;">
+            <input type="checkbox" data-atype="{{ atype }}"
+                   {% if alert_config.get(atype, true) %}checked{% endif %}
+                   onchange="toggleAlert(this)"
+                   style="display:none;">
+            <span class="toggle-track" style="
+              display:inline-block;width:34px;height:18px;border-radius:9px;
+              background:{% if alert_config.get(atype, true) %}#4caf50{% else %}#555{% endif %};
+              position:relative;transition:background .2s;">
+              <span class="toggle-thumb" style="
+                display:block;width:14px;height:14px;border-radius:50%;background:#fff;
+                position:absolute;top:2px;
+                left:{% if alert_config.get(atype, true) %}18px{% else %}2px{% endif %};
+                transition:left .2s;"></span>
+            </span>
+          </label>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <div id="toggle-status" style="font-size:12px;color:var(--text-muted,#888);margin-top:8px;min-height:16px;"></div>
+</div>
+
+{% if gate_stats %}
+<div class="card" style="margin-bottom:16px;">
+  <h3 style="margin:0 0 12px;">Alert Gate
+    <small style="color:var(--text-muted,#888);font-weight:400;">— sole-LAN-talker AND non-hyperscaler filter</small>
+  </h3>
+  <p style="font-size:13px;color:var(--text-muted,#888);margin:0 0 10px;">
+    The gate's job is to keep alerts meaningful. It demotes findings whose destination
+    is on a major cloud / CDN ASN, or where the same dst is reached by multiple LAN
+    devices (i.e. shared SaaS, not implant-style traffic). Demoted candidates remain
+    visible on their respective dashboards for hunting.
+  </p>
+  <table style="font-size:13px;width:100%;border-collapse:collapse;">
+    <thead>
+      <tr style="border-bottom:1px solid var(--border,#333);">
+        <th style="text-align:left;padding:4px 10px 6px 0;color:var(--text-muted,#888);font-weight:600;">Component</th>
+        <th style="text-align:left;padding:4px 10px 6px 0;color:var(--text-muted,#888);font-weight:600;">Last run</th>
+        <th style="text-align:right;padding:4px 10px 6px 0;color:var(--text-muted,#888);font-weight:600;">Fired</th>
+        <th style="text-align:right;padding:4px 10px 6px 0;color:var(--text-muted,#888);font-weight:600;">Gated (hyperscaler)</th>
+        <th style="text-align:right;padding:4px 0 6px 0;color:var(--text-muted,#888);font-weight:600;">Gated (shared&nbsp;LAN)</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% set sc = gate_stats.get('slow_cadence') %}
+      {% if sc %}
+      <tr style="border-bottom:1px solid var(--border,#333);">
+        <td style="padding:6px 10px 6px 0;">slow_cadence_beacon <small style="color:var(--text-muted,#888);">(hourly)</small></td>
+        <td style="padding:6px 10px 6px 0;color:var(--text-muted,#888);font-family:monospace;font-size:12px;">{{ sc.ts }}</td>
+        <td style="padding:6px 10px 6px 0;text-align:right;font-weight:600;color:{% if sc.fired %}#f44336{% else %}#4caf50{% endif %};">{{ sc.fired }}</td>
+        <td style="padding:6px 10px 6px 0;text-align:right;color:var(--text-muted,#888);">{{ sc.gated.hyperscaler }}</td>
+        <td style="padding:6px 0;text-align:right;color:var(--text-muted,#888);">{{ sc.gated.shared_lan }}</td>
+      </tr>
+      {% endif %}
+      {% set ds = gate_stats.get('daily_summary') %}
+      {% if ds %}
+      {% set hsf = ds.fired.high_score_beacon %}{% set pbf = ds.fired.persistent_beacon %}
+      {% set hsg = ds.gated.high_score_beacon %}{% set pbg = ds.gated.persistent_beacon %}
+      <tr style="border-bottom:1px solid var(--border,#333);">
+        <td style="padding:6px 10px 6px 0;">high_score_beacon <small style="color:var(--text-muted,#888);">(daily)</small></td>
+        <td style="padding:6px 10px 6px 0;color:var(--text-muted,#888);font-family:monospace;font-size:12px;" rowspan="2">{{ ds.ts }}</td>
+        <td style="padding:6px 10px 6px 0;text-align:right;font-weight:600;color:{% if hsf %}#f44336{% else %}#4caf50{% endif %};">{{ hsf }}</td>
+        <td style="padding:6px 10px 6px 0;text-align:right;color:var(--text-muted,#888);">{{ hsg.hyperscaler }}</td>
+        <td style="padding:6px 0;text-align:right;color:var(--text-muted,#888);">{{ hsg.shared_lan }}</td>
+      </tr>
+      <tr style="border-bottom:1px solid var(--border,#333);">
+        <td style="padding:6px 10px 6px 0;">persistent_beacon <small style="color:var(--text-muted,#888);">(daily)</small></td>
+        <td style="padding:6px 10px 6px 0;text-align:right;font-weight:600;color:{% if pbf %}#f44336{% else %}#4caf50{% endif %};">{{ pbf }}</td>
+        <td style="padding:6px 10px 6px 0;text-align:right;color:var(--text-muted,#888);">{{ pbg.hyperscaler }}</td>
+        <td style="padding:6px 0;text-align:right;color:var(--text-muted,#888);">{{ pbg.shared_lan }}</td>
+      </tr>
+      {% endif %}
+      {% set nd = gate_stats.get('new_device') %}
+      {% if nd %}
+      <tr style="border-bottom:1px solid var(--border,#333);">
+        <td style="padding:6px 10px 6px 0;">new_device <small style="color:var(--text-muted,#888);">(per asset scan)</small></td>
+        <td style="padding:6px 10px 6px 0;color:var(--text-muted,#888);font-family:monospace;font-size:12px;">{{ nd.ts }}</td>
+        <td style="padding:6px 10px 6px 0;text-align:right;font-weight:600;color:{% if nd.fired %}#f44336{% else %}#4caf50{% endif %};">{{ nd.fired }}</td>
+        <td style="padding:6px 10px 6px 0;text-align:right;color:var(--text-muted,#888);" colspan="2"
+            title="Locally-administered (randomised) MACs — iOS / Android / macOS privacy rotation">
+          {{ nd.gated.mac_randomised }} <small>(randomised MAC)</small>
+        </td>
+      </tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+<div class="card" style="margin-bottom:16px;">
+  <h3 style="margin:0 0 12px;">TLS Certificate</h3>
+  {% if cert.error is defined %}
+    <p style="color:var(--red,#f44336);font-size:13px;margin:0;">Error reading cert: {{ cert.error }}</p>
+  {% else %}
+    {% if cert.days_remaining <= 14 %}
+      {% set cert_color = '#f44336' %}
+      {% set cert_status = 'Expiring soon' %}
+    {% elif cert.days_remaining <= 30 %}
+      {% set cert_color = '#ff9800' %}
+      {% set cert_status = 'Renew soon' %}
+    {% else %}
+      {% set cert_color = '#4caf50' %}
+      {% set cert_status = 'Valid' %}
+    {% endif %}
+    <table style="font-size:13px;border-collapse:collapse;">
+      <tr>
+        <td style="color:var(--text-muted,#888);padding:3px 20px 3px 0;white-space:nowrap;">Domain</td>
+        <td>{{ cert.subject }}</td>
+      </tr>
+      <tr>
+        <td style="color:var(--text-muted,#888);padding:3px 20px 3px 0;">Issued</td>
+        <td>{{ cert.issued }}</td>
+      </tr>
+      <tr>
+        <td style="color:var(--text-muted,#888);padding:3px 20px 3px 0;">Expires</td>
+        <td>{{ cert.expires }} &nbsp;<span style="color:{{ cert_color }};">{{ cert.days_remaining }} days remaining — {{ cert_status }}</span></td>
+      </tr>
+    </table>
+  {% endif %}
+</div>
+
+<div class="card" style="margin-bottom:16px;">
+  <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:12px;flex-wrap:wrap;">
+    <div style="flex:1;min-width:220px;">
+      <h3 style="margin:0 0 2px;">Domain Activity Lookup</h3>
+      <p style="font-size:12px;color:var(--text-muted,#888);margin:0;">
+        Type a domain to scan the last 6 hours of LAN→WAN access from the Zeek
+        ssl/dns logs, bucketed by minute. Read-only — does not enable PCAP
+        capture (use the PCAP Capture card below to do that).
+      </p>
+    </div>
+    <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+      <input id="dw-domain" type="text" placeholder="e.g. www.example.com"
+             style="padding:5px 8px;border-radius:4px;border:1px solid #444;
+                    background:var(--bg-secondary,#111);color:var(--text);
+                    font-family:'SFMono-Regular',Consolas,monospace;font-size:12px;
+                    min-width:220px;" />
+      <button id="dw-apply-btn"   class="btn btn-sm" onclick="dwApply()">Apply</button>
+      <button id="dw-clear-btn"   class="btn btn-sm" onclick="dwClear()"
+              style="background:var(--red);border-color:var(--red);">Clear</button>
+      <button id="dw-refresh-btn" class="btn btn-sm" onclick="dwRefresh()">Refresh</button>
+    </div>
+  </div>
+  <div id="dw-state" style="font-size:12px;color:var(--text-muted,#888);margin-bottom:8px;">Off.</div>
+
+  <div id="dw-grid-wrap" style="overflow-x:auto;margin-bottom:10px;"></div>
+
+  <div id="dw-table-wrap" style="max-height:260px;overflow-y:auto;background:var(--bg-secondary,#111);border-radius:4px;padding:0;">
+    <table id="dw-table" style="width:100%;border-collapse:collapse;font-family:'SFMono-Regular',Consolas,monospace;font-size:12px;color:var(--text);">
+      <thead>
+        <tr style="text-align:left;background:rgba(255,255,255,0.03);">
+          <th style="padding:6px 10px;">Time</th>
+          <th style="padding:6px 10px;">Hits</th>
+          <th style="padding:6px 10px;">Sources</th>
+          <th style="padding:6px 10px;">Paired hostnames (±1s DNS)</th>
+        </tr>
+      </thead>
+      <tbody id="dw-table-body"></tbody>
+    </table>
+  </div>
+  <div id="dw-status" style="font-size:12px;color:var(--text-muted,#888);margin-top:6px;min-height:16px;"></div>
+</div>
+
+{# ── PCAP Capture card ── #}
+<div class="card" style="margin-bottom:16px;">
+  <div id="pcap-banner"
+       style="display:none;background:rgba(220,90,90,0.18);border:1px solid var(--red,#c84a4a);
+              border-radius:4px;padding:8px 12px;margin-bottom:12px;font-size:12px;color:#ffb0b0;">
+    <strong>⚠ PCAP capture active</strong> — packets matching the watched domains' resolved IPs are being written to NVMe. Stop captures before disconnecting devices that may transmit credentials in the clear.
+  </div>
+  <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:12px;flex-wrap:wrap;">
+    <div style="flex:1;min-width:240px;">
+      <h3 style="margin:0 0 2px;">PCAP Capture <small id="pcap-count-pill" class="text-dim" style="font-weight:400;font-size:11px;"></small></h3>
+      <p style="font-size:12px;color:var(--text-muted,#888);margin:0;">
+        Captures packets to/from up to 3 watched domains' resolved IPs. Rolling 2-hour ring per domain (24×5min files), stored under <span class="mono">/var/lib/beaconbutty/pcaps/</span>. Re-watching a domain wipes its previous ring. Snapshots are saved separately and survive Stop/Clear.
+      </p>
+    </div>
+    <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+      <input id="pcap-add-domain" type="text" placeholder="e.g. www.example.com"
+             style="padding:5px 8px;border-radius:4px;border:1px solid #444;
+                    background:var(--bg-secondary,#111);color:var(--text);
+                    font-family:'SFMono-Regular',Consolas,monospace;font-size:12px;
+                    min-width:220px;" />
+      <button id="pcap-add-btn"   class="btn btn-sm" onclick="pcapAdd()">Watch</button>
+      <button id="pcap-clear-btn" class="btn btn-sm" onclick="pcapClearAll()"
+              style="background:var(--red);border-color:var(--red);">Clear all</button>
+      <button id="pcap-refresh-btn" class="btn btn-sm" onclick="pcapRefresh()">Refresh</button>
+    </div>
+  </div>
+
+  <div id="pcap-domains" style="margin-bottom:14px;"></div>
+
+  <div style="font-size:12px;color:var(--text-dim);margin:8px 0 4px;text-transform:uppercase;letter-spacing:.04em;font-weight:600;">Snapshots</div>
+  <div id="pcap-snapshots"></div>
+
+  <div id="pcap-view-pane" style="margin-top:14px;display:none;">
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px;">
+      <strong id="pcap-view-title" style="font-size:13px;"></strong>
+      <span class="text-dim" style="font-size:11px;">Mode:</span>
+      <select id="pcap-view-mode" onchange="pcapView()" style="font-size:12px;background:var(--bg-secondary,#111);color:var(--text);border:1px solid #444;border-radius:4px;padding:3px 6px;">
+        <option value="conv">Conversations</option>
+        <option value="packets">Packets (one-line, last 500)</option>
+        <option value="decode">Single packet (decoded)</option>
+      </select>
+      <input id="pcap-view-frame" type="number" value="1" min="1" style="width:70px;padding:3px 6px;font-size:12px;background:var(--bg-secondary,#111);color:var(--text);border:1px solid #444;border-radius:4px;display:none;" onchange="pcapView()" />
+      <button class="btn btn-sm" onclick="pcapView()">Reload</button>
+      <button class="btn btn-sm" onclick="document.getElementById('pcap-view-pane').style.display='none';">Close</button>
+    </div>
+    <pre id="pcap-view-output" style="max-height:480px;overflow:auto;background:var(--bg-secondary,#111);padding:10px;border-radius:4px;font-size:11px;line-height:1.4;margin:0;">Loading…</pre>
+  </div>
+
+  <div id="pcap-status" style="font-size:12px;color:var(--text-muted,#888);margin-top:8px;min-height:16px;"></div>
+</div>
+
+<div class="card" style="margin-bottom:16px;">
+  <div style="display:flex;align-items:center;justify-content:space-between;padding:4px 0;">
+    <div>
+      <h3 style="margin:0 0 2px;">OLED Display</h3>
+      <p id="display-status-text" style="font-size:12px;color:var(--text-muted,#888);margin:0;">
+        Checking…
+      </p>
+    </div>
+    <label style="display:flex;align-items:center;gap:10px;cursor:pointer;">
+      <span id="display-label" style="font-size:13px;color:var(--text-dim);"></span>
+      <input type="checkbox" id="display-toggle" style="display:none;" onchange="toggleDisplay(this)">
+      <div id="display-track"
+           style="position:relative;width:38px;height:22px;border-radius:11px;
+                  background:#555;cursor:pointer;transition:background .2s;">
+        <div id="display-thumb"
+             style="position:absolute;top:3px;left:2px;width:16px;height:16px;
+                    border-radius:50%;background:#fff;transition:left .2s;"></div>
+      </div>
+    </label>
+  </div>
+</div>
+
+<div class="card" style="margin-bottom:16px;">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+    <h3 style="margin:0;">System Health Check</h3>
+    {% if report %}
+      {% if report.failures > 0 %}
+        <span class="badge badge-err">{{ report.failures }} fail · {{ report.warnings }} warn</span>
+      {% elif report.warnings > 0 %}
+        <span class="badge badge-warn">{{ report.warnings }} warn</span>
+      {% else %}
+        <span class="badge badge-ok">All checks passed</span>
+      {% endif %}
+    {% endif %}
+  </div>
+  {% if report %}
+    <p style="font-size:12px;color:var(--text-muted,#888);margin:0 0 12px;">
+      Output of <code>beaconbutty-health.sh</code> · checked {{ report.timestamp }}
+    </p>
+    {% for section in report.sections %}
+    <div style="margin-bottom:14px;">
+      <div style="font-weight:600;font-size:13px;margin-bottom:6px;color:var(--text);">{{ section.name }}</div>
+      <table style="width:100%;border-collapse:collapse;font-size:13px;">
+        <tbody>
+          {% for check in section.checks %}
+          <tr style="border-bottom:1px solid var(--border,#333);">
+            <td style="padding:5px 10px 5px 0;white-space:nowrap;vertical-align:top;width:22px;">
+              {% if check.status == 'ok' %}
+                <span class="stat-value-ok">✓</span>
+              {% elif check.status == 'warn' %}
+                <span class="stat-value-warn">!</span>
+              {% else %}
+                <span class="stat-value-err">✗</span>
+              {% endif %}
+            </td>
+            <td style="padding:5px 0;color:{% if check.status == 'fail' %}var(--red){% elif check.status == 'warn' %}var(--yellow){% else %}var(--text){% endif %};">
+              {{ check.message }}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endfor %}
+  {% elif error %}
+    <p style="color:var(--red,#f44336);font-size:13px;margin:0;">{{ error }}</p>
+  {% endif %}
+</div>
+
+<script>
+function toggleAlert(checkbox) {
+  var atype   = checkbox.dataset.atype;
+  var enabled = checkbox.checked;
+  var track   = checkbox.nextElementSibling;
+  var thumb   = track.querySelector('.toggle-thumb');
+  var status  = document.getElementById('toggle-status');
+
+  track.style.background = enabled ? '#4caf50' : '#555';
+  thumb.style.left       = enabled ? '18px' : '2px';
+
+  fetch('/api/alert-config', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({type: atype, enabled: enabled})
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(d) {
+    status.textContent = d.ok
+      ? (enabled ? '✓ ' + atype + ' alerts enabled' : '✓ ' + atype + ' alerts disabled')
+      : '✗ Failed to save: ' + (d.message || '');
+    status.style.color = d.ok ? 'var(--green, #4caf50)' : 'var(--red, #f44336)';
+    setTimeout(function() { status.textContent = ''; }, 3000);
+  })
+  .catch(function(e) {
+    status.textContent = '✗ Request failed';
+    status.style.color = 'var(--red, #f44336)';
+    // Revert toggle on error
+    checkbox.checked   = !enabled;
+    track.style.background = !enabled ? '#4caf50' : '#555';
+    thumb.style.left       = !enabled ? '18px' : '2px';
+  });
+}
+
+function loadSlackCount() {
+  var btn = document.getElementById('clear-slack-btn');
+  fetch('/api/slack-message-count')
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (d.ok) {
+        var n = d.count + (d.has_more ? '+' : '');
+        btn.textContent = 'Clear Notifications (' + n + ')';
+        btn.disabled = (d.count === 0);
+      } else {
+        btn.textContent = 'Clear Notifications';
+        btn.disabled = false;
+      }
+    })
+    .catch(function() {
+      btn.textContent = 'Clear Notifications';
+      btn.disabled = false;
+    });
+}
+
+function clearSlackChannel() {
+  bbConfirm('Delete all notifications in the Slack channel?', function() {
+    var btn = document.getElementById('clear-slack-btn');
+    var fb  = document.getElementById('alert-feedback');
+    var msg = document.getElementById('alert-feedback-msg');
+    btn.disabled = true;
+    btn.textContent = 'Clearing…';
+    fetch('/api/slack-clear-channel', {method: 'POST'})
+      .then(function(r) { return r.json().then(function(d) { return {ok: r.ok, data: d}; }); })
+      .then(function(res) {
+        fb.style.display = 'block';
+        msg.style.color = res.ok && res.data.ok ? 'var(--green, #4caf50)' : 'var(--red, #f44336)';
+        msg.textContent = (res.ok && res.data.ok ? '✓ ' : '✗ ') + res.data.message;
+        loadSlackCount();
+      })
+      .catch(function(e) {
+        fb.style.display = 'block';
+        msg.style.color = 'var(--red, #f44336)';
+        msg.textContent = '✗ Request failed: ' + e;
+        loadSlackCount();
+      });
+  });
+}
+
+document.addEventListener('DOMContentLoaded', loadSlackCount);
+
+// ── Domain Activity Flagger ──────────────────────────────────────────────────
+var _dwTimer = null;
+var _dwCurrentDomain = '';
+
+function _dwEscape(s) {
+  return String(s).replace(/[&<>"']/g, function(c) {
+    return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c];
+  });
+}
+
+// Custom tooltip — the native title="" attr adds a ~1s browser delay.
+var _dwTip = null;
+function _dwEnsureTip() {
+  if (_dwTip) return _dwTip;
+  _dwTip = document.createElement('div');
+  _dwTip.style.cssText =
+    'position:fixed;z-index:9999;pointer-events:none;display:none;' +
+    "font-family:'SFMono-Regular',Consolas,monospace;font-size:11px;" +
+    'line-height:1.4;white-space:pre;max-width:380px;padding:6px 10px;' +
+    'background:rgba(20,20,20,0.96);color:#e5e5e5;' +
+    'border:1px solid #444;border-radius:4px;';
+  document.body.appendChild(_dwTip);
+  return _dwTip;
+}
+
+function _dwBindTipHandlers() {
+  var wrap = document.getElementById('dw-grid-wrap');
+  if (!wrap || wrap._dwTipBound) return;
+  wrap._dwTipBound = true;
+  wrap.addEventListener('mousemove', function(e) {
+    var tip = _dwEnsureTip();
+    var t = e.target && e.target.dataset ? e.target.dataset.tip : null;
+    if (!t) { tip.style.display = 'none'; return; }
+    tip.textContent = t;
+    tip.style.display = 'block';
+    var x = e.clientX + 12;
+    var y = e.clientY + 12;
+    // Flip to left/up if it would overflow the viewport
+    var rect = tip.getBoundingClientRect();
+    if (x + rect.width  > window.innerWidth)  x = e.clientX - rect.width  - 12;
+    if (y + rect.height > window.innerHeight) y = e.clientY - rect.height - 12;
+    tip.style.left = x + 'px';
+    tip.style.top  = y + 'px';
+  });
+  wrap.addEventListener('mouseleave', function() {
+    if (_dwTip) _dwTip.style.display = 'none';
+  });
+}
+
+function _dwFmtLocal(tsSec) {
+  var d = new Date(tsSec * 1000);
+  var p = function(n) { return String(n).padStart(2, '0'); };
+  return p(d.getHours()) + ':' + p(d.getMinutes());
+}
+
+var _DW_MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+function _dwFmtLocalDate(tsSec) {
+  var d = new Date(tsSec * 1000);
+  return d.getDate() + ' ' + _DW_MONTHS[d.getMonth()];
+}
+
+function _dwDayKey(tsSec) {
+  var d = new Date(tsSec * 1000);
+  return d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate();
+}
+
+function _dwSetState(msg, isOn) {
+  var el = document.getElementById('dw-state');
+  el.textContent = msg;
+  el.style.color = isOn ? 'var(--green,#4caf50)' : 'var(--text-muted,#888)';
+}
+
+function _dwSetStatus(msg, ok) {
+  var el = document.getElementById('dw-status');
+  el.textContent = msg || '';
+  el.style.color = ok ? 'var(--text-muted,#888)' : 'var(--red,#f44336)';
+}
+
+// The flagger is now an ad-hoc lookup: typing a domain + Apply scans the
+// Zeek logs for activity but does NOT enable PCAP capture. PCAP capture is
+// managed by the PCAP card below. Last-typed domain persists in localStorage
+// so a refresh keeps the lookup view. The watch list (PCAP) is independent.
+
+function dwLoadConfig() {
+  var saved = '';
+  try { saved = localStorage.getItem('bb-flagger-domain') || ''; } catch (e) {}
+  _dwCurrentDomain = saved;
+  document.getElementById('dw-domain').value = saved;
+  if (saved) {
+    _dwSetState('Looking up: ' + saved, true);
+  } else {
+    _dwSetState('Type a domain above and Apply to scan recent activity.', false);
+  }
+  return Promise.resolve(saved);
+}
+
+function dwApply() {
+  var domain = document.getElementById('dw-domain').value.trim();
+  var btn = document.getElementById('dw-apply-btn');
+  btn.disabled = true;
+  _dwCurrentDomain = domain;
+  try { localStorage.setItem('bb-flagger-domain', domain); } catch (e) {}
+  if (domain) {
+    _dwSetState('Looking up: ' + domain, true);
+    dwRefresh().finally(function() { btn.disabled = false; });
+  } else {
+    _dwSetState('Type a domain above and Apply to scan recent activity.', false);
+    document.getElementById('dw-grid-wrap').innerHTML = '';
+    document.getElementById('dw-table-body').innerHTML = '';
+    btn.disabled = false;
+  }
+}
+
+function dwClear() {
+  document.getElementById('dw-domain').value = '';
+  try { localStorage.removeItem('bb-flagger-domain'); } catch (e) {}
+  _dwCurrentDomain = '';
+  document.getElementById('dw-grid-wrap').innerHTML = '';
+  document.getElementById('dw-table-body').innerHTML = '';
+  _dwSetState('Type a domain above and Apply to scan recent activity.', false);
+  _dwSetStatus('', true);
+}
+
+function dwRefresh() {
+  var btn = document.getElementById('dw-refresh-btn');
+  btn.disabled = true;
+  if (!_dwCurrentDomain) {
+    btn.disabled = false;
+    return Promise.resolve();
+  }
+  return fetch('/api/domain-watch/data?domain=' + encodeURIComponent(_dwCurrentDomain))
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (!d.ok) { _dwSetStatus('✗ ' + (d.message || 'error'), false); return; }
+      dwRender(d);
+      _dwSetStatus('Updated ' + new Date().toLocaleTimeString(), true);
+    })
+    .catch(function(e) { _dwSetStatus('✗ ' + e, false); })
+    .finally(function() { btn.disabled = false; });
+}
+
+function dwRender(data) {
+  var grid = document.getElementById('dw-grid-wrap');
+  var tbody = document.getElementById('dw-table-body');
+
+  if (!data.domain) {
+    grid.innerHTML = '';
+    tbody.innerHTML = '';
+    return;
+  }
+
+  var buckets = data.buckets || [];
+  var map = {};
+  buckets.forEach(function(b) { map[b.ts] = b; });
+
+  // Anchor on window_end, round down to minute, show 360 minutes ending there.
+  var endMin   = Math.floor((data.window_end || 0) / 60) * 60;
+  var startMin = endMin - 359 * 60;
+
+  var maxCount = 0;
+  buckets.forEach(function(b) { if (b.count > maxCount) maxCount = b.count; });
+
+  // CSS-grid layout gives pixel-exact cell sizes (table cells inherit text
+  // metrics from line-height/font-size and won't go below ~10px tall).
+  var CELL_W = 16, CELL_H = 20, GAP = 1;
+  var MONO = "'SFMono-Regular',Consolas,monospace";
+
+  var html = '';
+
+  // Single 2D grid: column 1 = row labels, columns 2..61 = minute cells.
+  // Row 1 = column-tick labels, rows 2..7 = 6 hour rows of cells.
+  html += '<div style="display:grid;' +
+          'grid-template-columns:max-content repeat(60,' + CELL_W + 'px);' +
+          'grid-template-rows:auto repeat(6,' + CELL_H + 'px);' +
+          'gap:' + GAP + 'px;' +
+          'font-family:' + MONO + ';font-size:10px;' +
+          'color:var(--text-muted,#888);">';
+
+  // Header row: empty corner + 6 tick labels, each spanning 10 minute columns
+  html += '<div></div>';
+  for (var tk = 0; tk < 6; tk++) {
+    html += '<div style="grid-column:span 10;padding-bottom:2px;">:' +
+            String(tk * 10).padStart(2, '0') + '</div>';
+  }
+
+  // 6 rows: label in col 1 + 60 minute cells
+  // Show the date on the first row and on any row where the day changes
+  // (i.e. midnight crossings) so the window makes sense across day boundaries.
+  var prevDayKey = null;
+  for (var h = 0; h < 6; h++) {
+    var rowStart = startMin + h * 60 * 60;
+    var dayKey = _dwDayKey(rowStart);
+    var label = _dwFmtLocal(rowStart);
+    if (prevDayKey === null || dayKey !== prevDayKey) {
+      label += ' · ' + _dwFmtLocalDate(rowStart);
+    }
+    prevDayKey = dayKey;
+    html += '<div style="padding-right:4px;text-align:right;' +
+            'line-height:' + CELL_H + 'px;white-space:nowrap;">' +
+            _dwEscape(label) + '</div>';
+    for (var mm = 0; mm < 60; mm++) {
+      var cellTs = rowStart + mm * 60;
+      var b = map[cellTs];
+      var count = b ? b.count : 0;
+      if (count === 0) {
+        html += '<div style="background:rgba(255,255,255,0.05);"></div>';
+      } else {
+        var alpha = maxCount > 0 ? (0.25 + 0.75 * count / maxCount) : 1;
+        var srcs  = (b.sources || []).map(function(s) { return '  ' + s[0] + ' (x' + s[1] + ')'; }).join('\n');
+        var paired = (b.paired || []).map(function(p) { return p[0] + ' (x' + p[1] + ')'; }).join(', ');
+        var title = _dwFmtLocal(cellTs) + ' — ' + count + ' hit' + (count !== 1 ? 's' : '') +
+                    (srcs ? '\n' + srcs : '') +
+                    (paired ? '\nPaired: ' + paired : '');
+        html += '<div data-tip="' + _dwEscape(title) +
+                '" style="background:rgba(220,90,90,' + alpha.toFixed(2) + ');"></div>';
+      }
+    }
+  }
+  html += '</div>';
+
+  // Caption below — show dates only if the window crosses midnight
+  var startDate = _dwFmtLocalDate(startMin);
+  var endDate   = _dwFmtLocalDate(endMin + 60);
+  var rangeStr;
+  if (startDate === endDate) {
+    rangeStr = startDate + ' &nbsp;·&nbsp; ' +
+               _dwFmtLocal(startMin) + ' → ' + _dwFmtLocal(endMin + 60);
+  } else {
+    rangeStr = _dwFmtLocal(startMin) + ' ' + startDate + ' → ' +
+               _dwFmtLocal(endMin + 60) + ' ' + endDate;
+  }
+  html += '<div style="font-family:' + MONO +
+          ';font-size:10px;color:var(--text-muted,#888);margin-top:6px;">' +
+          rangeStr + ' &nbsp;·&nbsp; hover a cell for details</div>';
+
+  if (!buckets.length) {
+    html += '<p style="font-size:12px;color:var(--text-muted,#888);margin:6px 0 0;">No hits for <code>' +
+            _dwEscape(data.domain) + '</code> in the last 6 hours.</p>';
+  }
+  grid.innerHTML = html;
+  _dwBindTipHandlers();
+
+  // Table body
+  if (!buckets.length) {
+    tbody.innerHTML = '<tr><td colspan="4" style="padding:10px;color:var(--text-muted,#888);">—</td></tr>';
+    return;
+  }
+  var rows = buckets.map(function(b) {
+    var srcs   = (b.sources || []).map(function(s) { return s[0] + ' (x' + s[1] + ')'; }).join(', ');
+    var paired = (b.paired || []).map(function(p) { return p[0] + ' (x' + p[1] + ')'; }).join(', ') || '—';
+    return '<tr style="border-top:1px solid rgba(255,255,255,0.06);">' +
+           '<td style="padding:5px 10px;white-space:nowrap;">' + _dwFmtLocal(b.ts) + '</td>' +
+           '<td style="padding:5px 10px;">' + b.count + '</td>' +
+           '<td style="padding:5px 10px;">' + _dwEscape(srcs) + '</td>' +
+           '<td style="padding:5px 10px;">' + _dwEscape(paired) + '</td>' +
+           '</tr>';
+  }).join('');
+  tbody.innerHTML = rows;
+}
+
+function _dwAutoRefresh() {
+  if (_dwTimer) clearInterval(_dwTimer);
+  _dwTimer = setInterval(function() {
+    if (_dwCurrentDomain) dwRefresh();
+  }, 30000);
+}
+
+// ── PCAP Capture ─────────────────────────────────────────────────────────────
+var _pcapTimer = null;
+var _pcapViewDomain = '';
+
+function _pcapEscape(s) {
+  return String(s).replace(/[&<>"']/g, function(c) {
+    return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c];
+  });
+}
+
+function _pcapFmtBytes(n) {
+  if (n < 1024) return n + ' B';
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+  if (n < 1024 * 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + ' MB';
+  return (n / 1024 / 1024 / 1024).toFixed(2) + ' GB';
+}
+
+function _pcapFmtAge(tsSec) {
+  if (!tsSec) return '—';
+  var now = Date.now() / 1000;
+  var s = Math.max(0, now - tsSec);
+  if (s < 60) return Math.round(s) + 's ago';
+  if (s < 3600) return Math.round(s / 60) + 'm ago';
+  if (s < 86400) return Math.round(s / 3600) + 'h ago';
+  return Math.round(s / 86400) + 'd ago';
+}
+
+function _pcapStatus(msg, ok) {
+  var el = document.getElementById('pcap-status');
+  el.textContent = msg || '';
+  el.style.color = ok ? 'var(--text-muted,#888)' : 'var(--red,#f44336)';
+}
+
+function pcapRefresh() {
+  return fetch('/api/pcap/state')
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (!d.ok) { _pcapStatus('✗ ' + (d.message || 'error'), false); return; }
+      _pcapRender(d);
+    })
+    .catch(function(e) { _pcapStatus('✗ ' + e, false); });
+}
+
+function _pcapRender(d) {
+  // Banner + count pill
+  var active = (d.domains || []).length;
+  var anyData = false;
+  (d.domains || []).forEach(function(dom) {
+    var c = (d.captures || {})[dom];
+    if (c && c.bytes > 0) anyData = true;
+  });
+  document.getElementById('pcap-banner').style.display = active > 0 ? 'block' : 'none';
+  var pill = document.getElementById('pcap-count-pill');
+  if (active === 0) {
+    pill.textContent = '· no domains being captured';
+  } else {
+    pill.textContent = '· ' + active + ' / ' + d.max_domains + ' watched';
+  }
+
+  // Add button enable/disable
+  var addBtn = document.getElementById('pcap-add-btn');
+  if (active >= d.max_domains) { addBtn.disabled = true; addBtn.title = 'Max ' + d.max_domains + ' active.'; }
+  else { addBtn.disabled = false; addBtn.title = ''; }
+
+  // Domains table
+  var wrap = document.getElementById('pcap-domains');
+  if (active === 0) {
+    wrap.innerHTML = '<p style="font-size:12px;color:var(--text-muted,#888);margin:0;">No domains being captured. Add one above to start.</p>';
+  } else {
+    var rows = (d.domains || []).map(function(dom) {
+      var c = (d.captures || {})[dom] || {};
+      var status = c.files
+        ? c.files + ' files · ' + _pcapFmtBytes(c.bytes) + ' · last write ' + _pcapFmtAge(c.newest_ts)
+        : '<span class="text-dim">starting — no packets yet</span>';
+      var de = _pcapEscape(dom);
+      return '<tr style="border-top:1px solid rgba(255,255,255,0.06);">' +
+             '<td class="mono" style="padding:6px 10px;">' + de + '</td>' +
+             '<td style="padding:6px 10px;font-size:12px;">' + status + '</td>' +
+             '<td style="padding:6px 10px;text-align:right;white-space:nowrap;">' +
+               '<button class="btn btn-sm" data-d="' + de + '" onclick="pcapOpenView(this)" ' + (c.files?'':'disabled') + '>View</button> ' +
+               '<button class="btn btn-sm" data-d="' + de + '" onclick="pcapDownload(this)" ' + (c.files?'':'disabled') + '>Download</button> ' +
+               '<button class="btn btn-sm" data-d="' + de + '" onclick="pcapSnapshot(this)" ' + (c.files?'':'disabled') + '>Snapshot</button> ' +
+               '<button class="btn btn-sm" data-d="' + de + '" onclick="pcapStop(this)" style="background:var(--red);border-color:var(--red);">Stop</button>' +
+             '</td>' +
+             '</tr>';
+    }).join('');
+    wrap.innerHTML =
+      '<table style="width:100%;border-collapse:collapse;font-size:12px;">' +
+      '<thead><tr style="text-align:left;background:rgba(255,255,255,0.03);">' +
+      '<th style="padding:5px 10px;">Domain</th>' +
+      '<th style="padding:5px 10px;">Capture status</th>' +
+      '<th style="padding:5px 10px;text-align:right;">Actions</th>' +
+      '</tr></thead><tbody>' + rows + '</tbody></table>';
+  }
+
+  // Snapshots
+  var snaps = d.snapshots || [];
+  var snapWrap = document.getElementById('pcap-snapshots');
+  if (!snaps.length) {
+    snapWrap.innerHTML = '<p style="font-size:12px;color:var(--text-muted,#888);margin:0;">No saved snapshots.</p>';
+  } else {
+    var sr = snaps.map(function(s) {
+      var n = _pcapEscape(s.name);
+      return '<tr style="border-top:1px solid rgba(255,255,255,0.06);">' +
+             '<td class="mono" style="padding:5px 10px;">' + n + '</td>' +
+             '<td style="padding:5px 10px;font-size:12px;">' + _pcapFmtBytes(s.bytes) + '</td>' +
+             '<td style="padding:5px 10px;font-size:12px;">' + _pcapFmtAge(s.ts) + '</td>' +
+             '<td style="padding:5px 10px;text-align:right;white-space:nowrap;">' +
+               '<a class="btn btn-sm" href="/pcap/snapshot-download?name=' + encodeURIComponent(s.name) + '">Download</a> ' +
+               '<button class="btn btn-sm" data-n="' + n + '" onclick="pcapSnapshotDelete(this)" style="background:var(--red);border-color:var(--red);">Delete</button>' +
+             '</td>' +
+             '</tr>';
+    }).join('');
+    snapWrap.innerHTML =
+      '<table style="width:100%;border-collapse:collapse;font-size:12px;">' +
+      '<thead><tr style="text-align:left;background:rgba(255,255,255,0.03);">' +
+      '<th style="padding:5px 10px;">Name</th>' +
+      '<th style="padding:5px 10px;">Size</th>' +
+      '<th style="padding:5px 10px;">Age</th>' +
+      '<th style="padding:5px 10px;text-align:right;">Actions</th>' +
+      '</tr></thead><tbody>' + sr + '</tbody></table>';
+  }
+}
+
+function pcapAdd() {
+  var dom = document.getElementById('pcap-add-domain').value.trim().toLowerCase();
+  if (!dom) return;
+  var btn = document.getElementById('pcap-add-btn');
+  btn.disabled = true;
+  fetch('/api/pcap/watch', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({domain: dom})
+  }).then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (!d.ok) _pcapStatus('✗ ' + (d.message || 'error'), false);
+      else { _pcapStatus('Added — capture starting (may take 5-30s)', true);
+             document.getElementById('pcap-add-domain').value = ''; }
+      pcapRefresh();
+    })
+    .catch(function(e) { _pcapStatus('✗ ' + e, false); })
+    .finally(function() { btn.disabled = false; });
+}
+
+function pcapStop(btn) {
+  var dom = btn.dataset.d;
+  bbConfirm('Stop watching ' + dom + ' and delete its rolling PCAPs?\n(Snapshots will be kept.)', function() {
+    fetch('/api/pcap/unwatch', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({domain: dom})
+    }).then(function() { _pcapStatus('Stopped ' + dom, true); pcapRefresh(); })
+      .catch(function(e) { _pcapStatus('✗ ' + e, false); });
+  });
+}
+
+function pcapSnapshot(btn) {
+  var dom = btn.dataset.d;
+  btn.disabled = true;
+  fetch('/api/pcap/snapshot', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({domain: dom})
+  }).then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (!d.ok) _pcapStatus('✗ ' + (d.message || 'error'), false);
+      else _pcapStatus('Snapshot saved: ' + d.name + ' (' + _pcapFmtBytes(d.bytes) + ')', true);
+      pcapRefresh();
+    })
+    .catch(function(e) { _pcapStatus('✗ ' + e, false); })
+    .finally(function() { btn.disabled = false; });
+}
+
+function pcapClearAll() {
+  bbConfirm('Stop ALL captures and delete the rolling PCAPs?\n(Snapshots will be kept.)', function() {
+    fetch('/api/pcap/clear-all', {method: 'POST'})
+      .then(function() { _pcapStatus('All captures stopped', true); pcapRefresh(); })
+      .catch(function(e) { _pcapStatus('✗ ' + e, false); });
+  });
+}
+
+function pcapSnapshotDelete(btn) {
+  var name = btn.dataset.n;
+  bbConfirm('Delete snapshot ' + name + '?', function() {
+    fetch('/api/pcap/snapshot-delete', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({name: name})
+    }).then(function() { _pcapStatus('Deleted ' + name, true); pcapRefresh(); })
+      .catch(function(e) { _pcapStatus('✗ ' + e, false); });
+  });
+}
+
+function pcapDownload(btn) {
+  var dom = btn.dataset.d;
+  window.location.href = '/api/pcap/view?domain=' + encodeURIComponent(dom) + '&mode=download';
+}
+
+function pcapOpenView(btn) {
+  _pcapViewDomain = btn.dataset.d;
+  document.getElementById('pcap-view-title').textContent = _pcapViewDomain;
+  document.getElementById('pcap-view-pane').style.display = 'block';
+  document.getElementById('pcap-view-mode').value = 'conv';
+  pcapView();
+}
+
+function pcapView() {
+  if (!_pcapViewDomain) return;
+  var mode = document.getElementById('pcap-view-mode').value;
+  document.getElementById('pcap-view-frame').style.display = (mode === 'decode') ? 'inline-block' : 'none';
+  var frame = document.getElementById('pcap-view-frame').value || '1';
+  var out = document.getElementById('pcap-view-output');
+  out.textContent = 'Loading…';
+  fetch('/api/pcap/view?domain=' + encodeURIComponent(_pcapViewDomain) +
+        '&mode=' + encodeURIComponent(mode) + '&frame=' + encodeURIComponent(frame))
+    .then(function(r) { return r.text(); })
+    .then(function(text) { out.textContent = text || '(empty)'; })
+    .catch(function(e) { out.textContent = 'Error: ' + e; });
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+  pcapRefresh();
+  if (_pcapTimer) clearInterval(_pcapTimer);
+  _pcapTimer = setInterval(pcapRefresh, 10000);
+  var inp = document.getElementById('pcap-add-domain');
+  if (inp) {
+    inp.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') { e.preventDefault(); pcapAdd(); }
+    });
+  }
+});
+
+document.addEventListener('DOMContentLoaded', function() {
+  dwLoadConfig().then(function(d) { if (d) dwRefresh(); });
+  _dwAutoRefresh();
+});
+
+// Allow Enter key in the input to apply
+document.addEventListener('DOMContentLoaded', function() {
+  var inp = document.getElementById('dw-domain');
+  if (inp) {
+    inp.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') { e.preventDefault(); dwApply(); }
+    });
+  }
+});
+
+function sendTestAlert() {
+  var btn = document.getElementById('test-alert-btn');
+  var fb  = document.getElementById('alert-feedback');
+  var msg = document.getElementById('alert-feedback-msg');
+  btn.disabled = true;
+  btn.textContent = 'Sending…';
+  fetch('/api/alert-test', {method: 'POST'})
+    .then(function(r) { return r.json().then(function(d) { return {ok: r.ok, data: d}; }); })
+    .then(function(res) {
+      fb.style.display = 'block';
+      if (res.ok && res.data.ok) {
+        msg.style.color = 'var(--green, #4caf50)';
+        msg.textContent = '✓ ' + res.data.message;
+        setTimeout(loadSlackCount, 3000);
+      } else {
+        msg.style.color = 'var(--red, #f44336)';
+        msg.textContent = '✗ ' + (res.data.message || 'Unknown error');
+      }
+      btn.disabled = false;
+      btn.textContent = 'Test Alert';
+    })
+    .catch(function(e) {
+      fb.style.display = 'block';
+      msg.style.color = 'var(--red, #f44336)';
+      msg.textContent = '✗ Request failed: ' + e;
+      btn.disabled = false;
+      btn.textContent = 'Test Alert';
+    });
+}
+
+// ── OLED display toggle ────────────────────────────────────────────────────────
+function setDisplayUI(active) {
+  var toggle = document.getElementById('display-toggle');
+  var track  = document.getElementById('display-track');
+  var thumb  = document.getElementById('display-thumb');
+  var label  = document.getElementById('display-label');
+  var status = document.getElementById('display-status-text');
+  toggle.checked    = active;
+  track.style.background = active ? '#4caf50' : '#555';
+  thumb.style.left       = active ? '20px' : '2px';
+  label.textContent      = active ? 'On' : 'Off';
+  status.textContent     = active ? 'Running — bb0-display.service active' : 'Stopped — bb0-display.service inactive';
+}
+
+function toggleDisplay(checkbox) {
+  var enable = checkbox.checked;
+  setDisplayUI(enable);
+  fetch('/api/display', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({enable: enable})
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(d) {
+    if (!d.ok) {
+      // Revert on failure
+      setDisplayUI(!enable);
+      console.error('Display toggle failed:', d.message);
+    }
+  })
+  .catch(function() { setDisplayUI(!enable); });
+}
+
+// Load initial display state on page load
+fetch('/api/display')
+  .then(function(r) { return r.json(); })
+  .then(function(d) { setDisplayUI(d.active); })
+  .catch(function() {
+    document.getElementById('display-status-text').textContent = 'Status unavailable';
+  });
+</script>
+{% endblock %}

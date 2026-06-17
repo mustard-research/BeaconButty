@@ -1,0 +1,9 @@
+[Unit]
+Description=BeaconButty JA4 fingerprint history fold (yesterday)
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/beaconbutty-ja4-history-update.py
+StandardOutput=append:/var/log/beaconbutty/ja4-history.log
+StandardError=append:/var/log/beaconbutty/ja4-history.log

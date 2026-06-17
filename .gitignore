@@ -1,0 +1,36 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Secrets / local overrides
+.env
+*.env
+secrets/
+config/GeoIP.conf
+
+# Large binary/data assets
+*.tar.gz
+*.mmdb
+
+# Claude Code (local permissions, machine-specific)
+.claude/
+CLAUDE.md
+
+# Editor
+.vscode/
+*.swp
+*~
+
+# obsidian/BeaconButty is a symlink to the Mustard-Vault path on bb0; not portable to other clones
+/obsidian/BeaconButty
+
+# Build artifacts (Lambda zip regenerated from lambda_function.py)
+aws/lambda/function.zip
+
+# Internal Claude Code task tracking — not part of the public release
+/tasks/

@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# bb-reboot — clean reboot for bb0
+#   1. Ensure OLED display is active (clears the display-off flag)
+#   2. Ensure LEDs are on with default breathing
+#   3. Stop ClickHouse cleanly (avoids a race with the 60s hardware watchdog)
+#   4. Flush log2ram to disk
+#   5. Reboot
+
+set -euo pipefail
+
+DISPLAY_OFF_FLAG=/var/lib/beaconbutty/display-off
+LED_STATE_FILE=/var/lib/beaconbutty/watchdog/led-state.json
+LED_DEFAULT='{"enable": true, "color": "#0a1aff", "brightness": 50, "style": "breathing", "speed": 50}'
+
+# ── 1. Display on ─────────────────────────────────────────────────────────────
+if [[ -f "$DISPLAY_OFF_FLAG" ]] && [[ "$(cat "$DISPLAY_OFF_FLAG")" == "1" ]]; then
+    echo "Display: clearing off-flag"
+    echo "0" > "$DISPLAY_OFF_FLAG"
+fi
+
+# ── 2. LEDs: on + breathing (reset to defaults if currently off) ──────────────
+if [[ -f "$LED_STATE_FILE" ]]; then
+    enabled=$(python3 -c "import json; d=json.load(open('$LED_STATE_FILE')); print(d.get('enable', False))" 2>/dev/null || echo "False")
+else
+    enabled="False"
+fi
+
+if [[ "$enabled" != "True" ]]; then
+    echo "LEDs: enabling default breathing"
+    echo "$LED_DEFAULT" > "$LED_STATE_FILE"
+fi
+
+# ── 3. Stop ClickHouse cleanly ────────────────────────────────────────────────
+# The BCM2835 hardware watchdog has a 60s timeout. ClickHouse has
+# TimeoutStopSec=infinity so systemd waits indefinitely, but the watchdog
+# won't — stopping it here first gives it unlimited time before the countdown
+# starts.
+if systemctl is-active --quiet clickhouse-server; then
+    echo "ClickHouse: stopping..."
+    systemctl stop clickhouse-server
+    echo "ClickHouse: stopped"
+fi
+
+# ── 4. Flush log2ram ──────────────────────────────────────────────────────────
+echo "log2ram: syncing to disk..."
+log2ram write
+echo "log2ram: done"
+
+# ── 5. Reboot ─────────────────────────────────────────────────────────────────
+echo "Rebooting..."
+systemctl reboot

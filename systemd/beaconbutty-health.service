@@ -1,0 +1,11 @@
+[Unit]
+Description=BeaconButty — scheduled health check with alerting
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c 'SEND_ALERTS=1 /usr/local/bin/beaconbutty-health.sh'
+User=root
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=120

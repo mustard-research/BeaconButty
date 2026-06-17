@@ -1,0 +1,945 @@
+{% extends "base.html" %}
+{% from "_intel_badge.html" import intel_badge %}
+{% block title %}Beacons{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div class="header-row">
+    <div>
+      <h1>Beacons</h1>
+      <p>RITA beacon scoring results — potential C2 check-ins on the LAN.{% if beacon_data and beacon_data.date_range %} <span class="text-dim">{{ beacon_data.date_range }}</span>{% endif %}</p>
+    </div>
+
+    {# Date picker #}
+    {% if date_groups %}
+    <div style="display:flex;gap:8px;align-items:center;position:relative;">
+      <span class="text-dim" style="font-size:12px;text-transform:uppercase;letter-spacing:.05em;">Report</span>
+      <div id="date-picker" style="position:relative;">
+
+        {# Trigger button #}
+        <button id="dp-trigger" onclick="dpToggle(event)" type="button"
+                style="display:flex;align-items:center;gap:8px;
+                       background:var(--bg);color:var(--text);
+                       border:1px solid var(--border);border-radius:6px;
+                       padding:5px 10px;font-size:13px;cursor:pointer;white-space:nowrap;">
+          <span id="dp-label">{{ selected_date or 'Select…' }}</span>
+          <span style="color:var(--text-dim);font-size:10px;">▼</span>
+        </button>
+
+        {# Dropdown panel #}
+        <div id="dp-panel" style="display:none;position:absolute;right:0;top:calc(100% + 4px);
+             min-width:170px;background:var(--card-bg,#1e1e2e);border:1px solid var(--border);
+             border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.4);z-index:200;overflow:hidden;">
+
+          {% for group in date_groups %}
+            {% if group.is_current %}
+              {# Current week — dates listed directly #}
+              {% for ds, fp in group.dates %}
+              <a href="?date={{ ds }}" class="dp-item{% if ds == selected_date %} dp-item-active{% endif %}">{{ ds }}</a>
+              {% endfor %}
+            {% else %}
+              {# Older week — expandable row #}
+              <div class="dp-week" onclick="dpWeekToggle(this)">
+                <span>{{ group.label }}</span>
+                <span class="dp-arrow">›</span>
+              </div>
+              <div class="dp-week-dates" style="display:none;">
+                {% for ds, fp in group.dates %}
+                <a href="?date={{ ds }}" class="dp-item dp-item-indent{% if ds == selected_date %} dp-item-active{% endif %}">{{ ds }}</a>
+                {% endfor %}
+              </div>
+            {% endif %}
+          {% endfor %}
+
+        </div>
+      </div>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+{% if not beacon_data %}
+  <div class="card">
+    <div class="empty-state">
+      <div class="empty-icon">📭</div>
+      <p>No beacon report data found.</p>
+    </div>
+  </div>
+{% else %}
+
+  {# ── Summary stat cards ── #}
+  <div class="stat-grid" style="grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));">
+    <div class="stat-card">
+      <div class="stat-label">Total Findings</div>
+      {% if beacon_data.total > 0 %}
+        <div class="stat-value stat-value-err">{{ beacon_data.total }}</div>
+      {% else %}
+        <div class="stat-value stat-value-ok">0</div>
+      {% endif %}
+      <div class="stat-sub">{{ beacon_data.date_range }}</div>
+      <div class="sev-strip mt-8">
+        {% if beacon_data.sev_counts.High > 0 %}
+          <span class="badge badge-high">High {{ beacon_data.sev_counts.High }}</span>
+        {% endif %}
+        {% if beacon_data.sev_counts.Medium > 0 %}
+          <span class="badge badge-med">Med {{ beacon_data.sev_counts.Medium }}</span>
+        {% endif %}
+        {% if beacon_data.sev_counts.Low > 0 %}
+          <span class="badge badge-low">Low {{ beacon_data.sev_counts.Low }}</span>
+        {% endif %}
+        {% if beacon_data.sev_counts.None > 0 %}
+          <span class="badge badge-none">None {{ beacon_data.sev_counts.None }}</span>
+        {% endif %}
+      </div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Suppressed by FPs</div>
+      <div class="stat-value text-dim">{{ beacon_data.suppressed }}</div>
+      <div class="stat-sub">{{ beacon_data.fp_count }} false positive rule{{ 's' if beacon_data.fp_count != 1 else '' }}</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Devices Flagged</div>
+      <div class="stat-value stat-value-blue">{{ beacon_data.devices | length }}</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">High-Score ≥0.80 (3d)</div>
+      {% if beacon_data.top_beacons | length > 0 %}
+        <div class="stat-value stat-value-err">{{ beacon_data.top_beacons | length }}</div>
+      {% else %}
+        <div class="stat-value stat-value-ok">0</div>
+      {% endif %}
+    </div>
+  </div>
+
+  {# ── Device Hotlist ── #}
+  {% if beacon_data.devices %}
+  <div class="card">
+    <div class="card-title">Device Hotlist <small>{{ top_beacons_label }}</small></div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Device</th>
+            <th class="num hl-sort" data-sort="high" onclick="sortHotlist('high')" style="cursor:pointer;user-select:none;">High<span class="hl-ind" data-for="high"></span></th>
+            <th class="num">Med</th>
+            <th class="num">Low</th>
+            <th class="num hl-sort" data-sort="total" onclick="sortHotlist('total')" style="cursor:pointer;user-select:none;">Total<span class="hl-ind" data-for="total"></span></th>
+            <th class="num hl-sort" data-sort="max" onclick="sortHotlist('max')" style="cursor:pointer;user-select:none;">Max Score<span class="hl-ind" data-for="max"></span></th>
+            <th>Top Destinations</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="hotlist-tbody">
+          {% for dev in beacon_data.devices %}
+          <tr data-high="{{ dev.high }}" data-total="{{ dev.total }}" data-max="{{ dev.max_score }}">
+            <td class="mono">{{ dev.label }}</td>
+            <td class="num">
+              {% if dev.high > 0 %}
+                <span class="text-red" style="font-weight:600;cursor:pointer;text-decoration:underline dotted;"
+                      onclick="showHighBeacons({{ loop.index0 }})">{{ dev.high }}</span>
+              {% else %}
+                <span class="text-dim">0</span>
+              {% endif %}
+            </td>
+            <td class="num">
+              {% if dev.med > 0 %}
+                <span class="text-yellow" style="font-weight:600;cursor:pointer;text-decoration:underline dotted;"
+                      onclick="showMedBeacons({{ loop.index0 }})">{{ dev.med }}</span>
+              {% else %}
+                <span class="text-dim">0</span>
+              {% endif %}
+            </td>
+            <td class="num">
+              {% if dev.low > 0 %}
+                <span class="text-dim" style="font-weight:600;cursor:pointer;text-decoration:underline dotted;"
+                      onclick="showLowBeacons({{ loop.index0 }})">{{ dev.low }}</span>
+              {% else %}
+                <span class="text-dim">0</span>
+              {% endif %}
+            </td>
+            <td class="num">
+              {% if dev.total > 0 %}
+                <span style="font-weight:600;cursor:pointer;text-decoration:underline dotted;"
+                      onclick="showAllBeacons({{ loop.index0 }})">{{ dev.total }}</span>
+              {% else %}
+                {{ dev.total }}
+              {% endif %}
+            </td>
+            <td class="num">
+              <div class="score-bar">
+                <span class="score-num {% if dev.max_score >= 0.8 %}text-red{% elif dev.max_score >= 0.5 %}text-yellow{% else %}text-dim{% endif %}">
+                  {{ "%.2f"|format(dev.max_score) }}
+                </span>
+                <div class="bar-container">
+                  <div class="bar-fill {% if dev.max_score >= 0.8 %}bar-err{% elif dev.max_score >= 0.5 %}bar-warn{% else %}bar-ok{% endif %}"
+                       style="width: {{ (dev.max_score * 100)|round|int }}%"></div>
+                </div>
+              </div>
+            </td>
+            <td class="mono" style="max-width:300px;">
+              {% for score, dest in dev.top_dests %}
+                <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+                  <span class="{% if score >= 0.8 %}text-red{% elif score >= 0.5 %}text-yellow{% else %}text-dim{% endif %}" style="font-size:0.75em;margin-right:4px;">{{ "%.2f"|format(score) }}</span>{{ dest }}
+                </div>
+              {% endfor %}
+            </td>
+            <td style="white-space:nowrap;text-align:right;">
+              {% if dev.total == 1 %}
+                <button class="btn btn-sm" onclick="fpOpenSingle({{ loop.index0 }})"
+                        title="Single beacon — add directly to false-positive list">Add to FP</button>
+              {% else %}
+                <span class="text-dim" style="font-size:11px;"
+                      title="Click the High/Med/Low counts to inspect beacons and add a false positive">click counts to add FP</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endif %}
+
+  {# ── Investigate ── #}
+  {% if not beacon_data.investigate %}
+  <div class="card">
+    <div class="card-title">Investigate <small>{{ top_beacons_label }}</small></div>
+    <div class="empty-state" style="padding:18px;">
+      <p class="text-dim" style="margin:0;">No suspicious patterns flagged (Tor, Chinese telemetry, ICMP tunnels, excessive DNS).</p>
+    </div>
+  </div>
+  {% else %}
+  <div class="card">
+    <div class="card-title">Investigate <small>{{ top_beacons_label }}</small></div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Source Device</th>
+            <th>Top Destinations</th>
+            <th class="num">Max Score</th>
+            <th>Flag</th>
+            <th>JA4</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in beacon_data.investigate %}
+          <tr>
+            <td class="mono">{{ item.label }}</td>
+            <td class="mono text-dim" style="max-width:300px;font-size:12px;">
+              {% if item.dest_entries %}
+                {% for d in item.dest_entries %}
+                  <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+                    {{ d.raw }}
+                    {% if d.enrich %}
+                      <span style="color:var(--text);">→ {{ d.enrich }}</span>
+                      <span class="text-dim" style="font-size:10px;text-transform:uppercase;letter-spacing:.04em;">{{ d.source }}</span>
+                    {% endif %}
+                  </div>
+                {% endfor %}
+              {% else %}
+                <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ item.dest }}</div>
+              {% endif %}
+            </td>
+            <td class="num">
+              <span class="{% if item.score >= 0.9 %}text-red{% elif item.score >= 0.8 %}text-yellow{% else %}text-dim{% endif %}"
+                    style="font-weight:600;">
+                {{ "%.3f"|format(item.score) }}
+              </span>
+            </td>
+            <td>
+              {% if item.flag_type == 'chinese' %}
+                <span class="badge badge-high" title="{{ item.flag_str }}">{{ item.flag_str[:60] }}{% if item.flag_str|length > 60 %}…{% endif %}</span>
+              {% elif item.flag_type == 'tor' %}
+                <span class="badge badge-high" title="{{ item.flag_str }}">{{ item.flag_str[:60] }}{% if item.flag_str|length > 60 %}…{% endif %}</span>
+              {% elif item.flag_type == 'icmp' %}
+                <span class="badge badge-med" title="{{ item.flag_str }}">{{ item.flag_str[:60] }}{% if item.flag_str|length > 60 %}…{% endif %}</span>
+              {% elif item.flag_type == 'dns' %}
+                <span class="badge badge-med" title="{{ item.flag_str }}">{{ item.flag_str[:60] }}{% if item.flag_str|length > 60 %}…{% endif %}</span>
+              {% else %}
+                <span class="badge badge-none" title="{{ item.flag_str }}">{{ item.flag_str[:60] }}{% if item.flag_str|length > 60 %}…{% endif %}</span>
+              {% endif %}
+            </td>
+            <td class="mono" style="font-size:11px;max-width:200px;">
+              {% if item.ja4 %}
+                <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
+                     title="{{ item.ja4 }} — {{ item.ja4_count }} TLS conns{% if item.ja4_label %} · {{ item.ja4_label }} ({{ item.ja4_src }}){% endif %}{% if item.ja4_threat %} · THREAT MATCH{% endif %}">
+                  {% if item.ja4_threat %}<span class="badge badge-high" style="font-size:10px;margin-right:4px;">THREAT</span>{% endif %}{{ item.ja4 }}
+                </div>
+                {% if item.ja4_label %}
+                  <div class="text-dim" style="font-size:10px;{% if item.ja4_threat %}color:var(--red);{% endif %}">{{ item.ja4_label }}</div>
+                {% endif %}
+              {% else %}
+                <span class="text-dim">—</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endif %}
+
+  {# ── Top Beacons (score ≥ 0.80) ── #}
+  {% if not beacon_data.top_beacons %}
+  <div class="card">
+    <div class="card-title">Top Beacons <small>score ≥ 0.80 · {{ top_beacons_label }}</small></div>
+    <div class="empty-state" style="padding:18px;">
+      <p class="text-dim" style="margin:0;">No beacons crossed the 0.80 score threshold in this window.</p>
+    </div>
+  </div>
+  {% else %}
+  <div class="card">
+    <div class="card-title">Top Beacons <small>score ≥ 0.80 · {{ top_beacons_label }}</small></div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Severity</th>
+            <th>Source Device</th>
+            <th>Destination</th>
+            <th class="num">Score</th>
+            <th class="num">Connections</th>
+            <th>Service</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for b in beacon_data.top_beacons %}
+          <tr>
+            <td>
+              {% if b.severity == 'High' %}
+                <span class="badge badge-high">High</span>
+              {% elif b.severity == 'Medium' %}
+                <span class="badge badge-med">Med</span>
+              {% elif b.severity == 'Low' %}
+                <span class="badge badge-low">Low</span>
+              {% else %}
+                <span class="badge badge-none">{{ b.severity }}</span>
+              {% endif %}
+            </td>
+            <td class="mono">{{ b.label }}</td>
+            <td class="mono" style="max-width:300px;">
+              <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ b.dest }}{{ intel_badge(b.intel) }}</div>
+              {% if b.enrich_name %}
+                <div style="font-size:11px;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text);"
+                     title="From Zeek {{ b.enrich_source }} log{% if b.enrich_when_days is not none %} ({% if b.enrich_when_days == 0 %}today{% elif b.enrich_when_days == 1 %}1 day ago{% else %}{{ b.enrich_when_days }} days ago{% endif %}){% endif %}. RITA only joins same-day DNS.">
+                  → {{ b.enrich_name }}
+                  <span class="text-dim" style="font-size:10px;margin-left:4px;text-transform:uppercase;letter-spacing:.04em;">{{ b.enrich_source }}{% if b.enrich_when_days is not none and b.enrich_when_days > 0 %} · {{ b.enrich_when_days }}d{% endif %}</span>
+                </div>
+              {% endif %}
+            </td>
+            <td class="num">
+              <span class="{% if b.score >= 0.9 %}text-red{% elif b.score >= 0.8 %}text-yellow{% else %}text-dim{% endif %}"
+                    style="font-weight:600;">
+                {{ "%.3f"|format(b.score) }}
+              </span>
+            </td>
+            <td class="num">{{ b.conns }}</td>
+            <td class="mono text-dim" style="font-size:11px;">{{ b.svc }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endif %}
+
+  {# ── Suppressed by FPs (audit view, hidden by default) ── #}
+  {% if beacon_data.suppressed_groups %}
+  <div class="card">
+    <div class="card-title" style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
+      <span>
+        Suppressed by FPs
+        <small>{{ beacon_data.suppressed }} row{{ 's' if beacon_data.suppressed != 1 else '' }}
+               · {{ beacon_data.suppressed_groups | length }} rule{{ 's' if beacon_data.suppressed_groups|length != 1 else '' }}</small>
+      </span>
+      <button id="sg-toggle-btn" onclick="sgCardToggle()" class="btn btn-sm" type="button">Show FP</button>
+    </div>
+    <div id="sg-card-body" style="display:none;margin-top:12px;">
+      <p class="text-dim" style="margin:0 0 10px 0;font-size:12px;">
+        Sanity check: click a row count to see what that rule suppressed. Large counts or unexpected destinations may indicate an over-broad rule.
+      </p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Rule</th>
+              <th>Type</th>
+              <th>Reason</th>
+              <th class="num">Rows</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for g in beacon_data.suppressed_groups %}
+            <tr>
+              <td class="mono">{{ g.rule }}</td>
+              <td><span class="text-dim" style="font-size:12px;text-transform:uppercase;letter-spacing:.05em;">{{ g.rule_type }}</span></td>
+              <td class="text-dim">{{ g.reason }}</td>
+              <td class="num">
+                <span style="font-weight:600;cursor:pointer;text-decoration:underline dotted;"
+                      onclick="sgShow({{ loop.index0 }})">{{ g.rows | length }}</span>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  {% if beacon_data.total == 0 %}
+  <div class="card">
+    <div class="empty-state">
+      <div class="empty-icon">✅</div>
+      <p>No beacon findings in this report.</p>
+    </div>
+  </div>
+  {% endif %}
+
+{% endif %}
+
+{# ── Suppressed-rows detail modal ── #}
+{% if beacon_data and beacon_data.suppressed_groups %}
+<div id="sg-modal" style="display:none;position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,.6);align-items:center;justify-content:center;" onclick="if(event.target===this)this.style.display='none'">
+  <div style="background:var(--card-bg,#1e1e2e);border:1px solid var(--border,#333);border-radius:8px;padding:20px 24px;max-width:820px;width:92%;max-height:80vh;overflow-y:auto;">
+    <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:12px;gap:16px;">
+      <div>
+        <div id="sg-modal-title" style="font-size:1em;font-weight:600;"></div>
+        <div id="sg-modal-sub" class="text-dim" style="font-size:12px;margin-top:3px;"></div>
+      </div>
+      <button onclick="document.getElementById('sg-modal').style.display='none'" style="background:none;border:none;color:inherit;font-size:1.2em;cursor:pointer;padding:0;">✕</button>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Source</th>
+            <th>Destination</th>
+            <th class="num">Score</th>
+            <th>Severity</th>
+            <th>Service</th>
+          </tr>
+        </thead>
+        <tbody id="sg-modal-tbody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+{# ── High-beacon detail modal ── #}
+<div id="hb-modal" style="display:none;position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,.6);align-items:center;justify-content:center;" onclick="if(event.target===this)this.style.display='none'">
+  <div style="background:var(--card-bg,#1e1e2e);border:1px solid var(--border,#333);border-radius:8px;padding:20px 24px;max-width:780px;width:92%;max-height:80vh;overflow-y:auto;">
+    <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:12px;">
+      <span id="hb-title" style="font-size:1em;font-weight:600;"></span>
+      <button onclick="document.getElementById('hb-modal').style.display='none'" style="background:none;border:none;color:inherit;font-size:1.2em;cursor:pointer;padding:0 0 0 16px;">✕</button>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Destination</th>
+            <th class="num">Score</th>
+            <th class="num">Conns</th>
+            <th>Service</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="hb-tbody"></tbody>
+      </table>
+    </div>
+    <div id="hb-fp-msg" style="display:none;margin-top:10px;font-size:12px;color:var(--text-dim,#888);"></div>
+  </div>
+</div>
+
+{# ── FP choice dialog (shown inside/over the main modal) ── #}
+<div id="fp-dialog" style="display:none;position:fixed;inset:0;z-index:1100;background:rgba(0,0,0,.5);align-items:center;justify-content:center;">
+  <div style="background:var(--card-bg,#1e1e2e);border:1px solid var(--border,#444);border-radius:8px;padding:20px 24px;max-width:440px;width:90%;">
+    <div style="font-weight:600;margin-bottom:14px;">Add False Positive</div>
+
+    <div id="fp-opt-domain" style="margin-bottom:10px;padding:10px 12px;border:1px solid var(--border,#333);border-radius:6px;cursor:pointer;" onclick="fpSelectType('domain')">
+      <div style="font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--text-dim,#888);margin-bottom:2px;">Domain <span style="text-transform:none;letter-spacing:0;font-size:11px;font-weight:400;">(editable — generalise with <code>*.parent.tld</code> if needed)</span></div>
+      <input id="fp-domain-input" class="mono" type="text"
+             oninput="fpUpdateSubmitEnabled()"
+             onclick="event.stopPropagation();fpSelectType('domain');"
+             style="width:100%;box-sizing:border-box;padding:4px 6px;background:var(--input-bg,#2a2a3e);border:1px solid var(--border,#444);border-radius:4px;color:inherit;font-size:13px;">
+    </div>
+
+    <div id="fp-opt-proto" style="margin-bottom:14px;padding:10px 12px;border:1px solid var(--border,#333);border-radius:6px;cursor:pointer;" onclick="fpSelectType('proto')">
+      <div style="font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--text-dim,#888);margin-bottom:2px;">
+        Protocol <span id="fp-proto-warn" style="display:none;color:var(--red);text-transform:none;letter-spacing:0;font-size:11px;font-weight:600;margin-left:6px;">Warning - suppresses this protocol on every device!</span>
+      </div>
+      <div id="fp-proto-preview" class="mono" style="font-size:13px;"></div>
+    </div>
+
+    <div style="margin-bottom:14px;">
+      <label style="font-size:12px;display:block;margin-bottom:4px;">Reason <span style="color:var(--text-dim,#888);">(max 50 chars)</span></label>
+      <input id="fp-reason-input" type="text" maxlength="50" placeholder="e.g. Apple CDN"
+             oninput="fpUpdateSubmitEnabled()"
+             style="width:100%;box-sizing:border-box;padding:6px 8px;background:var(--input-bg,#2a2a3e);border:1px solid var(--border,#444);border-radius:4px;color:inherit;font-size:13px;">
+    </div>
+
+    <div style="display:flex;gap:8px;justify-content:flex-end;">
+      <button onclick="fpDialogClose()" class="btn">Cancel</button>
+      <button id="fp-submit-btn" onclick="fpSubmit()" class="btn btn-primary" disabled>Add FP</button>
+    </div>
+  </div>
+</div>
+
+<script>
+var HB = {{ beacon_data.devices | map(attribute='high_beacons') | list | tojson }};
+var MB = {{ beacon_data.devices | map(attribute='med_beacons') | list | tojson }};
+var LB = {{ beacon_data.devices | map(attribute='low_beacons') | list | tojson }};
+var AB = {{ beacon_data.devices | map(attribute='all_beacons') | list | tojson }};
+var HB_LABELS = {{ beacon_data.devices | map(attribute='label') | list | tojson }};
+var SG = {{ beacon_data.suppressed_groups | tojson }};
+var _hbDevIdx = 0;
+
+// Suggest *.parent.tld from an FQDN. When RITA didn't have an FQDN for
+// this row, fall back to the Zeek-recovered enrichment name (so a Knock
+// AWS IP suggests *.knock.app instead of the bare IP — far more useful
+// as an FP pattern). Last resort: the raw IP.
+function domainSuggest(fqdn, rawDst, enrichName) {
+  var name = (fqdn && fqdn.trim()) || (enrichName && enrichName.trim()) || '';
+  if (!name) return rawDst || '';
+  var parts = name.split('.');
+  if (parts.length > 2) return '*.' + parts.slice(1).join('.');
+  return name;
+}
+
+// Render the external threat-intel badge (Shodan + AbuseIPDB + Spamhaus
+// DROP + Tor exit) — mirrors the `_intel_badge.html` Jinja macro so
+// JS-rendered hotlist rows look the same as server-rendered ones.
+var _HOT_SHODAN_TAGS = ['tor','vpn','proxy','honeypot','compromised',
+                        'malware','ics','nuclear'];
+function intelBadgeHtml(intel) {
+  if (!intel) return '';
+  var ab = intel.abuseipdb || {};
+  var sh = intel.shodan || {};
+  var sp = intel.spamhaus || {};
+  var tor = intel.tor || {};
+  if (!Object.keys(ab).length && !Object.keys(sh).length
+      && !Object.keys(sp).length && !Object.keys(tor).length) return '';
+  var score = parseInt(ab.score || 0, 10);
+  var tags = sh.tags || [];
+  var vulns = sh.vulns || [];
+  var ports = (sh.ports || []).length;
+  var hostnames = sh.hostnames || [];
+  var hotTags = tags.filter(function(t) { return _HOT_SHODAN_TAGS.indexOf(t) >= 0; });
+  var cls;
+  // Red threshold = AbuseIPDB's own "high confidence" cutoff (75), Shodan
+  // hot tags / CVEs, Spamhaus DROP, or Tor exit. Lower AbuseIPDB scores on
+  // shared-cloud IPs are often co-tenant noise — yellow.
+  if (score >= 75 || hotTags.length || vulns.length || sp.drop || tor.exit)
+                                                      cls = 'badge-high';
+  else if (score > 0 || tags.length || ports >= 50)   cls = 'badge-med';
+  else                                                cls = 'badge-none';
+  var lines = [];
+  if (sp.drop) lines.push('⚠ On Spamhaus DROP' +
+                          (sp.sbl && sp.sbl !== 'DROP' ? ' (' + sp.sbl + ')' : ''));
+  if (tor.exit) lines.push('⚠ Tor exit node');
+  if (score || ab.total_reports) {
+    var last = (ab.last_reported || '').slice(0, 10);
+    lines.push('AbuseIPDB ' + score + '/100 · ' + (ab.total_reports || 0) +
+               ' reports' + (last ? ' · last ' + last : ''));
+  }
+  if (ab.usage_type) lines.push('Usage: ' + ab.usage_type);
+  if (ab.isp)        lines.push('ISP: ' + ab.isp);
+  if (ab.domain)     lines.push('Domain: ' + ab.domain);
+  if (tags.length)   lines.push('Shodan tags: ' + tags.join(', '));
+  if (vulns.length)  lines.push('Shodan CVEs: ' + vulns.join(', '));
+  if (ports)         lines.push('Shodan open ports: ' + ports);
+  if (hostnames.length) lines.push('rDNS: ' + hostnames.join(', '));
+  if (!lines.length) lines.push('No abuse reports; no Shodan findings; not on Spamhaus DROP or Tor exit list.');
+  lines.push('');
+  lines.push('Sources: Shodan InternetDB + AbuseIPDB + Spamhaus DROP + Tor (refreshed daily)');
+  var pop = escHtml(lines.join('\n'));
+  return ' <span class="badge ' + cls + ' bb-pop" tabindex="0"' +
+         ' style="margin-left:4px;font-size:9px;padding:1px 6px;letter-spacing:.05em;"' +
+         ' data-pop="' + pop + '" title="' + escHtml(lines.join(' | ')) + '">TI</span>';
+}
+
+// Render the Zeek-side enrichment line beneath a bare-IP destination.
+// RITA only joins same-day dns_history; this is what the dst actually was
+// per ssl.log SNI / dns.log answers / cert Subject / http.log Host.
+function enrichHtml(r) {
+  if (!r.enrich_name) return '';
+  var when = (r.enrich_when_days != null && r.enrich_when_days > 0)
+             ? ' · ' + r.enrich_when_days + 'd' : '';
+  return '<div style="font-size:11px;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text);"' +
+         ' title="From Zeek ' + r.enrich_source + ' log' +
+         (r.enrich_when_days != null
+            ? (r.enrich_when_days === 0 ? ' (today)'
+               : (r.enrich_when_days === 1 ? ' (1 day ago)'
+                  : ' (' + r.enrich_when_days + ' days ago)'))
+            : '') +
+         '. RITA only joins same-day DNS so older FQDNs show as bare IPs.">' +
+         '→ ' + escHtml(r.enrich_name) +
+         '<span class="text-dim" style="font-size:10px;margin-left:4px;text-transform:uppercase;letter-spacing:.04em;">' +
+         escHtml(r.enrich_source) + when + '</span></div>';
+}
+
+function showMedBeacons(idx) {
+  _hbDevIdx = idx; _activeBeacons = MB; _activeShowFn = showMedBeacons;
+  var label = HB_LABELS[idx], rows = MB[idx];
+  document.getElementById('hb-title').textContent = label + ' \u2014 Medium severity beacons (' + rows.length + ')';
+  var tbody = document.getElementById('hb-tbody');
+  tbody.innerHTML = '';
+  rows.forEach(function(r, i) {
+    var cls = r.score >= 0.5 ? 'text-yellow' : 'text-dim';
+    var tr = document.createElement('tr');
+    tr.innerHTML =
+      '<td class="mono" style="word-break:break-all;"><a href="#" onclick="fpOpen(' + i + ');return false;" title="Add this destination to FP" style="color:inherit;text-decoration:underline dotted;text-underline-offset:3px;">' + escHtml(r.dest) + '</a>' + intelBadgeHtml(r.intel) + enrichHtml(r) + '</td>' +
+      '<td class="num"><span class="' + cls + '" style="font-weight:600;">' + r.score.toFixed(3) + '</span></td>' +
+      '<td class="num">' + r.conns + '</td>' +
+      '<td class="mono" style="font-size:11px;color:var(--text-dim,#888);">' + escHtml(r.svc) + '</td>' +
+      '<td style="text-align:right;"><button class="btn btn-sm" onclick="fpOpen(' + i + ')">Add to FP</button></td>';
+    tbody.appendChild(tr);
+  });
+  document.getElementById('hb-fp-msg').style.display = 'none';
+  document.getElementById('hb-modal').style.display = 'flex';
+}
+
+function showLowBeacons(idx) {
+  _hbDevIdx = idx; _activeBeacons = LB; _activeShowFn = showLowBeacons;
+  var label = HB_LABELS[idx], rows = LB[idx];
+  document.getElementById('hb-title').textContent = label + ' \u2014 Low severity beacons (' + rows.length + ')';
+  var tbody = document.getElementById('hb-tbody');
+  tbody.innerHTML = '';
+  rows.forEach(function(r, i) {
+    var tr = document.createElement('tr');
+    tr.innerHTML =
+      '<td class="mono" style="word-break:break-all;"><a href="#" onclick="fpOpen(' + i + ');return false;" title="Add this destination to FP" style="color:inherit;text-decoration:underline dotted;text-underline-offset:3px;">' + escHtml(r.dest) + '</a>' + intelBadgeHtml(r.intel) + enrichHtml(r) + '</td>' +
+      '<td class="num"><span class="text-dim" style="font-weight:600;">' + r.score.toFixed(3) + '</span></td>' +
+      '<td class="num">' + r.conns + '</td>' +
+      '<td class="mono" style="font-size:11px;color:var(--text-dim,#888);">' + escHtml(r.svc) + '</td>' +
+      '<td style="text-align:right;"><button class="btn btn-sm" onclick="fpOpen(' + i + ')">Add to FP</button></td>';
+    tbody.appendChild(tr);
+  });
+  document.getElementById('hb-fp-msg').style.display = 'none';
+  document.getElementById('hb-modal').style.display = 'flex';
+}
+
+function showAllBeacons(idx) {
+  _hbDevIdx = idx; _activeBeacons = AB; _activeShowFn = showAllBeacons;
+  var label = HB_LABELS[idx], rows = AB[idx];
+  document.getElementById('hb-title').textContent = label + ' \u2014 All beacons (' + rows.length + ')';
+  var tbody = document.getElementById('hb-tbody');
+  tbody.innerHTML = '';
+  rows.forEach(function(r, i) {
+    var cls = r.score >= 0.9 ? 'text-red' : r.score >= 0.8 ? 'text-yellow' : r.score >= 0.5 ? 'text-yellow' : 'text-dim';
+    var tr = document.createElement('tr');
+    tr.innerHTML =
+      '<td class="mono" style="word-break:break-all;"><a href="#" onclick="fpOpen(' + i + ');return false;" title="Add this destination to FP" style="color:inherit;text-decoration:underline dotted;text-underline-offset:3px;">' + escHtml(r.dest) + '</a>' + intelBadgeHtml(r.intel) + enrichHtml(r) + '</td>' +
+      '<td class="num"><span class="' + cls + '" style="font-weight:600;">' + r.score.toFixed(3) + '</span></td>' +
+      '<td class="num">' + r.conns + '</td>' +
+      '<td class="mono" style="font-size:11px;color:var(--text-dim,#888);">' + escHtml(r.svc) + '</td>' +
+      '<td style="text-align:right;"><button class="btn btn-sm" onclick="fpOpen(' + i + ')">Add to FP</button></td>';
+    tbody.appendChild(tr);
+  });
+  document.getElementById('hb-fp-msg').style.display = 'none';
+  document.getElementById('hb-modal').style.display = 'flex';
+}
+
+function showHighBeacons(idx) {
+  _hbDevIdx = idx; _activeBeacons = HB; _activeShowFn = showHighBeacons;
+  var label = HB_LABELS[idx], rows = HB[idx];
+  document.getElementById('hb-title').textContent = label + ' \u2014 High severity beacons (' + rows.length + ')';
+  var tbody = document.getElementById('hb-tbody');
+  tbody.innerHTML = '';
+  rows.forEach(function(r, i) {
+    var cls = r.score >= 0.9 ? 'text-red' : r.score >= 0.8 ? 'text-yellow' : 'text-dim';
+    var tr = document.createElement('tr');
+    tr.innerHTML =
+      '<td class="mono" style="word-break:break-all;"><a href="#" onclick="fpOpen(' + i + ');return false;" title="Add this destination to FP" style="color:inherit;text-decoration:underline dotted;text-underline-offset:3px;">' + escHtml(r.dest) + '</a>' + intelBadgeHtml(r.intel) + enrichHtml(r) + '</td>' +
+      '<td class="num"><span class="' + cls + '" style="font-weight:600;">' + r.score.toFixed(3) + '</span></td>' +
+      '<td class="num">' + r.conns + '</td>' +
+      '<td class="mono" style="font-size:11px;color:var(--text-dim,#888);">' + escHtml(r.svc) + '</td>' +
+      '<td style="text-align:right;"><button class="btn btn-sm" onclick="fpOpen(' + i + ')">Add to FP</button></td>';
+    tbody.appendChild(tr);
+  });
+  document.getElementById('hb-fp-msg').style.display = 'none';
+  document.getElementById('hb-modal').style.display = 'flex';
+}
+
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// State for the FP dialog
+var _fpRow = null, _fpRowIdx = null, _fpType = null;
+var _activeBeacons = HB, _activeShowFn = null;
+
+// Protocol-FP is global: matches by service string with no source binding,
+// so adding e.g. "443:tcp:ssl" silences every HTTPS beacon on the network
+// for all time. We only treat the option as "safe to highlight" when the
+// service is one of these narrow infrastructure protocols where C2 is
+// effectively impossible.
+var _SAFE_PROTOS = new Set([
+  'ntp', 'mdns', 'dhcp', 'dhcpv6', 'llmnr',
+  'netbios-ns', 'netbios-dgm', 'ssdp'
+]);
+function _isSafeProto(svc) {
+  if (!svc) return false;
+  var parts = svc.split(',')[0].split(':');   // first svc only, "port:proto:name"
+  var name = (parts[2] || '').toLowerCase();
+  return _SAFE_PROTOS.has(name);
+}
+
+// Single-beacon shortcut: skip the intermediate severity modal and open
+// the FP dialog directly. Used by the row-level "Add to FP" button on
+// hotlist rows with dev.total == 1. _activeShowFn is a no-op because
+// there is no modal to re-render after submit.
+function fpOpenSingle(devIdx) {
+  if (!AB[devIdx] || AB[devIdx].length === 0) return;
+  _hbDevIdx     = devIdx;
+  _activeBeacons = AB;
+  _activeShowFn = function() {};
+  fpOpen(0);
+}
+
+function fpOpen(rowIdx) {
+  var row = _activeBeacons[_hbDevIdx][rowIdx];
+  _fpRow    = row;
+  _fpRowIdx = rowIdx;
+  document.getElementById('fp-domain-input').value = domainSuggest(row.fqdn, row.raw_dst, row.enrich_name);
+  document.getElementById('fp-proto-preview').textContent  = row.svc || '(no service)';
+
+  // Visually dim the protocol option unless this row's service is on the
+  // safe list (NTP, mDNS, etc.). Click is still allowed but goes through
+  // a confirm dialog in fpSelectType.
+  var safe = _isSafeProto(row.svc);
+  var protoEl = document.getElementById('fp-opt-proto');
+  protoEl.style.opacity = safe ? '1' : '0.55';
+  document.getElementById('fp-proto-warn').style.display = safe ? 'none' : 'inline';
+
+  // Pre-fill the reason. Order of preference:
+  //   1. Zeek-recovered FQDN (enrich_name) — most informative ("api.knock.app")
+  //   2. GeoIP ASN org ("Amazon.com, Inc.") — better than nothing
+  //   3. empty (operator types it)
+  // FP entries are about the destination, not the source, so we never fall
+  // back to the source device label.
+  var reasonEl = document.getElementById('fp-reason-input');
+  reasonEl.value = (row.enrich_name || row.dst_org || '').slice(0, 50);
+  // Always default to "domain" — domain/IP is the FP target operators
+  // reach for in almost every case. domainSuggest falls back to the raw
+  // IP when no FQDN is present, so the form is still valid.
+  fpSelectType('domain');
+  document.getElementById('fp-dialog').style.display = 'flex';
+  reasonEl.focus();
+  reasonEl.select();   // highlight so typing overwrites the prefill
+  fpUpdateSubmitEnabled();
+}
+
+function fpSelectType(t) {
+  // Picking "proto" on a service that isn't on the safe list silences
+  // every device on the network for that protocol — confirm explicitly.
+  if (t === 'proto' && _fpRow && !_isSafeProto(_fpRow.svc)) {
+    var ok = window.confirm(
+      'Protocol FPs are global — they suppress this protocol (' +
+      (_fpRow.svc || '?') + ') on every device, every destination, ' +
+      'forever.\n\nThe service "' + (_fpRow.svc || '?') +
+      '" is not on the narrow safe list (NTP, mDNS, DHCP, LLMNR, ' +
+      'NetBIOS, SSDP). Adding it will likely silence legitimate beacon ' +
+      'detection.\n\nProceed anyway?'
+    );
+    if (!ok) return;
+  }
+  _fpType = t;
+  var selStyle = 'border:1px solid var(--accent,#7c6af7);background:rgba(124,106,247,.1);';
+  var defStyle = 'border:1px solid var(--border,#333);background:none;';
+  // Preserve the dimming on the protocol card when the service is unsafe.
+  var protoOpacity = (_fpRow && !_isSafeProto(_fpRow.svc)) ? 'opacity:0.55;' : '';
+  document.getElementById('fp-opt-domain').style.cssText = 'margin-bottom:10px;padding:10px 12px;border-radius:6px;cursor:pointer;' + (t === 'domain' ? selStyle : defStyle);
+  document.getElementById('fp-opt-proto').style.cssText  = 'margin-bottom:14px;padding:10px 12px;border-radius:6px;cursor:pointer;' + protoOpacity + (t === 'proto'  ? selStyle : defStyle);
+  fpUpdateSubmitEnabled();
+}
+
+function fpUpdateSubmitEnabled() {
+  var reason = document.getElementById('fp-reason-input').value.trim();
+  var pat    = document.getElementById('fp-domain-input').value.trim();
+  var needPat = (_fpType === 'domain') && !pat;
+  document.getElementById('fp-submit-btn').disabled = (_fpType === null) || (reason === '') || needPat;
+}
+
+function fpDialogClose() {
+  document.getElementById('fp-dialog').style.display = 'none';
+}
+
+function fpSubmit() {
+  if (!_fpType || !_fpRow) return;
+  var reason = document.getElementById('fp-reason-input').value.trim();
+  if (!reason) { document.getElementById('fp-reason-input').focus(); return; }
+
+  var fd = new FormData();
+  var url;
+  if (_fpType === 'domain') {
+    var pat = document.getElementById('fp-domain-input').value.trim();
+    if (!pat) { document.getElementById('fp-domain-input').focus(); return; }
+    url = '{{ url_for("fps_add_domain") }}';
+    fd.append('pattern', pat);
+    fd.append('reason', reason);
+  } else {
+    url = '{{ url_for("fps_add_protocol") }}';
+    fd.append('svc', _fpRow.svc);
+    fd.append('reason', reason);
+  }
+
+  document.getElementById('fp-submit-btn').disabled = true;
+  fetch(url, {method:'POST', body: fd})
+    .then(function() {
+      fpDialogClose();
+      // Drop the row out of the underlying array so the re-render skips it
+      // and onclick indices stay correct on the remaining rows. Then call
+      // the show fn that opened this view to rebuild the table in place.
+      if (_activeBeacons && _hbDevIdx !== null && _fpRowIdx !== null) {
+        _activeBeacons[_hbDevIdx].splice(_fpRowIdx, 1);
+        if (typeof _activeShowFn === 'function') {
+          _activeShowFn(_hbDevIdx);
+        }
+      }
+      var msg = document.getElementById('hb-fp-msg');
+      msg.textContent = 'FP added — row removed, will be suppressed in next report.';
+      msg.style.display = 'block';
+    })
+    .catch(function() {
+      document.getElementById('fp-submit-btn').disabled = false;
+    });
+}
+
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape') {
+    var sgModal = document.getElementById('sg-modal');
+    if (document.getElementById('fp-dialog').style.display !== 'none') {
+      fpDialogClose();
+    } else if (sgModal && sgModal.style.display !== 'none') {
+      sgModal.style.display = 'none';
+    } else {
+      document.getElementById('hb-modal').style.display = 'none';
+    }
+  }
+});
+
+// ── Suppressed-by-FPs card toggle + per-rule modal ────────────────────────────
+function sgCardToggle() {
+  var body = document.getElementById('sg-card-body');
+  var btn  = document.getElementById('sg-toggle-btn');
+  var open = body.style.display !== 'none';
+  body.style.display = open ? 'none' : '';
+  if (btn) btn.textContent = open ? 'Show FP' : 'Hide FP';
+}
+
+function sgShow(i) {
+  var g = SG[i];
+  if (!g) return;
+  document.getElementById('sg-modal-title').textContent =
+    'Suppressed by ' + g.rule_type + ' rule: ' + g.rule;
+  document.getElementById('sg-modal-sub').textContent =
+    g.reason + ' — ' + g.rows.length + ' row' + (g.rows.length !== 1 ? 's' : '');
+  var tb = document.getElementById('sg-modal-tbody');
+  tb.innerHTML = '';
+  g.rows.forEach(function(r) {
+    var sevBadge;
+    if      (r.severity === 'High')   sevBadge = '<span class="badge badge-high">High</span>';
+    else if (r.severity === 'Medium') sevBadge = '<span class="badge badge-med">Med</span>';
+    else if (r.severity === 'Low')    sevBadge = '<span class="badge badge-low">Low</span>';
+    else                              sevBadge = '<span class="badge badge-none">' + escHtml(r.severity) + '</span>';
+    var scoreCls = r.score >= 0.9 ? 'text-red' : r.score >= 0.8 ? 'text-yellow' : 'text-dim';
+    var tr = document.createElement('tr');
+    tr.innerHTML =
+      '<td class="mono">' + escHtml(r.label) + '</td>' +
+      '<td class="mono" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + escHtml(r.dest) + intelBadgeHtml(r.intel) + '</td>' +
+      '<td class="num"><span class="' + scoreCls + '" style="font-weight:600;">' + r.score.toFixed(3) + '</span></td>' +
+      '<td>' + sevBadge + '</td>' +
+      '<td class="mono text-dim" style="font-size:11px;">' + escHtml(r.svc) + '</td>';
+    tb.appendChild(tr);
+  });
+  document.getElementById('sg-modal').style.display = 'flex';
+}
+
+// ── Date picker ───────────────────────────────────────────────────────────────
+function dpToggle(e) {
+  e.stopPropagation();
+  const panel = document.getElementById('dp-panel');
+  const open = panel.style.display !== 'none';
+  panel.style.display = open ? 'none' : 'block';
+}
+
+function dpWeekToggle(el) {
+  const dates = el.nextElementSibling;
+  const arrow = el.querySelector('.dp-arrow');
+  const open = dates.style.display !== 'none';
+  dates.style.display = open ? 'none' : 'block';
+  arrow.textContent = open ? '›' : '⌄';
+}
+
+// Close panel on outside click
+document.addEventListener('click', function(e) {
+  const picker = document.getElementById('date-picker');
+  if (picker && !picker.contains(e.target)) {
+    document.getElementById('dp-panel').style.display = 'none';
+  }
+});
+
+// Device Hotlist column sort (High / Total / Max Score). Always descending.
+function sortHotlist(key) {
+  var tbody = document.getElementById('hotlist-tbody');
+  if (!tbody) return;
+  var attr = 'data-' + key;
+  var rows = Array.prototype.slice.call(tbody.querySelectorAll('tr'));
+  rows.sort(function(a, b) {
+    return parseFloat(b.getAttribute(attr)) - parseFloat(a.getAttribute(attr));
+  });
+  rows.forEach(function(r) { tbody.appendChild(r); });
+  document.querySelectorAll('.hl-ind').forEach(function(el) {
+    el.textContent = el.getAttribute('data-for') === key ? ' ▼' : '';
+  });
+}
+
+// Auto-expand the week containing the selected date on load
+document.addEventListener('DOMContentLoaded', function() {
+  const active = document.querySelector('.dp-item-active.dp-item-indent');
+  if (active) {
+    const weekDates = active.closest('.dp-week-dates');
+    if (weekDates) {
+      weekDates.style.display = 'block';
+      const arrow = weekDates.previousElementSibling.querySelector('.dp-arrow');
+      if (arrow) arrow.textContent = '⌄';
+    }
+  }
+  // Show default-sort indicator on Max Score (rows already arrive max-score sorted).
+  var maxInd = document.querySelector('.hl-ind[data-for="max"]');
+  if (maxInd) maxInd.textContent = ' ▼';
+});
+</script>
+
+<style>
+.dp-item {
+  display: block;
+  padding: 7px 14px;
+  font-size: 13px;
+  color: var(--text);
+  text-decoration: none;
+  cursor: pointer;
+}
+.dp-item:hover { background: var(--bg); }
+.dp-item-active { color: var(--accent); font-weight: 600; }
+.dp-item-indent { padding-left: 24px; }
+.dp-week {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 14px;
+  font-size: 13px;
+  color: var(--text-dim);
+  cursor: pointer;
+  border-top: 1px solid var(--border);
+  user-select: none;
+}
+.dp-week:first-child { border-top: none; }
+.dp-week:hover { background: var(--bg); color: var(--text); }
+.dp-arrow { font-size: 15px; line-height: 1; }
+</style>
+{% endblock %}

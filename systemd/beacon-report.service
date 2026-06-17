@@ -1,0 +1,14 @@
+[Unit]
+Description=BeaconButty — generate daily beacon threat report
+After=clickhouse-server.service rita-analyze.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/beacon-report.sh
+ExecStartPost=/bin/bash -c 'SEND_ALERTS=1 /usr/local/bin/beaconbutty-summary.sh'
+User=root
+EnvironmentFile=/etc/rita/env
+WorkingDirectory=/etc/rita
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=600
