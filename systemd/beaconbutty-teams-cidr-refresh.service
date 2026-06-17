@@ -1,0 +1,10 @@
+[Unit]
+Description=Refresh Microsoft Teams endpoint CIDRs from endpoints.office.com
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/beaconbutty-teams-cidr-refresh.py
+StandardOutput=append:/var/log/beaconbutty/teams-cidr-refresh.log
+StandardError=append:/var/log/beaconbutty/teams-cidr-refresh.log

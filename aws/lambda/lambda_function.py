@@ -47,6 +47,7 @@ ALERT_TYPE_LABELS = {
     "service_down":         "Service Down",
     "disk_critical":        "Disk Space Critical",
     "health_check_fail":    "Health Check Failed",
+    "teams_relay_anomaly":  "Teams Relay Anomaly (DragonForce pattern)",
 }
 
 

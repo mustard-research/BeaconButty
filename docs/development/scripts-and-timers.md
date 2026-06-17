@@ -35,6 +35,8 @@ Deployment happens via `scripts/05_configure.sh` (lines 89–104) using `install
 | `reboot-wrapper` | `/usr/local/sbin/reboot` | Intercepts `sudo reboot` | Clean shutdown before reboot |
 | `bb-reboot` | `/usr/local/bin/bb-reboot` | Called by reboot wrapper | Pre-stop ClickHouse, notify Slack |
 | `ip-intel.py` | `beaconbutty-ip-intel.py` | `beaconbutty-ip-intel.timer` | Daily refresh of external IP threat-intel cache (Shodan InternetDB + AbuseIPDB + Spamhaus DROP + Tor exit list) — see [External IP Intel](../investigation/external-ip-intel.md) |
+| `teams-cidr-refresh.py` | `beaconbutty-teams-cidr-refresh.py` | `beaconbutty-teams-cidr-refresh.timer` | Daily 03:30 — pull live Microsoft Teams CIDR + URL list from `endpoints.office.com`; output to `/var/lib/beaconbutty/teams-cidrs.json` |
+| `teams-relay-check.py` | `beaconbutty-teams-relay-check.py` | `beaconbutty-teams-relay-check.timer` | Every 15 min — DragonForce / Backdoor.Turn detector (Teams TURN C2 channel). See [Teams-Relay Detection](../investigation/teams-relay-detection.md) |
 
 ## Timer schedule
 

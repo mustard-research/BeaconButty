@@ -4405,7 +4405,9 @@ def health():
     return render_template("health.html", report=report, error=error,
                            alert_config=load_alert_config(),
                            cert=get_cert_info(),
-                           gate_stats=gate_stats)
+                           gate_stats=gate_stats,
+                           teams_detector_config=load_teams_detector_config(),
+                           teams_detector_report=load_teams_detector_report())
 
 
 ALERT_CONFIG_PATH = "/var/lib/beaconbutty/alert-config.json"
@@ -4423,6 +4425,7 @@ ALERT_TYPES = [
     "slow_cadence_digest",
     "health_check_fail",
     "sustained_high_cpu",
+    "teams_relay_anomaly",
 ]
 
 def load_alert_config():
@@ -4458,6 +4461,82 @@ def api_alert_config_set():
     cfg[alert_type] = enabled_val
     save_alert_config(cfg)
     return {"ok": True}
+
+
+# ── Teams-relay detector config ───────────────────────────────────────────────
+TEAMS_DETECTOR_CONFIG_PATH = "/var/lib/beaconbutty/teams-detector-config.json"
+TEAMS_DETECTOR_REPORT_PATH = "/var/lib/beaconbutty/reports/teams-relay.json"
+TEAMS_DETECTOR_DEFAULTS = {
+    "enabled":               True,
+    "max_duration_hours":    2.0,
+    "min_kbps":              30.0,
+    "min_flow_seconds":      300,
+    "max_alerts_per_device": 5,
+}
+
+def load_teams_detector_config():
+    try:
+        with open(TEAMS_DETECTOR_CONFIG_PATH) as f:
+            cfg = json.load(f)
+    except Exception:
+        cfg = {}
+    out = dict(TEAMS_DETECTOR_DEFAULTS)
+    for k in out:
+        if k in cfg:
+            out[k] = cfg[k]
+    return out
+
+
+def save_teams_detector_config(cfg):
+    os.makedirs(os.path.dirname(TEAMS_DETECTOR_CONFIG_PATH), exist_ok=True)
+    out = dict(TEAMS_DETECTOR_DEFAULTS)
+    out.update({k: v for k, v in cfg.items() if k in TEAMS_DETECTOR_DEFAULTS})
+    with open(TEAMS_DETECTOR_CONFIG_PATH, "w") as f:
+        json.dump(out, f, indent=2)
+
+
+def load_teams_detector_report():
+    try:
+        with open(TEAMS_DETECTOR_REPORT_PATH) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+
+
+@app.route("/api/teams-detector/config", methods=["GET"])
+def api_teams_detector_config_get():
+    return {"config": load_teams_detector_config(),
+            "report": load_teams_detector_report()}
+
+
+@app.route("/api/teams-detector/config", methods=["POST"])
+def api_teams_detector_config_set():
+    data = request.get_json(force=True) or {}
+    cfg = load_teams_detector_config()
+    # Type coercion + range guards keep webapp errors local rather than
+    # corrupting the JSON file the detector reads.
+    try:
+        if "enabled" in data:
+            cfg["enabled"] = bool(data["enabled"])
+        if "max_duration_hours" in data:
+            v = float(data["max_duration_hours"])
+            if not (0.1 <= v <= 24.0):
+                return {"ok": False, "message": "max_duration_hours must be 0.1–24.0"}, 400
+            cfg["max_duration_hours"] = v
+        if "min_kbps" in data:
+            v = float(data["min_kbps"])
+            if not (0.0 <= v <= 10000.0):
+                return {"ok": False, "message": "min_kbps must be 0–10000"}, 400
+            cfg["min_kbps"] = v
+        if "min_flow_seconds" in data:
+            v = int(data["min_flow_seconds"])
+            if not (1 <= v <= 3600):
+                return {"ok": False, "message": "min_flow_seconds must be 1–3600"}, 400
+            cfg["min_flow_seconds"] = v
+    except (TypeError, ValueError) as e:
+        return {"ok": False, "message": f"Invalid value: {e}"}, 400
+    save_teams_detector_config(cfg)
+    return {"ok": True, "config": cfg}
 
 
 @app.route("/api/alert-test", methods=["POST"])

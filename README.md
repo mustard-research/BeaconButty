@@ -28,6 +28,7 @@ It is **not** a replacement for enterprise NDR. It's the thing you put on the sm
 - **Slow-cadence detector** — a second-pass detector for low-rate beacons (≤6 connections/day for ≥5 days) that RITA's same-day analysis can miss.
 - **JA4 TLS fingerprinting** — every TLS Client Hello fingerprinted on the wire, indexed per device, cross-referenced against [FoxIO's ja4db](https://github.com/FoxIO-LLC/ja4) for known-bad fingerprints.
 - **Threat-intel enrichment** — bare external IPs cross-referenced against Shodan InternetDB, AbuseIPDB, Spamhaus DROP, and the Tor exit list (daily refresh).
+- **Teams-relay anomaly detection** — spots the [DragonForce / Backdoor.Turn](docs/investigation/teams-relay-detection.md) C2-over-Teams-TURN pattern by combining JA4 anomaly, flow-duration outlier, and bandwidth-too-low signals against the live Microsoft Teams endpoint list.
 - **L2 anomaly detection** — ARP-level gateway-impersonation alerts via a custom Zeek logger.
 - **False-positive workflow** — point-and-click registry that suppresses by device MAC, destination domain/IP, or protocol, with apex-aware fnmatch and ASN-derived reason pre-fill.
 - **Slack alerts** — per-detector enable/disable, structural gates to keep noise down (e.g. "lonely + non-hyperscaler"), and a Slack-channel clear button when you really do need to read every alert.

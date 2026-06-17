@@ -1,0 +1,28 @@
+{
+  "version": "2026-06-17",
+  "source": "endpoints.office.com — Microsoft 365 Skype service area (ids 11, 12, 16, 17, 19, 27, 127)",
+  "comment": "Bundled seed list shipped with the repo. Daily refresh via beaconbutty-teams-cidr-refresh.timer overwrites /var/lib/beaconbutty/teams-cidrs.json with the live published set. Used by teams-relay-check.py to classify Teams-bound flows.",
+  "ipv4_cidrs": [
+    "52.112.0.0/14",
+    "52.122.0.0/15"
+  ],
+  "sni_suffixes": [
+    ".teams.microsoft.com",
+    ".teams.cloud.microsoft",
+    ".lync.com",
+    ".skype.com",
+    ".skypeforbusiness.com",
+    ".skypeassets.com",
+    ".mediaservices.windows.net",
+    ".teams.cdn.office.net",
+    ".sfbassets.com"
+  ],
+  "sni_exact": [
+    "teams.microsoft.com",
+    "teams.cloud.microsoft",
+    "adl.windows.com",
+    "aka.ms",
+    "join.secure.skypeassets.com",
+    "mlccdnprod.azureedge.net"
+  ]
+}

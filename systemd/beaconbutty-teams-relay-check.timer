@@ -1,0 +1,11 @@
+[Unit]
+Description=Run BeaconButty Teams-relay detector every 15 min
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=15min
+Persistent=true
+RandomizedDelaySec=30s
+
+[Install]
+WantedBy=timers.target

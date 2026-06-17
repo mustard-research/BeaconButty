@@ -50,6 +50,7 @@
         ("new_device",          "New device MAC seen in ARP / DHCP <small style='color:var(--text-muted,#888);'>(LAA-randomised MACs gated)</small>", "Medium", "Asset scan"),
         ("sustained_high_cpu",  "CPU mean &ge; 60% over a rolling 60-min window",        "Medium", "bb-watchdog — per minute"),
         ("slow_cadence_digest", "Daily roll-up of slow-cadence hunt candidates",         "Low",    "Daily digest — 08:00 UTC"),
+        ("teams_relay_anomaly", "Teams TURN flow with new-JA4, long-duration, or low-bandwidth (DragonForce / Backdoor.Turn pattern)", "High", "Teams-relay check — 15 min"),
       ] %}
       {% for atype, trigger, severity, source in rows %}
       <tr style="border-bottom:1px solid var(--border,#333);">
@@ -149,6 +150,83 @@
   </table>
 </div>
 {% endif %}
+
+<div class="card" style="margin-bottom:16px;">
+  <h3 style="margin:0 0 12px;">Teams Relay Detector
+    <small style="color:var(--text-muted,#888);font-weight:400;">— DragonForce / Backdoor.Turn pattern</small>
+  </h3>
+  <p style="font-size:13px;color:var(--text-muted,#888);margin:0 0 10px;">
+    Flags LAN-source flows destined for Microsoft Teams TURN relays whose JA4 fingerprint
+    is new for the device, OR whose duration exceeds the threshold, OR whose bandwidth
+    sits below the threshold. <strong>Alerts only fire when <code>new-JA4</code> is present
+    AND at least one other signal corroborates.</strong> Other findings show up in the table
+    below for hunting but do not page Slack — Teams idle behaviour trips structural signals
+    in isolation. See
+    <a href="https://github.com/mustard-research/BeaconButty/blob/master/docs/investigation/teams-relay-detection.md">docs/investigation/teams-relay-detection.md</a>.
+  </p>
+  <table style="font-size:13px;width:100%;border-collapse:collapse;margin-bottom:10px;">
+    <tr>
+      <td style="padding:4px 10px 4px 0;color:var(--text-muted,#888);width:200px;">Max flow duration (hours)</td>
+      <td style="padding:4px 0;">
+        <input id="teams-max-dur" type="number" step="0.25" min="0.1" max="24"
+               value="{{ teams_detector_config.max_duration_hours }}"
+               style="width:80px;background:#222;color:#eee;border:1px solid #444;padding:3px 6px;">
+      </td>
+    </tr>
+    <tr>
+      <td style="padding:4px 10px 4px 0;color:var(--text-muted,#888);">Min bandwidth (kbps)</td>
+      <td style="padding:4px 0;">
+        <input id="teams-min-kbps" type="number" step="5" min="0" max="10000"
+               value="{{ teams_detector_config.min_kbps }}"
+               style="width:80px;background:#222;color:#eee;border:1px solid #444;padding:3px 6px;">
+        <small style="color:var(--text-muted,#888);margin-left:10px;">
+          Flows lasting &ge; {{ teams_detector_config.min_flow_seconds }}s below this trigger an alert.
+        </small>
+      </td>
+    </tr>
+    <tr>
+      <td style="padding:4px 10px 4px 0;color:var(--text-muted,#888);">Last run</td>
+      <td style="padding:4px 0;color:var(--text-muted,#888);font-family:monospace;font-size:12px;">
+        {% if teams_detector_report %}
+          {{ teams_detector_report.generated }} —
+          scanned {{ teams_detector_report.flows_scanned }} Teams-bound flows,
+          {{ teams_detector_report.findings | length }} finding(s)
+          {% if teams_detector_report.cidr_version %}<br>
+          CIDR list v{{ teams_detector_report.cidr_version }}{% endif %}
+        {% else %}
+          <em>never run</em>
+        {% endif %}
+      </td>
+    </tr>
+  </table>
+  <button class="btn btn-sm" onclick="saveTeamsDetectorConfig()">Save thresholds</button>
+  <span id="teams-detector-status" style="font-size:12px;color:var(--text-muted,#888);margin-left:10px;"></span>
+
+  {% if teams_detector_report and teams_detector_report.findings %}
+  <table style="margin-top:12px;font-size:12px;width:100%;border-collapse:collapse;">
+    <thead>
+      <tr style="border-bottom:1px solid var(--border,#333);">
+        <th style="text-align:left;padding:4px 10px 4px 0;color:var(--text-muted,#888);font-weight:600;">Source</th>
+        <th style="text-align:left;padding:4px 10px 4px 0;color:var(--text-muted,#888);font-weight:600;">Dst</th>
+        <th style="text-align:left;padding:4px 10px 4px 0;color:var(--text-muted,#888);font-weight:600;">Signals</th>
+        <th style="text-align:right;padding:4px 10px 4px 0;color:var(--text-muted,#888);font-weight:600;">Duration (h)</th>
+        <th style="text-align:right;padding:4px 0 4px 0;color:var(--text-muted,#888);font-weight:600;">kbps</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for f in teams_detector_report.findings %}
+      <tr style="border-bottom:1px solid var(--border,#333);">
+        <td style="padding:4px 10px 4px 0;font-family:monospace;">{{ f.src }}</td>
+        <td style="padding:4px 10px 4px 0;font-family:monospace;">{{ f.dst }}:{{ f.dst_port }}</td>
+        <td style="padding:4px 10px 4px 0;color:#ff9800;">{{ f.signals | join('+') }}</td>
+        <td style="padding:4px 10px 4px 0;text-align:right;">{{ f.duration_h }}</td>
+        <td style="padding:4px 0;text-align:right;">{{ f.kbps }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>
 
 <div class="card" style="margin-bottom:16px;">
   <h3 style="margin:0 0 12px;">TLS Certificate</h3>
@@ -345,6 +423,28 @@
 </div>
 
 <script>
+function saveTeamsDetectorConfig() {
+  var maxDur = parseFloat(document.getElementById('teams-max-dur').value);
+  var minKbps = parseFloat(document.getElementById('teams-min-kbps').value);
+  var status = document.getElementById('teams-detector-status');
+
+  fetch('/api/teams-detector/config', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({max_duration_hours: maxDur, min_kbps: minKbps})
+  })
+  .then(function(r) { return r.json().then(function(d) { return {ok: r.ok, body: d}; }); })
+  .then(function(x) {
+    status.textContent = x.ok ? '✓ saved' : '✗ ' + (x.body.message || 'failed');
+    status.style.color = x.ok ? 'var(--green, #4caf50)' : 'var(--red, #f44336)';
+    setTimeout(function() { status.textContent = ''; }, 3000);
+  })
+  .catch(function(e) {
+    status.textContent = '✗ request failed';
+    status.style.color = 'var(--red, #f44336)';
+  });
+}
+
 function toggleAlert(checkbox) {
   var atype   = checkbox.dataset.atype;
   var enabled = checkbox.checked;
