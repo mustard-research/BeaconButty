@@ -52,7 +52,11 @@
         ("slow_cadence_digest", "Daily roll-up of slow-cadence hunt candidates",         "Low",    "Daily digest — 08:00 UTC"),
         ("teams_relay_anomaly", "Teams TURN flow with new-JA4, long-duration, or low-bandwidth (DragonForce / Backdoor.Turn pattern)", "High", "Teams-relay check — 15 min"),
       ] %}
-      {% for atype, trigger, severity, source in rows %}
+      {# Render in severity order (High → Medium → Low) regardless of the
+         order rows are defined above. Add new rows wherever convenient;
+         this loop keeps the displayed order stable. #}
+      {% for sev in ['High', 'Medium', 'Low'] %}
+        {% for atype, trigger, severity, source in rows if severity == sev %}
       <tr style="border-bottom:1px solid var(--border,#333);">
         <td style="padding:6px 10px 6px 0;">{{ trigger | safe }}</td>
         <td style="padding:6px 10px 6px 0;white-space:nowrap;">
@@ -78,6 +82,7 @@
           </label>
         </td>
       </tr>
+        {% endfor %}
       {% endfor %}
     </tbody>
   </table>
