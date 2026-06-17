@@ -16,7 +16,7 @@ This repository is the full source: install scripts, systemd units, the Flask da
 
 EDR catches malware on endpoints; firewalls block known-bad destinations; SIEMs ingest logs from systems that already know they're being attacked. The gap is the unmanaged corner of a small network — IoT devices, family-member laptops, anything that can't or won't run an agent — beaconing out to a CDN-fronted C2. There's nothing dramatic to alert on per-flow; the signal is *periodicity over hours or days*.
 
-That's what RITA does well. BeaconButty is an opinionated packaging of Zeek + RITA + ClickHouse onto a single ~£420 box you can set up in an afternoon, plus a webapp that surfaces what RITA finds in a form a human can act on (with a fast false-positive workflow so it stays useful past the first day).
+That's what RITA does well. BeaconButty is an opinionated packaging of Zeek + RITA + ClickHouse onto a single ~£325 box you can set up in an afternoon, plus a webapp that surfaces what RITA finds in a form a human can act on (with a fast false-positive workflow so it stays useful past the first day).
 
 It is **not** a replacement for enterprise NDR. It's the thing you put on the small network nobody is monitoring.
 
@@ -72,12 +72,12 @@ Deeper writeups in [`docs/architecture/`](docs/architecture/) — start with [sy
 
 ## Hardware
 
-Total cost ~£420 (UK retail, mid-2026):
+Total cost ~£325 (UK retail, mid-2026):
 
 | Component | Why | Notes |
 |---|---|---|
 | Raspberry Pi 5 8GB (~£170) | ClickHouse + Zeek + RITA all in 8GB | 4GB works but is tight |
-| Pironman 5 NVMe case (~£170) | Active cooling, NVMe slot, OLED, RGB fan | Tiered fan control script included |
+| Pironman 5 NVMe case (~£75) | Active cooling, NVMe slot, OLED, RGB fan | Tiered fan control script included |
 | 1TB NVMe SSD (~£60) | Zeek logs + ClickHouse history; SSD endurance via log2ram | Any M.2 2280 fits |
 | USB-C 2.5G Ethernet adapter (~£20) | Second NIC for WAN-side capture | Pi 5 only has one onboard |
 | MicroSD 64GB (~£10) | Backup OS for rescue boot | Optional |
