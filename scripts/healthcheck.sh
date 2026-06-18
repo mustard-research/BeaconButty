@@ -450,11 +450,28 @@ if [[ -d "$CURRENT" ]]; then
     OK "Completed daily log directories: ${DAILY_COUNT}"
 
     # conn.log capture rate — rows with ts newer than 5 min ago
-    # Catches "Zeek process up but not capturing" (mtime alone can lie)
+    # Catches "Zeek process up but not capturing" (mtime alone can lie).
+    # Zeek rotates conn.log hourly, so if the health check runs in the first
+    # few minutes of an hour, the live file only covers a few seconds. Also
+    # scan the most recent archived conn.*.log.gz so the window is faithful
+    # across rotation boundaries.
     if [[ -f "${CURRENT}/conn.log" ]]; then
         FIVE_MIN_AGO=$(( $(date +%s) - 300 ))
-        RECENT_CONNS=$(awk -v t="$FIVE_MIN_AGO" '!/^#/ && ($1+0) > t' \
+        LIVE_CONNS=$(awk -v t="$FIVE_MIN_AGO" '!/^#/ && ($1+0) > t' \
             "${CURRENT}/conn.log" 2>/dev/null | wc -l)
+        # Pull archive rows only when the live file was rotated inside the
+        # window. Otherwise the live file already covers it.
+        LIVE_FIRST_TS=$(awk '!/^#/{print int($1); exit}' \
+            "${CURRENT}/conn.log" 2>/dev/null)
+        ARCH_CONNS=0
+        if [[ -n "$LIVE_FIRST_TS" && "$LIVE_FIRST_TS" -gt "$FIVE_MIN_AGO" ]]; then
+            LATEST_ARCHIVE=$(ls -t "$LOG_DIR"/[0-9]*/conn.*.log.gz 2>/dev/null | head -1)
+            if [[ -n "$LATEST_ARCHIVE" ]]; then
+                ARCH_CONNS=$(zcat "$LATEST_ARCHIVE" 2>/dev/null \
+                    | awk -v t="$FIVE_MIN_AGO" '!/^#/ && ($1+0) > t' | wc -l)
+            fi
+        fi
+        RECENT_CONNS=$(( LIVE_CONNS + ARCH_CONNS ))
         if [[ "$RECENT_CONNS" -gt 10 ]]; then
             OK "Capture rate: ${RECENT_CONNS} conn rows in last 5 min"
         elif [[ "$RECENT_CONNS" -gt 0 ]]; then
