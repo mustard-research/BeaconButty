@@ -164,9 +164,9 @@
     Flags LAN-source flows destined for Microsoft Teams TURN relays whose JA4 fingerprint
     is new for the device, OR whose duration exceeds the threshold, OR whose bandwidth
     sits below the threshold. <strong>Alerts only fire when <code>new-JA4</code> is present
-    AND at least one other signal corroborates.</strong> Other findings show up in the table
-    below for hunting but do not page Slack — Teams idle behaviour trips structural signals
-    in isolation. See
+    AND at least one other signal corroborates.</strong> The table below shows only
+    alertable findings — BAU rows (single-signal, or multi-signal without <code>new-JA4</code>)
+    are Teams idle behaviour and are collapsed behind a toggle. See
     <a href="https://github.com/mustard-research/BeaconButty/blob/master/docs/investigation/teams-relay-detection.md">docs/investigation/teams-relay-detection.md</a>.
   </p>
   <table style="font-size:13px;width:100%;border-collapse:collapse;margin-bottom:10px;">
@@ -208,6 +208,20 @@
   <span id="teams-detector-status" style="font-size:12px;color:var(--text-muted,#888);margin-left:10px;"></span>
 
   {% if teams_detector_report and teams_detector_report.findings %}
+  {# Mirror the alert gate in scripts/teams-relay-check.py:461 — single-signal
+     findings (and multi-signal without new-JA4) are Teams idle behaviour and
+     never page Slack. Hide them by default so the dashboard reflects what
+     actually alerts. Toggle below reveals them for hunting. #}
+  {% set alertable = [] %}
+  {% set bau = [] %}
+  {% for f in teams_detector_report.findings %}
+    {% if 'new-JA4' in f.signals and f.signals|length >= 2 %}
+      {% set _ = alertable.append(f) %}
+    {% else %}
+      {% set _ = bau.append(f) %}
+    {% endif %}
+  {% endfor %}
+  {% if alertable %}
   <table style="margin-top:12px;font-size:12px;width:100%;border-collapse:collapse;">
     <thead>
       <tr style="border-bottom:1px solid var(--border,#333);">
@@ -219,7 +233,7 @@
       </tr>
     </thead>
     <tbody>
-      {% for f in teams_detector_report.findings %}
+      {% for f in alertable %}
       <tr style="border-bottom:1px solid var(--border,#333);">
         <td style="padding:4px 10px 4px 0;font-family:monospace;">{{ f.src }}</td>
         <td style="padding:4px 10px 4px 0;font-family:monospace;">{{ f.dst }}:{{ f.dst_port }}</td>
@@ -230,6 +244,36 @@
       {% endfor %}
     </tbody>
   </table>
+  {% endif %}
+  {% if bau %}
+  <div style="margin-top:{% if alertable %}10px{% else %}12px{% endif %};font-size:12px;color:var(--text-muted,#888);">
+    {{ bau | length }} BAU finding(s) suppressed
+    (single-signal, or multi-signal without <code>new-JA4</code> — Teams presence WebSockets &amp; TURN keepalives).
+    <a href="#" id="teams-bau-toggle" onclick="toggleTeamsBau(event)" style="color:var(--link,#4a9eff);">Show</a>
+  </div>
+  <table id="teams-bau-table" style="display:none;margin-top:8px;font-size:12px;width:100%;border-collapse:collapse;opacity:0.75;">
+    <thead>
+      <tr style="border-bottom:1px solid var(--border,#333);">
+        <th style="text-align:left;padding:4px 10px 4px 0;color:var(--text-muted,#888);font-weight:600;">Source</th>
+        <th style="text-align:left;padding:4px 10px 4px 0;color:var(--text-muted,#888);font-weight:600;">Dst</th>
+        <th style="text-align:left;padding:4px 10px 4px 0;color:var(--text-muted,#888);font-weight:600;">Signals</th>
+        <th style="text-align:right;padding:4px 10px 4px 0;color:var(--text-muted,#888);font-weight:600;">Duration (h)</th>
+        <th style="text-align:right;padding:4px 0 4px 0;color:var(--text-muted,#888);font-weight:600;">kbps</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for f in bau %}
+      <tr style="border-bottom:1px solid var(--border,#333);">
+        <td style="padding:4px 10px 4px 0;font-family:monospace;">{{ f.src }}</td>
+        <td style="padding:4px 10px 4px 0;font-family:monospace;">{{ f.dst }}:{{ f.dst_port }}</td>
+        <td style="padding:4px 10px 4px 0;color:var(--text-muted,#888);">{{ f.signals | join('+') }}</td>
+        <td style="padding:4px 10px 4px 0;text-align:right;">{{ f.duration_h }}</td>
+        <td style="padding:4px 0;text-align:right;">{{ f.kbps }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
   {% endif %}
 </div>
 
@@ -428,6 +472,15 @@
 </div>
 
 <script>
+function toggleTeamsBau(ev) {
+  ev.preventDefault();
+  var tbl = document.getElementById('teams-bau-table');
+  var lnk = document.getElementById('teams-bau-toggle');
+  var shown = tbl.style.display !== 'none';
+  tbl.style.display = shown ? 'none' : 'table';
+  lnk.textContent = shown ? 'Show' : 'Hide';
+}
+
 function saveTeamsDetectorConfig() {
   var maxDur = parseFloat(document.getElementById('teams-max-dur').value);
   var minKbps = parseFloat(document.getElementById('teams-min-kbps').value);
