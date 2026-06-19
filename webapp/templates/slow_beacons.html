@@ -222,17 +222,28 @@
           <td style="white-space:nowrap;">
             {% if c.sni %}
               {% set dest_default = '*.' ~ (c.sni.split('.', 1)[1] if '.' in c.sni else c.sni) %}
+              {% set fp_mode = 'dst' %}
             {% elif c.http_host %}
               {% set dest_default = '*.' ~ (c.http_host.split('.', 1)[1] if '.' in c.http_host else c.http_host) %}
+              {% set fp_mode = 'dst' %}
+            {% elif c.dst_org %}
+              {# No domain handle — fall back to org-name fnmatch. Default
+                 pattern is the first whitespace-delimited token wrapped in
+                 wildcards (e.g. "Shenzhen Tencent …" → "*Tencent*" when
+                 the operator strips the city), but the user edits it. #}
+              {% set dest_default = '*' ~ c.dst_org.split(' ')[0] ~ '*' %}
+              {% set fp_mode = 'org' %}
             {% else %}
               {% set dest_default = c.dst %}
+              {% set fp_mode = 'dst' %}
             {% endif %}
             <button type="button" class="btn btn-sm" style="width:100%;"
                     data-pattern="{{ dest_default }}"
                     data-reason="{{ c.dst_org or '' }}"
-                    onclick="slowFpOpenDst(this)"
-                    title="Suppress this destination — pattern is editable">
-              FP&nbsp;dst
+                    data-fp-mode="{{ fp_mode }}"
+                    onclick="slowFpOpen(this)"
+                    title="{% if fp_mode == 'org' %}Suppress all destinations attributed to this GeoIP org — pattern is editable{% else %}Suppress this destination — pattern is editable{% endif %}">
+              FP&nbsp;{{ fp_mode }}
             </button>
           </td>
         </tr>
@@ -251,8 +262,8 @@
 {# ── Destination FP dialog ── #}
 <div id="sfp-dialog" style="display:none;position:fixed;inset:0;z-index:1100;background:rgba(0,0,0,.5);align-items:center;justify-content:center;">
   <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:24px;width:380px;max-width:90vw;">
-    <div style="font-weight:600;margin-bottom:6px;">Add False Positive</div>
-    <div style="font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px;">Destination pattern <span style="text-transform:none;letter-spacing:0;font-weight:400;">(editable — generalise with <code>*.parent.tld</code> if needed)</span></div>
+    <div id="sfp-title" style="font-weight:600;margin-bottom:6px;">Add False Positive</div>
+    <div id="sfp-pattern-label" style="font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px;">Destination pattern <span style="text-transform:none;letter-spacing:0;font-weight:400;">(editable — generalise with <code>*.parent.tld</code> if needed)</span></div>
     <input id="sfp-pattern" class="mono" type="text" oninput="slowFpUpdateSubmitEnabled()"
            style="width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:13px;margin-bottom:16px;">
     <label style="display:block;font-size:13px;margin-bottom:6px;">Reason <span style="color:var(--text-dim)">(required)</span></label>
@@ -268,16 +279,41 @@
 </div>
 
 <script>
-// Destination FP — pattern + reason editable in a modal. Submission goes
-// via fetch so we can fade the originating row out for instant feedback
-// instead of full-page redirecting (matches the network.html flow).
+// FP modal — pattern + reason editable in a single dialog used for two FP
+// types. "dst" mode submits to /fps/add-domain (fnmatch on SNI/Host/dst);
+// "org" mode submits to /fps/add-org (fnmatch on GeoIP ASN owner — the
+// only handle when SNI/Host/DNS are all empty). Submission goes via fetch
+// so we can fade the originating row out for instant feedback.
 var _sfpBtn = null;
+var _sfpUrl = '{{ url_for("fps_add_domain") }}';   // default; overridden in slowFpOpen()
 
-function slowFpOpenDst(btn) {
+var _SFP_URLS = {
+  dst: '{{ url_for("fps_add_domain") }}',
+  org: '{{ url_for("fps_add_org") }}',
+};
+
+function slowFpOpen(btn) {
   _sfpBtn = btn;
+  var mode = btn.dataset.fpMode || 'dst';
+  _sfpUrl  = _SFP_URLS[mode] || _SFP_URLS.dst;
   document.getElementById('sfp-pattern').value = btn.dataset.pattern || '';
   document.getElementById('sfp-reason').value  = btn.dataset.reason  || '';
   document.getElementById('sfp-msg').style.display = 'none';
+
+  if (mode === 'org') {
+    document.getElementById('sfp-title').textContent =
+      'Add Organisation FP';
+    document.getElementById('sfp-pattern-label').innerHTML =
+      'Org name pattern <span style="text-transform:none;letter-spacing:0;font-weight:400;">' +
+      '(fnmatch against the GeoIP ASN owner — e.g. <code>*Tencent*</code>)</span>';
+  } else {
+    document.getElementById('sfp-title').textContent =
+      'Add False Positive';
+    document.getElementById('sfp-pattern-label').innerHTML =
+      'Destination pattern <span style="text-transform:none;letter-spacing:0;font-weight:400;">' +
+      '(editable — generalise with <code>*.parent.tld</code> if needed)</span>';
+  }
+
   slowFpUpdateSubmitEnabled();
   document.getElementById('sfp-dialog').style.display = 'flex';
   var rea = document.getElementById('sfp-reason');
@@ -306,7 +342,7 @@ function slowFpSubmit() {
   fd.append('pattern', pat);
   fd.append('reason', reason);
 
-  fetch('{{ url_for("fps_add_domain") }}', {method: 'POST', body: fd})
+  fetch(_sfpUrl, {method: 'POST', body: fd})
     .then(function(r) { return {ok: r.ok}; })
     .then(function(data) {
       if (data.ok) {

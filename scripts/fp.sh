@@ -13,11 +13,13 @@ set -euo pipefail
 #   beaconbutty-fp.sh remove-domain <pattern>
 #   beaconbutty-fp.sh add-protocol <svc> "<reason>"    (e.g. "123:udp:ntp")
 #   beaconbutty-fp.sh remove-protocol <svc>
+#   beaconbutty-fp.sh add-org <pattern> "<reason>"     (e.g. "*Tencent*" — fnmatch on GeoIP ASN owner)
+#   beaconbutty-fp.sh remove-org <pattern>
 #   beaconbutty-fp.sh migrate                          (convert old IP-keyed conf to MAC-keyed)
 #
 # Config is stored in /var/lib/beaconbutty/false-positives.conf as JSON v2:
 #   { "version": 2, "devices": {mac: reason}, "domains": {pattern: reason},
-#                               "protocols": {svc: reason} }
+#                   "protocols": {svc: reason}, "orgs": {pattern: reason} }
 # v1 files (flat MAC dict) are auto-detected and treated as devices-only.
 
 FP_FILE="/var/lib/beaconbutty/false-positives.conf"
@@ -32,6 +34,8 @@ usage() {
     echo "  beaconbutty-fp.sh remove-domain <pattern>"
     echo "  beaconbutty-fp.sh add-protocol <svc> \"<reason>\"    (e.g. '123:udp:ntp')"
     echo "  beaconbutty-fp.sh remove-protocol <svc>"
+    echo "  beaconbutty-fp.sh add-org <pattern> \"<reason>\"     (e.g. '*Tencent*' — GeoIP ASN owner)"
+    echo "  beaconbutty-fp.sh remove-org <pattern>"
     echo "  beaconbutty-fp.sh migrate                          (convert old IP-keyed conf)"
     exit 1
 }
@@ -54,15 +58,17 @@ def load_conf(fp_file):
         with open(fp_file) as f:
             data = json.load(f)
     except FileNotFoundError:
-        return {"version": 2, "devices": {}, "domains": {}, "protocols": {}}
+        return {"version": 2, "devices": {}, "domains": {}, "protocols": {}, "orgs": {}}
     if "version" not in data:
-        return {"version": 2, "devices": data, "domains": {}, "protocols": {}}
+        return {"version": 2, "devices": data, "domains": {}, "protocols": {}, "orgs": {}}
+    data.setdefault("orgs", {})
     return data
 
 conf = load_conf(fp_file)
 devices   = conf.get("devices", {})
 domains   = conf.get("domains", {})
 protocols = conf.get("protocols", {})
+orgs      = conf.get("orgs", {})
 
 mac_to_ip = {}
 try:
@@ -74,7 +80,7 @@ try:
 except FileNotFoundError:
     pass
 
-total = len(devices) + len(domains) + len(protocols)
+total = len(devices) + len(domains) + len(protocols) + len(orgs)
 if total == 0:
     print("No false positives registered.")
     print("Add one with: beaconbutty-fp.sh add <ip|mac> \"<reason>\"")
@@ -104,7 +110,15 @@ else:
             print(f"  {svc:<30}  {reason}")
         print()
 
-    print(f"{total} total. Remove with: beaconbutty-fp.sh remove / remove-domain / remove-protocol")
+    if orgs:
+        print(f"ORGANISATIONS  ({len(orgs)} registered — suppresses beacons whose GeoIP ASN owner matches)")
+        print(f"  {'Pattern':<30}  Reason")
+        print('  ' + '─' * 68)
+        for pat, reason in sorted(orgs.items()):
+            print(f"  {pat:<30}  {reason}")
+        print()
+
+    print(f"{total} total. Remove with: beaconbutty-fp.sh remove / remove-domain / remove-protocol / remove-org")
 PYEOF
         ;;
 
@@ -135,9 +149,10 @@ def load_conf(fp_file):
         with open(fp_file) as f:
             data = json.load(f)
     except FileNotFoundError:
-        return {"version": 2, "devices": {}, "domains": {}, "protocols": {}}
+        return {"version": 2, "devices": {}, "domains": {}, "protocols": {}, "orgs": {}}
     if "version" not in data:
-        return {"version": 2, "devices": data, "domains": {}, "protocols": {}}
+        return {"version": 2, "devices": data, "domains": {}, "protocols": {}, "orgs": {}}
+    data.setdefault("orgs", {})
     return data
 
 def save_conf(fp_file, conf):
@@ -214,9 +229,10 @@ def load_conf(fp_file):
         with open(fp_file) as f:
             data = json.load(f)
     except FileNotFoundError:
-        return {"version": 2, "devices": {}, "domains": {}, "protocols": {}}
+        return {"version": 2, "devices": {}, "domains": {}, "protocols": {}, "orgs": {}}
     if "version" not in data:
-        return {"version": 2, "devices": data, "domains": {}, "protocols": {}}
+        return {"version": 2, "devices": data, "domains": {}, "protocols": {}, "orgs": {}}
+    data.setdefault("orgs", {})
     return data
 
 def save_conf(fp_file, conf):
@@ -294,9 +310,10 @@ def load_conf(fp_file):
         with open(fp_file) as f:
             data = json.load(f)
     except FileNotFoundError:
-        return {"version": 2, "devices": {}, "domains": {}, "protocols": {}}
+        return {"version": 2, "devices": {}, "domains": {}, "protocols": {}, "orgs": {}}
     if "version" not in data:
-        return {"version": 2, "devices": data, "domains": {}, "protocols": {}}
+        return {"version": 2, "devices": data, "domains": {}, "protocols": {}, "orgs": {}}
+    data.setdefault("orgs", {})
     return data
 
 def save_conf(fp_file, conf):
@@ -332,9 +349,10 @@ def load_conf(fp_file):
         with open(fp_file) as f:
             data = json.load(f)
     except FileNotFoundError:
-        return {"version": 2, "devices": {}, "domains": {}, "protocols": {}}
+        return {"version": 2, "devices": {}, "domains": {}, "protocols": {}, "orgs": {}}
     if "version" not in data:
-        return {"version": 2, "devices": data, "domains": {}, "protocols": {}}
+        return {"version": 2, "devices": data, "domains": {}, "protocols": {}, "orgs": {}}
+    data.setdefault("orgs", {})
     return data
 
 def save_conf(fp_file, conf):
@@ -378,9 +396,10 @@ def load_conf(fp_file):
         with open(fp_file) as f:
             data = json.load(f)
     except FileNotFoundError:
-        return {"version": 2, "devices": {}, "domains": {}, "protocols": {}}
+        return {"version": 2, "devices": {}, "domains": {}, "protocols": {}, "orgs": {}}
     if "version" not in data:
-        return {"version": 2, "devices": data, "domains": {}, "protocols": {}}
+        return {"version": 2, "devices": data, "domains": {}, "protocols": {}, "orgs": {}}
+    data.setdefault("orgs", {})
     return data
 
 def save_conf(fp_file, conf):
@@ -416,9 +435,10 @@ def load_conf(fp_file):
         with open(fp_file) as f:
             data = json.load(f)
     except FileNotFoundError:
-        return {"version": 2, "devices": {}, "domains": {}, "protocols": {}}
+        return {"version": 2, "devices": {}, "domains": {}, "protocols": {}, "orgs": {}}
     if "version" not in data:
-        return {"version": 2, "devices": data, "domains": {}, "protocols": {}}
+        return {"version": 2, "devices": data, "domains": {}, "protocols": {}, "orgs": {}}
+    data.setdefault("orgs", {})
     return data
 
 def save_conf(fp_file, conf):
@@ -438,6 +458,92 @@ print(f"Run beaconbutty-summary.sh to see the updated report.")
 PYEOF
         ;;
 
+    add-org)
+        if [[ $# -lt 3 ]]; then
+            echo "Error: 'add-org' requires <pattern> and \"<reason>\""
+            echo "  Example: beaconbutty-fp.sh add-org '*Tencent*' 'Tencent Cloud'"
+            exit 1
+        fi
+        PATTERN="$2"
+        REASON="$3"
+        if [[ ${#REASON} -gt 50 ]]; then
+            echo "Error: reason must be 50 characters or fewer (got ${#REASON})."
+            exit 1
+        fi
+        python3 - "$FP_FILE" "$PATTERN" "$REASON" <<'PYEOF'
+import json, sys, os
+
+fp_file = sys.argv[1]
+pattern = sys.argv[2]
+reason  = sys.argv[3]
+
+def load_conf(fp_file):
+    try:
+        with open(fp_file) as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        return {"version": 2, "devices": {}, "domains": {}, "protocols": {}, "orgs": {}}
+    if "version" not in data:
+        return {"version": 2, "devices": data, "domains": {}, "protocols": {}, "orgs": {}}
+    data.setdefault("orgs", {})
+    return data
+
+def save_conf(fp_file, conf):
+    os.makedirs(os.path.dirname(fp_file), exist_ok=True)
+    with open(fp_file, 'w') as f:
+        json.dump(conf, f, indent=2, sort_keys=True)
+
+conf = load_conf(fp_file)
+already = pattern in conf["orgs"]
+conf["orgs"][pattern] = reason
+save_conf(fp_file, conf)
+
+verb = "Updated" if already else "Added  "
+print(f"{verb}: {pattern}  →  {reason}")
+print(f"Refresh /beacons/slow to see the updated hunting surface.")
+PYEOF
+        ;;
+
+    remove-org)
+        if [[ $# -lt 2 ]]; then
+            echo "Error: 'remove-org' requires <pattern>"
+            exit 1
+        fi
+        PATTERN="$2"
+        python3 - "$FP_FILE" "$PATTERN" <<'PYEOF'
+import json, sys, os
+
+fp_file = sys.argv[1]
+pattern = sys.argv[2]
+
+def load_conf(fp_file):
+    try:
+        with open(fp_file) as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        return {"version": 2, "devices": {}, "domains": {}, "protocols": {}, "orgs": {}}
+    if "version" not in data:
+        return {"version": 2, "devices": data, "domains": {}, "protocols": {}, "orgs": {}}
+    data.setdefault("orgs", {})
+    return data
+
+def save_conf(fp_file, conf):
+    os.makedirs(os.path.dirname(fp_file), exist_ok=True)
+    with open(fp_file, 'w') as f:
+        json.dump(conf, f, indent=2, sort_keys=True)
+
+conf = load_conf(fp_file)
+if pattern not in conf["orgs"]:
+    print(f"Not found: {pattern}  (not registered as an organisation false positive)")
+    sys.exit(1)
+
+reason = conf["orgs"].pop(pattern)
+save_conf(fp_file, conf)
+print(f"Removed: {pattern}  (was: {reason})")
+print(f"Refresh /beacons/slow to see the updated hunting surface.")
+PYEOF
+        ;;
+
     migrate)
         python3 - "$FP_FILE" "$LEASES_FILE" <<'PYEOF'
 import json, sys, os, re
@@ -454,7 +560,8 @@ def load_conf(fp_file):
     except FileNotFoundError:
         return None
     if "version" not in data:
-        return {"version": 2, "devices": data, "domains": {}, "protocols": {}}
+        return {"version": 2, "devices": data, "domains": {}, "protocols": {}, "orgs": {}}
+    data.setdefault("orgs", {})
     return data
 
 def save_conf(fp_file, conf):
@@ -475,7 +582,7 @@ if raw.get("version") == 2:
     sys.exit(0)
 
 # v1: flat MAC dict
-conf = {"version": 2, "devices": raw, "domains": {}, "protocols": {}}
+conf = {"version": 2, "devices": raw, "domains": {}, "protocols": {}, "orgs": {}}
 fps  = conf["devices"]
 
 if all(MAC_RE.match(k) for k in fps):

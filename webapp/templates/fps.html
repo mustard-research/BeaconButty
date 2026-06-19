@@ -134,6 +134,66 @@
   {% endif %}
 </div>
 
+{# ── Organisations ── #}
+<div class="card">
+  <div class="card-title">Organisations <small>suppresses beacons whose GeoIP ASN owner matches — for no-host destinations on /beacons/slow</small></div>
+
+  <form method="post" action="{{ url_for('fps_add_org') }}" style="margin-bottom:16px;">
+    <div class="form-row">
+      <div class="form-group">
+        <label for="fp-org-pat">Pattern</label>
+        <input type="text" id="fp-org-pat" name="pattern"
+               placeholder="*Tencent* or *Alibaba*"
+               required style="min-width:220px;">
+      </div>
+      <div class="form-group">
+        <label for="fp-org-reason">Reason <span class="text-dim">(max 50 chars)</span></label>
+        <input type="text" id="fp-org-reason" name="reason"
+               placeholder="Tencent Cloud — Xin's iPhone apps"
+               maxlength="50" required style="min-width:240px;">
+      </div>
+      <div class="form-group" style="justify-content:flex-end;">
+        <label>&nbsp;</label>
+        <button type="submit" class="btn btn-primary">Add Organisation</button>
+      </div>
+    </div>
+  </form>
+
+  {% if org_rows %}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Pattern</th>
+          <th>Reason</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in org_rows %}
+        <tr>
+          <td class="mono">{{ row.pattern }}</td>
+          <td>{{ row.reason }}</td>
+          <td style="text-align:right;">
+            <form method="post" action="{{ url_for('fps_remove_org') }}" class="bb-confirm-form">
+              <input type="hidden" name="pattern" value="{{ row.pattern }}">
+              <button type="button" class="btn btn-danger"
+                      onclick="bbConfirmForm(this, 'Remove organisation FP: {{ row.pattern }}?')">Remove</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+    <div class="empty-state">
+      <div class="empty-icon">🏢</div>
+      <p>No organisation false positives registered.</p>
+    </div>
+  {% endif %}
+</div>
+
 {# ── Protocols ── #}
 <div class="card">
   <div class="card-title">Protocols <small>suppresses beacons on matching service</small></div>

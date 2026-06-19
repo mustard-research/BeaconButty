@@ -420,21 +420,25 @@ def ip_label(ip, ip_to_host, assets=None):
 
 
 def load_fp_all():
-    """Return full FP config: {version, devices, domains, protocols}."""
+    """Return full FP config: {version, devices, domains, protocols, orgs}.
+
+    `orgs` is fnmatch-against-GeoIP-ASN — the only handle the slow detector
+    has on a destination with no SNI/Host/DNS."""
     try:
         with open(FP_CONF) as f:
             data = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
-        return {"version": 2, "devices": {}, "domains": {}, "protocols": {}}
+        return {"version": 2, "devices": {}, "domains": {}, "protocols": {}, "orgs": {}}
     if "version" not in data:
         # v1 — flat MAC dict
         return {"version": 2, "devices": {k.lower(): v for k, v in data.items()},
-                "domains": {}, "protocols": {}}
+                "domains": {}, "protocols": {}, "orgs": {}}
     return {
         "version":   data.get("version", 2),
         "devices":   {k.lower(): v for k, v in data.get("devices", {}).items()},
         "domains":   data.get("domains", {}),
         "protocols": data.get("protocols", {}),
+        "orgs":      data.get("orgs", {}),
     }
 
 def load_fps():
@@ -959,7 +963,8 @@ def get_beacon_data(report_file, mac_to_ip, ip_to_host, assets=None):
         })
 
     total = sum(sev_counts.values())
-    fp_count = len(fp_all["devices"]) + len(fp_all["domains"]) + len(fp_all["protocols"])
+    fp_count = (len(fp_all["devices"]) + len(fp_all["domains"])
+                + len(fp_all["protocols"]) + len(fp_all["orgs"]))
 
     # Build suppressed groups, sort rows within each by score desc, groups by row count desc
     suppressed_groups = []
@@ -3780,6 +3785,7 @@ def _load_slow_cadence_filtered():
     ip_to_mac    = {ip: mac for mac, ip in mac_to_ip.items()}
     fp_all       = load_fp_all()
     fp_doms      = list(fp_all.get("domains", {}).keys())
+    fp_orgs      = list(fp_all.get("orgs", {}).keys())
     fp_macs      = {m.lower() for m in fp_all.get("devices", {}).keys()}
 
     filtered = []
@@ -3795,6 +3801,10 @@ def _load_slow_cadence_filtered():
         # strong "this dst is benign" signal.
         if any(_fp_domain_match(h, fp_doms)
                for h in c.get("http_hosts", []) or []):
+            continue
+        # Org FP — fnmatch against GeoIP ASN owner; the only handle for
+        # rows with no SNI, no HTTP Host, no DNS resolution.
+        if _fp_domain_match(c.get("dst_org", ""), fp_orgs):
             continue
         src_mac = ip_to_mac.get(c["src"], "").lower()
         if src_mac and src_mac in fp_macs:
@@ -4226,10 +4236,12 @@ def fps():
         })
     domain_rows   = [{"pattern": p, "reason": r} for p, r in sorted(fp_all["domains"].items())]
     protocol_rows = [{"svc": s, "reason": r} for s, r in sorted(fp_all["protocols"].items())]
+    org_rows      = [{"pattern": p, "reason": r} for p, r in sorted(fp_all["orgs"].items())]
     return render_template("fps.html",
                            rows=device_rows,
                            domain_rows=domain_rows,
-                           protocol_rows=protocol_rows)
+                           protocol_rows=protocol_rows,
+                           org_rows=org_rows)
 
 
 @app.route("/fps/add", methods=["POST"])
@@ -4339,6 +4351,36 @@ def fps_remove_protocol():
             capture_output=True, timeout=10
         )
         _invalidate_network_cache()
+    return redirect(url_for("fps"))
+
+
+@app.route("/fps/add-org", methods=["POST"])
+def fps_add_org():
+    """Add an org-level FP — fnmatch against GeoIP ASN owner. Only the slow
+    detector consults it today, so skip the network-cache invalidation."""
+    pattern = request.form.get("pattern", "").strip()
+    reason  = request.form.get("reason", "").strip()
+    nxt     = request.form.get("next", "").strip()
+    if pattern and reason:
+        if len(reason) > 50:
+            reason = reason[:50]
+        subprocess.run(
+            [str(FP_SCRIPT), "add-org", pattern, reason],
+            capture_output=True, timeout=10
+        )
+    if nxt.startswith("/") and not nxt.startswith("//"):
+        return redirect(nxt)
+    return redirect(url_for("fps"))
+
+
+@app.route("/fps/remove-org", methods=["POST"])
+def fps_remove_org():
+    pattern = request.form.get("pattern", "").strip()
+    if pattern:
+        subprocess.run(
+            [str(FP_SCRIPT), "remove-org", pattern],
+            capture_output=True, timeout=10
+        )
     return redirect(url_for("fps"))
 
 
