@@ -31,9 +31,9 @@ References:
 
 | Signal | Default | Rationale |
 |---|---|---|
-| **new-JA4** | seeded after 1-day grace | A Teams desktop client's JA4 is stable. A Go binary's QUIC fingerprint will not match it. The detector keeps a per-device baseline of Teams-bound JA4s in `/var/lib/beaconbutty/device-teams-ja4-history.json` and only fires after the device has been observed for at least one full day (avoids day-1 false positives). |
-| **long-flow** | duration > 2 h | Real Teams calls rarely exceed two hours. A C2 tunnel often stays open for the working day or longer. |
-| **low-bw** | < 30 kbps over flows ≥ 60 s | A real audio-only Teams call uses ~50–100 kbps. Video calls use hundreds. A C2 tunnel shipping commands runs at single-digit kbps. The 60-second floor avoids tripping on STUN-keepalive chatter. |
+| **new-JA4** | seeded after 1-day grace; cipher-hash match | A Teams desktop client's underlying TLS stack is stable. The signal compares the **cipher-hash component** of JA4 (`<a>_<cipher-hash>_<ext-hash>`) rather than the full fingerprint — Teams legitimately varies ALPN (h1↔h2) and minor extension permutations across connection types, which changes only the extension hash. Cipher-hash match stays sensitive to a foreign TLS stack (Go `crypto/tls` ≠ Schannel/NSS) while tolerating cosmetic variation. Per-device baseline in `/var/lib/beaconbutty/device-teams-ja4-history.json`; fires from day 2+ only. |
+| **long-flow** | duration > 2 h, excluding trouter SNIs | Real Teams calls rarely exceed two hours. A C2 tunnel often stays open for the working day or longer. **Suppressed when every SNI on the flow is `*.trouter.teams.microsoft.com`** — Teams' long-poll HTTP notification channel is designed to sit idle on TCP/443 for hours with heartbeats. Mixed-SNI and SNI-less (CIDR-only / encrypted-SNI QUIC) flows still count. |
+| **low-bw** | UDP-only, ≥ 5 min, < 30 kbps | A real audio-only Teams call uses 50–100 kbps. Video calls use hundreds. A C2 tunnel shipping commands runs at single-digit kbps. UDP-only because TLS/TCP signalling flows are legitimately short and silent. |
 
 **Alert gate: `new-JA4` plus at least one other signal must correlate to page.** Without the new-JA4 discriminator, the structural signals (long-flow / low-bw) trip routinely on legitimate Teams idle behaviour — presence WebSockets sit open all day on TCP/443; TURN keepalives send bytes/sec on UDP/443. `new-JA4` alone is also too noisy (it fires whenever a device's Teams JA4 list grows, e.g. after a Teams app update). The DragonForce shape — a Go binary using an unfamiliar TLS stack to hold a low-bandwidth or long-duration tunnel through Teams CIDRs — trips at least two signals AND has new-JA4 as one of them.
 
@@ -49,7 +49,7 @@ The detector ships with a bundled seed at `config/teams-cidrs.json` (current as 
 
 ## Limitations
 
-- **Bespoke malware can match Teams JA4.** A sufficiently motivated attacker using a `utls`-style Client Hello mimic will collapse the new-JA4 signal. We catch off-the-shelf Backdoor.Turn whose JA4 is whatever Go's `crypto/tls` (or its QUIC equivalent) happens to emit.
+- **Bespoke malware can match Teams JA4.** A sufficiently motivated attacker using a `utls`-style Client Hello mimic will collapse the new-JA4 signal. The cipher-hash-only comparison (see above) means a mimic needs to match the cipher list — not the full extension permutation — to be treated as known. We catch off-the-shelf Backdoor.Turn whose cipher hash is whatever Go's `crypto/tls` (or its QUIC equivalent) happens to emit; a cipher-list-mimicking variant slips through.
 - **No endpoint correlation.** "Is this *really* a Teams call?" can only be answered authoritatively from the endpoint (process tree, M365 sign-in state). BeaconButty has no endpoint visibility.
 - **Encrypted-SNI QUIC.** TURN allocations over UDP/3478 and QUIC traffic where the SNI is encrypted in the Initial packet are caught only by CIDR matching. If Microsoft shifts Teams to fresh IP ranges before the daily refresh runs, there's a window during which new flows won't be classified as Teams-bound.
 
