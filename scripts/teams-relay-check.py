@@ -238,6 +238,25 @@ def parse_float(s: str) -> float:
         return 0.0
 
 
+def ja4_cipher_hash(ja4: str) -> str:
+    """JA4 format is `<a>_<cipher-hash>_<extension-hash>`. The cipher hash
+    encodes the TLS library's offered cipher list and is the strongest
+    "what stack is this" signal; the extension hash varies with ALPN
+    (h1 vs h2) and minor extension permutations within the same client."""
+    parts = ja4.split("_")
+    return parts[1] if len(parts) >= 2 else ""
+
+
+def is_trouter_only(snis) -> bool:
+    """Teams' trouter.* SNIs are long-poll signalling channels — hours-long
+    idle TCP/443 with heartbeats is BAU, not a structural anomaly. Only
+    suppress when EVERY observed SNI on the flow is a trouter host; mixed
+    or SNI-less flows fall through to the normal gate."""
+    if not snis:
+        return False
+    return all(s.lower().endswith(".trouter.teams.microsoft.com") for s in snis)
+
+
 # ── Detector core ─────────────────────────────────────────────────────────────
 def collect_today_flows(is_teams_ip, is_teams_sni, fp_ips: set[str]) -> dict:
     """Return {(src, dst, dst_port): {duration, bytes, ja4_seen, via}} for
@@ -349,14 +368,28 @@ def evaluate(flows: dict, history: dict, cfg: dict) -> tuple[list[dict], dict]:
 
         signals = []
 
-        # 1) New JA4 — fires if a TLS/QUIC Teams flow used a JA4 the device
-        #    has never used on Teams traffic before.
-        new_ja4s = [j for j in ja4s if j and j not in known_ja4s]
+        # 1) New JA4 — fires if a TLS/QUIC Teams flow used a JA4 whose
+        #    *cipher hash* the device has never used on Teams traffic
+        #    before. A Teams client legitimately varies ALPN (h1 vs h2)
+        #    and extension permutations across connection types, which
+        #    changes the extension hash; the cipher hash stays stable as
+        #    long as the underlying TLS library does. Cipher-hash match
+        #    keeps the signal sensitive to a foreign TLS stack while
+        #    tolerating cosmetic variation within the same client.
+        known_cipher_hashes = {ja4_cipher_hash(j) for j in known_ja4s}
+        known_cipher_hashes.discard("")
+        new_ja4s = [
+            j for j in ja4s
+            if j and j not in known_ja4s and ja4_cipher_hash(j) not in known_cipher_hashes
+        ]
         if new_ja4s:
             signals.append("new-JA4")
 
-        # 2) Long flow — duration > threshold.
-        if durs > max_dur_sec:
+        # 2) Long flow — duration > threshold, *except* when every SNI on
+        #    the flow is a Teams trouter host. trouter is Teams' long-poll
+        #    HTTP notification channel: idle TCP/443 for hours is its
+        #    designed behaviour, not a tunnelling signal.
+        if durs > max_dur_sec and not is_trouter_only(v["snis"]):
             signals.append("long-flow")
 
         # 3) Low bandwidth — UDP-only (TURN media / QUIC over UDP/443), flows
