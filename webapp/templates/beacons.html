@@ -185,7 +185,7 @@
             </td>
             <td style="white-space:nowrap;text-align:right;">
               {% if dev.total == 1 %}
-                <button class="btn btn-sm" onclick="fpOpenSingle({{ loop.index0 }})"
+                <button class="btn btn-sm" onclick="fpOpenSingle(this, {{ loop.index0 }})"
                         title="Single beacon — add directly to false-positive list">Add to FP</button>
               {% else %}
                 <span class="text-dim" style="font-size:11px;"
@@ -481,6 +481,7 @@
              style="width:100%;box-sizing:border-box;padding:6px 8px;background:var(--input-bg,#2a2a3e);border:1px solid var(--border,#444);border-radius:4px;color:inherit;font-size:13px;">
     </div>
 
+    <div id="fp-msg" style="display:none;font-size:12px;color:var(--text-dim,#888);margin-bottom:10px;"></div>
     <div style="display:flex;gap:8px;justify-content:flex-end;">
       <button onclick="fpDialogClose()" class="btn">Cancel</button>
       <button id="fp-submit-btn" onclick="fpSubmit()" class="btn btn-primary" disabled>Add FP</button>
@@ -591,11 +592,11 @@ function showMedBeacons(idx) {
     var cls = r.score >= 0.5 ? 'text-yellow' : 'text-dim';
     var tr = document.createElement('tr');
     tr.innerHTML =
-      '<td class="mono" style="word-break:break-all;"><a href="#" onclick="fpOpen(' + i + ');return false;" title="Add this destination to FP" style="color:inherit;text-decoration:underline dotted;text-underline-offset:3px;">' + escHtml(r.dest) + '</a>' + intelBadgeHtml(r.intel) + enrichHtml(r) + '</td>' +
+      '<td class="mono" style="word-break:break-all;"><a href="#" onclick="fpOpen(this, ' + i + ');return false;" title="Add this destination to FP" style="color:inherit;text-decoration:underline dotted;text-underline-offset:3px;">' + escHtml(r.dest) + '</a>' + intelBadgeHtml(r.intel) + enrichHtml(r) + '</td>' +
       '<td class="num"><span class="' + cls + '" style="font-weight:600;">' + r.score.toFixed(3) + '</span></td>' +
       '<td class="num">' + r.conns + '</td>' +
       '<td class="mono" style="font-size:11px;color:var(--text-dim,#888);">' + escHtml(r.svc) + '</td>' +
-      '<td style="text-align:right;"><button class="btn btn-sm" onclick="fpOpen(' + i + ')">Add to FP</button></td>';
+      '<td style="text-align:right;"><button class="btn btn-sm" onclick="fpOpen(this, ' + i + ')">Add to FP</button></td>';
     tbody.appendChild(tr);
   });
   document.getElementById('hb-fp-msg').style.display = 'none';
@@ -611,11 +612,11 @@ function showLowBeacons(idx) {
   rows.forEach(function(r, i) {
     var tr = document.createElement('tr');
     tr.innerHTML =
-      '<td class="mono" style="word-break:break-all;"><a href="#" onclick="fpOpen(' + i + ');return false;" title="Add this destination to FP" style="color:inherit;text-decoration:underline dotted;text-underline-offset:3px;">' + escHtml(r.dest) + '</a>' + intelBadgeHtml(r.intel) + enrichHtml(r) + '</td>' +
+      '<td class="mono" style="word-break:break-all;"><a href="#" onclick="fpOpen(this, ' + i + ');return false;" title="Add this destination to FP" style="color:inherit;text-decoration:underline dotted;text-underline-offset:3px;">' + escHtml(r.dest) + '</a>' + intelBadgeHtml(r.intel) + enrichHtml(r) + '</td>' +
       '<td class="num"><span class="text-dim" style="font-weight:600;">' + r.score.toFixed(3) + '</span></td>' +
       '<td class="num">' + r.conns + '</td>' +
       '<td class="mono" style="font-size:11px;color:var(--text-dim,#888);">' + escHtml(r.svc) + '</td>' +
-      '<td style="text-align:right;"><button class="btn btn-sm" onclick="fpOpen(' + i + ')">Add to FP</button></td>';
+      '<td style="text-align:right;"><button class="btn btn-sm" onclick="fpOpen(this, ' + i + ')">Add to FP</button></td>';
     tbody.appendChild(tr);
   });
   document.getElementById('hb-fp-msg').style.display = 'none';
@@ -632,11 +633,11 @@ function showAllBeacons(idx) {
     var cls = r.score >= 0.9 ? 'text-red' : r.score >= 0.8 ? 'text-yellow' : r.score >= 0.5 ? 'text-yellow' : 'text-dim';
     var tr = document.createElement('tr');
     tr.innerHTML =
-      '<td class="mono" style="word-break:break-all;"><a href="#" onclick="fpOpen(' + i + ');return false;" title="Add this destination to FP" style="color:inherit;text-decoration:underline dotted;text-underline-offset:3px;">' + escHtml(r.dest) + '</a>' + intelBadgeHtml(r.intel) + enrichHtml(r) + '</td>' +
+      '<td class="mono" style="word-break:break-all;"><a href="#" onclick="fpOpen(this, ' + i + ');return false;" title="Add this destination to FP" style="color:inherit;text-decoration:underline dotted;text-underline-offset:3px;">' + escHtml(r.dest) + '</a>' + intelBadgeHtml(r.intel) + enrichHtml(r) + '</td>' +
       '<td class="num"><span class="' + cls + '" style="font-weight:600;">' + r.score.toFixed(3) + '</span></td>' +
       '<td class="num">' + r.conns + '</td>' +
       '<td class="mono" style="font-size:11px;color:var(--text-dim,#888);">' + escHtml(r.svc) + '</td>' +
-      '<td style="text-align:right;"><button class="btn btn-sm" onclick="fpOpen(' + i + ')">Add to FP</button></td>';
+      '<td style="text-align:right;"><button class="btn btn-sm" onclick="fpOpen(this, ' + i + ')">Add to FP</button></td>';
     tbody.appendChild(tr);
   });
   document.getElementById('hb-fp-msg').style.display = 'none';
@@ -653,11 +654,11 @@ function showHighBeacons(idx) {
     var cls = r.score >= 0.9 ? 'text-red' : r.score >= 0.8 ? 'text-yellow' : 'text-dim';
     var tr = document.createElement('tr');
     tr.innerHTML =
-      '<td class="mono" style="word-break:break-all;"><a href="#" onclick="fpOpen(' + i + ');return false;" title="Add this destination to FP" style="color:inherit;text-decoration:underline dotted;text-underline-offset:3px;">' + escHtml(r.dest) + '</a>' + intelBadgeHtml(r.intel) + enrichHtml(r) + '</td>' +
+      '<td class="mono" style="word-break:break-all;"><a href="#" onclick="fpOpen(this, ' + i + ');return false;" title="Add this destination to FP" style="color:inherit;text-decoration:underline dotted;text-underline-offset:3px;">' + escHtml(r.dest) + '</a>' + intelBadgeHtml(r.intel) + enrichHtml(r) + '</td>' +
       '<td class="num"><span class="' + cls + '" style="font-weight:600;">' + r.score.toFixed(3) + '</span></td>' +
       '<td class="num">' + r.conns + '</td>' +
       '<td class="mono" style="font-size:11px;color:var(--text-dim,#888);">' + escHtml(r.svc) + '</td>' +
-      '<td style="text-align:right;"><button class="btn btn-sm" onclick="fpOpen(' + i + ')">Add to FP</button></td>';
+      '<td style="text-align:right;"><button class="btn btn-sm" onclick="fpOpen(this, ' + i + ')">Add to FP</button></td>';
     tbody.appendChild(tr);
   });
   document.getElementById('hb-fp-msg').style.display = 'none';
@@ -669,7 +670,7 @@ function escHtml(s) {
 }
 
 // State for the FP dialog
-var _fpRow = null, _fpRowIdx = null, _fpType = null;
+var _fpRow = null, _fpRowIdx = null, _fpType = null, _fpBtn = null;
 var _activeBeacons = HB, _activeShowFn = null;
 
 // Protocol-FP is global: matches by service string with no source binding,
@@ -692,18 +693,20 @@ function _isSafeProto(svc) {
 // the FP dialog directly. Used by the row-level "Add to FP" button on
 // hotlist rows with dev.total == 1. _activeShowFn is a no-op because
 // there is no modal to re-render after submit.
-function fpOpenSingle(devIdx) {
+function fpOpenSingle(btn, devIdx) {
   if (!AB[devIdx] || AB[devIdx].length === 0) return;
   _hbDevIdx     = devIdx;
   _activeBeacons = AB;
   _activeShowFn = function() {};
-  fpOpen(0);
+  fpOpen(btn, 0);
 }
 
-function fpOpen(rowIdx) {
+function fpOpen(btn, rowIdx) {
   var row = _activeBeacons[_hbDevIdx][rowIdx];
   _fpRow    = row;
   _fpRowIdx = rowIdx;
+  _fpBtn    = btn || null;
+  document.getElementById('fp-msg').style.display = 'none';
   document.getElementById('fp-domain-input').value = domainSuggest(row.fqdn, row.raw_dst, row.enrich_name);
   document.getElementById('fp-proto-preview').textContent  = row.svc || '(no service)';
 
@@ -789,20 +792,23 @@ function fpSubmit() {
 
   document.getElementById('fp-submit-btn').disabled = true;
   fetch(url, {method:'POST', body: fd})
-    .then(function() {
-      fpDialogClose();
-      // Drop the row out of the underlying array so the re-render skips it
-      // and onclick indices stay correct on the remaining rows. Then call
-      // the show fn that opened this view to rebuild the table in place.
-      if (_activeBeacons && _hbDevIdx !== null && _fpRowIdx !== null) {
-        _activeBeacons[_hbDevIdx].splice(_fpRowIdx, 1);
-        if (typeof _activeShowFn === 'function') {
-          _activeShowFn(_hbDevIdx);
+    .then(function(r) { return {ok: r.ok}; })
+    .then(function(data) {
+      if (!data.ok) {
+        document.getElementById('fp-submit-btn').disabled = false;
+        return;
+      }
+      if (_fpBtn) {
+        var tr = _fpBtn.closest('tr');
+        if (tr) {
+          tr.style.transition = 'opacity .4s';
+          tr.style.opacity = '0.25';
         }
       }
-      var msg = document.getElementById('hb-fp-msg');
-      msg.textContent = 'FP added — row removed, will be suppressed in next report.';
+      var msg = document.getElementById('fp-msg');
+      msg.textContent = 'FP added — will be suppressed on next page load.';
       msg.style.display = 'block';
+      setTimeout(fpDialogClose, 1500);
     })
     .catch(function() {
       document.getElementById('fp-submit-btn').disabled = false;
