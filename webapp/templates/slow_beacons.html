@@ -222,29 +222,46 @@
           <td style="white-space:nowrap;">
             {% if c.sni %}
               {% set dest_default = '*.' ~ (c.sni.split('.', 1)[1] if '.' in c.sni else c.sni) %}
-              {% set fp_mode = 'dst' %}
+              <button type="button" class="btn btn-sm" style="width:100%;"
+                      data-pattern="{{ dest_default }}"
+                      data-reason="{{ c.dst_org or '' }}"
+                      data-fp-mode="dst"
+                      onclick="slowFpOpen(this)"
+                      title="Suppress this destination — pattern is editable">
+                FP&nbsp;dst
+              </button>
             {% elif c.http_host %}
               {% set dest_default = '*.' ~ (c.http_host.split('.', 1)[1] if '.' in c.http_host else c.http_host) %}
-              {% set fp_mode = 'dst' %}
-            {% elif c.dst_org %}
-              {# No domain handle — fall back to org-name fnmatch. Default
-                 pattern is the first whitespace-delimited token wrapped in
-                 wildcards (e.g. "Shenzhen Tencent …" → "*Tencent*" when
-                 the operator strips the city), but the user edits it. #}
-              {% set dest_default = '*' ~ c.dst_org.split(' ')[0] ~ '*' %}
-              {% set fp_mode = 'org' %}
+              <button type="button" class="btn btn-sm" style="width:100%;"
+                      data-pattern="{{ dest_default }}"
+                      data-reason="{{ c.dst_org or '' }}"
+                      data-fp-mode="dst"
+                      onclick="slowFpOpen(this)"
+                      title="Suppress this destination — pattern is editable">
+                FP&nbsp;dst
+              </button>
             {% else %}
-              {% set dest_default = c.dst %}
-              {% set fp_mode = 'dst' %}
+              {# No domain handle. Always offer the raw-IP dst FP; add the
+                 org FP as a second option when GeoIP gives us an owner. #}
+              <button type="button" class="btn btn-sm" style="width:100%;{% if c.dst_org %}margin-bottom:2px;{% endif %}"
+                      data-pattern="{{ c.dst }}"
+                      data-reason="{{ c.dst_org or '' }}"
+                      data-fp-mode="dst"
+                      onclick="slowFpOpen(this)"
+                      title="Suppress this destination IP — pattern is editable">
+                FP&nbsp;ip
+              </button>
+              {% if c.dst_org %}
+              <button type="button" class="btn btn-sm" style="width:100%;"
+                      data-pattern="*{{ c.dst_org.split(' ')[0] }}*"
+                      data-reason="{{ c.dst_org }}"
+                      data-fp-mode="org"
+                      onclick="slowFpOpen(this)"
+                      title="Suppress all destinations attributed to this GeoIP org — pattern is editable">
+                FP&nbsp;org
+              </button>
+              {% endif %}
             {% endif %}
-            <button type="button" class="btn btn-sm" style="width:100%;"
-                    data-pattern="{{ dest_default }}"
-                    data-reason="{{ c.dst_org or '' }}"
-                    data-fp-mode="{{ fp_mode }}"
-                    onclick="slowFpOpen(this)"
-                    title="{% if fp_mode == 'org' %}Suppress all destinations attributed to this GeoIP org — pattern is editable{% else %}Suppress this destination — pattern is editable{% endif %}">
-              FP&nbsp;{{ fp_mode }}
-            </button>
           </td>
         </tr>
         {% endfor %}
