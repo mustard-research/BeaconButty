@@ -242,8 +242,10 @@
               </button>
             {% else %}
               {# No domain handle. Always offer the raw-IP dst FP; add the
-                 org FP as a second option when GeoIP gives us an owner. #}
-              <button type="button" class="btn btn-sm" style="width:100%;{% if c.dst_org %}margin-bottom:2px;{% endif %}"
+                 org FP as a second option when GeoIP gives us an owner.
+                 display:block on each button (default is inline-block, which
+                 would push the second one off to the right at width:100%). #}
+              <button type="button" class="btn btn-sm" style="display:block;width:100%;{% if c.dst_org %}margin-bottom:2px;{% endif %}"
                       data-pattern="{{ c.dst }}"
                       data-reason="{{ c.dst_org or '' }}"
                       data-fp-mode="dst"
@@ -252,7 +254,7 @@
                 FP&nbsp;ip
               </button>
               {% if c.dst_org %}
-              <button type="button" class="btn btn-sm" style="width:100%;"
+              <button type="button" class="btn btn-sm" style="display:block;width:100%;"
                       data-pattern="*{{ c.dst_org.split(' ')[0] }}*"
                       data-reason="{{ c.dst_org }}"
                       data-fp-mode="org"
