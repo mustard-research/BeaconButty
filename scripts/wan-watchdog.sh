@@ -115,3 +115,7 @@ else
             >>"$LOGFILE" 2>&1 || true
     fi
 fi
+
+# Under `set -e`, the trailing `[[ ]] && log` on line ~105 propagates its false
+# result as the script's exit code. Terminate explicitly.
+exit 0
