@@ -18,6 +18,7 @@ Install:
 
 import json
 import signal
+import threading
 import time
 import socket
 import subprocess as sp
@@ -103,7 +104,9 @@ class LED:
             })
             print(f"LED init: is_ready={self._ws.is_ready()} enable={enable} color={color} style={style}", flush=True)
             if self._ws.is_ready():
-                self._ws.start()
+                self._ws.running = True
+                self._ws.thread = threading.Thread(target=self._ws.loop, daemon=True)
+                self._ws.thread.start()
                 self._last_sig = (enable, color, bri, style, speed)
         except Exception as e:
             print(f"LED init failed: {e}", flush=True)
