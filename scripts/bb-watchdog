@@ -374,6 +374,7 @@ def run_health_check():
         led_alert()
     else:
         log.info(f'Health check OK (warnings: {len(warnings)})')
+        led_ok()
 
 # ── Graph generation ──────────────────────────────────────────────────────────
 def generate_graph(d: date):
