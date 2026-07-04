@@ -69,42 +69,54 @@ LED_DEFAULT_BRI    = 50
 LED_DEFAULT_STYLE  = "breathing"
 LED_DEFAULT_SPEED  = 50
 
+def _read_led_state():
+    """Return (enable, color, brightness, style, speed) from the state file."""
+    try:
+        if LED_STATE_FILE.exists():
+            s = json.loads(LED_STATE_FILE.read_text())
+        else:
+            s = {}
+    except Exception:
+        s = {}
+    return (
+        bool(s.get("enable", False)),
+        s.get("color",      LED_DEFAULT_COLOR),
+        int(s.get("brightness", LED_DEFAULT_BRI)),
+        s.get("style",      LED_DEFAULT_STYLE),
+        int(s.get("speed",  LED_DEFAULT_SPEED)),
+    )
+
 class LED:
     def __init__(self):
         self._ws       = None
         self._last_sig = None
         try:
             from pm_auto.ws2812 import WS2812
+            enable, color, bri, style, speed = _read_led_state()
             self._ws = WS2812(config={
                 'rgb_led_count':  LED_COUNT,
-                'rgb_enable':     False,
-                'rgb_color':      LED_DEFAULT_COLOR,
-                'rgb_brightness': LED_DEFAULT_BRI,
-                'rgb_style':      LED_DEFAULT_STYLE,
-                'rgb_speed':      LED_DEFAULT_SPEED,
+                'rgb_enable':     enable,
+                'rgb_color':      color,
+                'rgb_brightness': bri,
+                'rgb_style':      style,
+                'rgb_speed':      speed,
             })
+            print(f"LED init: is_ready={self._ws.is_ready()} enable={enable} color={color} style={style}", flush=True)
             if self._ws.is_ready():
                 self._ws.start()
+                self._last_sig = (enable, color, bri, style, speed)
         except Exception as e:
-            print(f"LED init failed: {e}")
+            print(f"LED init failed: {e}", flush=True)
 
     def sync(self):
         """Read state file and apply config changes to the WS2812 thread."""
         if self._ws is None or not self._ws.is_ready():
             return
         try:
-            if LED_STATE_FILE.exists():
-                state = json.loads(LED_STATE_FILE.read_text())
-            else:
-                state = {}
-            enable = bool(state.get("enable", False))
-            color  = state.get("color",      LED_DEFAULT_COLOR)
-            bri    = int(state.get("brightness", LED_DEFAULT_BRI))
-            style  = state.get("style",      LED_DEFAULT_STYLE)
-            speed  = int(state.get("speed",  LED_DEFAULT_SPEED))
-            sig = (enable, color, bri, style, speed)
+            sig = _read_led_state()
             if sig == self._last_sig:
                 return
+            enable, color, bri, style, speed = sig
             self._ws.update_config({
                 'rgb_enable':     enable,
                 'rgb_color':      color,
@@ -113,8 +125,9 @@ class LED:
                 'rgb_speed':      speed,
             })
             self._last_sig = sig
+            print(f"LED sync: enable={enable} color={color} style={style}", flush=True)
         except Exception as e:
-            print(f"LED sync error: {e}")
+            print(f"LED sync error: {e}", flush=True)
 
     def off(self):
         if self._ws and self._ws.is_ready():
