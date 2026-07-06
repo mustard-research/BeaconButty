@@ -8,7 +8,7 @@ set -euo pipefail
 #   2. Fall back to compiling from source if packages unavailable (slow, ~60-90 min on Pi 4)
 
 ZEEK_PREFIX="${ZEEK_PREFIX:-/opt/zeek}"
-ZEEK_VERSION="8.1.0"   # Source-build fallback only. Check https://zeek.org/get-zeek/
+ZEEK_VERSION="8.2.0"   # Source-build fallback only. Check https://zeek.org/get-zeek/
                        # — bb0 runs the 8.x line; a rebuild must not regress to 7.x.
 
 if [[ -x "$ZEEK_PREFIX/bin/zeek" ]]; then

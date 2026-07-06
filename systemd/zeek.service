@@ -1,4 +1,8 @@
 [Unit]
+# NB: oneshot+RemainAfterExit means this unit shows "active" forever after
+# boot regardless of whether Zeek workers are actually running. Real
+# supervision (crash detection + restart) is zeek-cron.timer, which runs
+# `zeekctl cron` every 5 minutes.
 Description=Zeek Network Analysis Framework
 After=network-online.target
 Wants=network-online.target

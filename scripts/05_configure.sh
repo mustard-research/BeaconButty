@@ -165,13 +165,10 @@ else
     echo "  Skipping suricata-alert-check.timer — Suricata not installed."
 fi
 
-# zeekctl cron — supervises Zeek workers (zeek.service is a oneshot wrapper
-# whose "active" state means nothing after boot; this crontab is what
-# actually restarts crashed workers). Idempotent add.
-if ! crontab -l 2>/dev/null | grep -q 'zeekctl cron'; then
-    (crontab -l 2>/dev/null; echo '*/5 * * * * /opt/zeek/bin/zeekctl cron >/dev/null 2>&1') | crontab -
-    echo "  Installed root crontab entry: zeekctl cron every 5 min."
-fi
+# zeek-cron.timer — supervises Zeek workers (zeek.service is a oneshot
+# wrapper whose "active" state means nothing after boot; zeekctl cron is
+# what actually restarts crashed workers).
+systemctl enable --now zeek-cron.timer
 
 # ── Log rotation ──────────────────────────────────────────────────────────────
 cat > /etc/logrotate.d/beaconbutty <<'EOF'

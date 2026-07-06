@@ -20,7 +20,7 @@ Also download the matching `packages-YYYY-MM-DD.txt` file.
 - App config: RITA (`/etc/rita/`), Suricata, ClickHouse `config.d/` overrides (memory cap, log path, TTLs), Zeek site policy
 - False positive registry, asset cache, Slack config
 - SSH server config, fail2ban, all of `/etc/sudoers.d/`, log2ram config, unattended-upgrades origins (`52beaconbutty-autoupdate`)
-- root's crontab (`zeekctl cron` watchdog)
+- root's crontab (now normally empty — Zeek supervision moved to `zeek-cron.timer` 2026-07-06)
 - Boot firmware config (`/boot/firmware/config.txt`, `cmdline.txt`)
 - certbot renewal config, ACME account, deploy hook, AWS credentials for Route 53
 - Tailscale TLS cert + key (`/etc/ssl/tailscale/`) and the monthly renew script/timer

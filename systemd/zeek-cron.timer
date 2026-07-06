@@ -1,0 +1,13 @@
+[Unit]
+Description=BeaconButty — run zeekctl cron every 5 minutes
+
+[Timer]
+# This IS the Zeek supervision: zeek.service is a oneshot zeekctl wrapper
+# whose "active" state means nothing after boot — zeekctl cron is what
+# detects and restarts crashed workers. Replaced the untracked root
+# crontab entry (2026-07-06).
+OnBootSec=5min
+OnUnitActiveSec=5min
+
+[Install]
+WantedBy=timers.target

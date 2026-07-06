@@ -1,0 +1,8 @@
+[Unit]
+Description=BeaconButty — zeekctl cron (restart crashed Zeek workers, log maintenance)
+Documentation=https://docs.zeek.org/projects/zeekctl
+After=zeek.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/zeek/bin/zeekctl cron
