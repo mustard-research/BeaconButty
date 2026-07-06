@@ -1,0 +1,7 @@
+<?xml version="1.0"?>
+<clickhouse>
+    <logger>
+        <log>/var/lib/clickhouse/logs/clickhouse-server.log</log>
+        <errorlog>/var/lib/clickhouse/logs/clickhouse-server.err.log</errorlog>
+    </logger>
+</clickhouse>

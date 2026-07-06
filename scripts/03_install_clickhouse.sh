@@ -10,6 +10,17 @@ apply_clickhouse_config() {
     mkdir -p /etc/clickhouse-server/config.d /etc/clickhouse-server/users.d
     cp "$SCRIPT_DIR/config/clickhouse/users.d/beaconbutty-compatibility.xml" \
        /etc/clickhouse-server/users.d/beaconbutty-compatibility.xml
+    # memory cap (5 GiB), log path off log2ram, warning-only log level,
+    # 14-day TTL on system log tables — clickhouse-upgrade.sh's preflight
+    # requires these to exist
+    cp "$SCRIPT_DIR"/config/clickhouse/config.d/*.xml /etc/clickhouse-server/config.d/
+    # /var/log/clickhouse-server would land on the log2ram tmpfs — logs.xml
+    # points the server at NVMe instead
+    mkdir -p /var/lib/clickhouse/logs
+    chown clickhouse:clickhouse /var/lib/clickhouse/logs 2>/dev/null || true
+    # apt upgrades have wiped config.d before — hold the packages; upgrades
+    # go through clickhouse-upgrade.sh, which re-checks the overrides
+    apt-mark hold clickhouse-server clickhouse-client clickhouse-common-static 2>/dev/null || true
 }
 
 if systemctl is-active --quiet clickhouse-server 2>/dev/null; then
@@ -55,15 +66,7 @@ fi
 DEBIAN_FRONTEND=noninteractive apt-get install -y clickhouse-server clickhouse-client
 
 # ── Tune for Raspberry Pi ─────────────────────────────────────────────────────
-# Cap at 2 GB; reduce background threads to leave headroom for Zeek + routing.
 apply_clickhouse_config
-
-cat > /etc/clickhouse-server/config.d/beaconbutty.xml <<'EOF'
-<clickhouse>
-    <!-- Cap memory at 2 GB; leave headroom for Zeek + routing on Pi -->
-    <max_server_memory_usage>3221225472</max_server_memory_usage>
-</clickhouse>
-EOF
 
 systemctl enable --now clickhouse-server
 

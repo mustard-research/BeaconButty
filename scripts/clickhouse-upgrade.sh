@@ -92,8 +92,10 @@ else
     die "Health check returned non-zero — aborting"
 fi
 
-# Don't upgrade while RITA is mid-import (could corrupt a dataset)
-if systemctl is-active --quiet rita-analyze.service; then
+# Don't upgrade while RITA is mid-import (could corrupt a dataset).
+# A running oneshot reports ActiveState=activating, which is-active misses.
+RITA_STATE=$(systemctl show -p ActiveState --value rita-analyze.service)
+if [[ "$RITA_STATE" == "activating" || "$RITA_STATE" == "active" ]]; then
     die "rita-analyze.service is currently running — wait for it to finish"
 fi
 

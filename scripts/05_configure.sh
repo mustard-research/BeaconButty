@@ -50,17 +50,11 @@ ethtool -K "$CAPTURE_IFACE" \
     rx off tx off sg off tso off ufo off gso off gro off lro off 2>/dev/null || \
     echo "  Warning: ethtool not fully supported on $CAPTURE_IFACE (common on USB NICs)"
 
-# Persist across reboots via /etc/network/interfaces.d/
-mkdir -p /etc/network/interfaces.d
-IFACE_CONF="/etc/network/interfaces.d/${CAPTURE_IFACE}"
-cat > "$IFACE_CONF" <<EOF
-# BeaconButty capture interface — no IP address, promiscuous mode
-auto ${CAPTURE_IFACE}
-iface ${CAPTURE_IFACE} inet manual
-    up ip link set \$IFACE promisc on
-    up ethtool -K \$IFACE rx off tx off sg off tso off ufo off gso off gro off lro off || true
-    up ip link set \$IFACE up
-EOF
+# Persist across reboots. The interface is NetworkManager-managed, so
+# ifupdown stanzas under /etc/network/interfaces.d/ never apply — use an
+# NM dispatcher hook instead.
+install -m 755 "$SCRIPT_DIR/config/network-manager/99-bb-capture-offload" \
+    /etc/NetworkManager/dispatcher.d/99-bb-capture-offload
 
 # ── RITA configuration ────────────────────────────────────────────────────────
 echo "Configuring RITA..."

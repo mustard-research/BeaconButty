@@ -344,12 +344,12 @@ if [[ -f "$ZEEK_ETC/networks.cfg" ]]; then
 fi
 
 # In router mode, eth1 has an IP — promiscuous mode still helps but isn't
-# strictly necessary. Keep it for consistency with previous capture setup.
-cat > "/etc/network/interfaces.d/${LAN_IFACE}-capture" <<EOF
-# BeaconButty: keep LAN interface in promiscuous mode for Zeek
-post-up ip link set ${LAN_IFACE} promisc on
-post-up ethtool -K ${LAN_IFACE} rx off tx off sg off tso off gso off gro off lro off || true
-EOF
+# strictly necessary. Offloads + promisc are persisted by the NM dispatcher
+# hook (ifupdown files don't apply to an NM-managed interface); installed by
+# 05_configure.sh, re-installed here in case router mode runs standalone.
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+install -m 755 "$REPO_DIR/config/network-manager/99-bb-capture-offload" \
+    /etc/NetworkManager/dispatcher.d/99-bb-capture-offload
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 7: Install WAN watchdog

@@ -122,7 +122,8 @@ elif [[ "$DISK_PCT" -lt 90 ]]; then
     WARN "Disk (/): ${DISK_PCT}% used  (${DISK_AVAIL} free)"
 else
     FAIL "Disk (/): ${DISK_PCT}% used  (${DISK_AVAIL} free) — critically full"
-    send_alert disk_critical high bb0 "Disk ${DISK_PCT}% used (${DISK_AVAIL} free)"
+    # Stable detail (no live numbers) so Lambda dedup holds while disk fills
+    send_alert disk_critical high bb0 "Disk over 90% used on / — critically full"
 fi
 
 # Load average

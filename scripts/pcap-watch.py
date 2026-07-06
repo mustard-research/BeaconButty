@@ -105,11 +105,13 @@ def domain_dir(domain: str) -> Path:
 
 
 def prepare_domain_dir(domain: str) -> Path:
-    """Create a fresh dir with setgid+group=dm so child PCAPs inherit it."""
+    """Create (or reuse) the per-domain dir with setgid+group=dm so child
+    PCAPs inherit it. An existing dir is kept: the tcpdump ring rotates its
+    own files, remove() handles deliberate cleanup, and wiping here would
+    destroy up to 2h of capture on every daemon restart — the shutdown path
+    deliberately preserves these dirs."""
     d = domain_dir(domain)
-    if d.exists():
-        shutil.rmtree(d)
-    d.mkdir(parents=True)
+    d.mkdir(parents=True, exist_ok=True)
     try:
         shutil.chown(d, group="dm")
     except (LookupError, PermissionError):

@@ -2411,7 +2411,12 @@ def save_domain_watch_config(domains):
         cleaned.append(d)
         if len(cleaned) >= DOMAIN_WATCH_MAX:
             break
-    DOMAIN_WATCH_CONFIG.write_text(json.dumps({"domains": cleaned}, indent=2))
+    # Atomic write: bb-pcap-watch polls this file by mtime, and a torn read
+    # parses as "no watches" — its reconcile would then delete every active
+    # capture ring.
+    tmp = DOMAIN_WATCH_CONFIG.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps({"domains": cleaned}, indent=2))
+    tmp.replace(DOMAIN_WATCH_CONFIG)
     return cleaned
 
 
@@ -5281,6 +5286,10 @@ def backup_clone_start():
     with _clone_lock:
         if _clone_job["running"]:
             return jsonify({"error": "Clone already running"}), 409
+        # Claim the slot here, not in the worker — two POSTs racing between
+        # this check and the worker's first statement would both pass the
+        # guard and run two rpi-clone jobs against the same disk.
+        _clone_job["running"] = True
         _clone_job["device"] = device
     t = threading.Thread(target=_clone_worker, args=(f"/dev/{device}",), daemon=True)
     t.start()
@@ -5339,6 +5348,8 @@ def backup_archive_run():
     with _archive_lock:
         if _archive_job["running"]:
             return jsonify({"error": "Archive already running"}), 409
+        # Claim the slot inside the lock (see backup_clone_start)
+        _archive_job["running"] = True
     t = threading.Thread(target=_archive_worker, daemon=True)
     t.start()
     return jsonify({"ok": True})

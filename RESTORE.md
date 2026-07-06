@@ -12,15 +12,18 @@ Download from the **Backup** page of the webapp while the Pi is still running.
 Also download the matching `packages-YYYY-MM-DD.txt` file.
 
 **Included in snapshot:**
-- All BeaconButty scripts (`/usr/local/bin/beaconbutty-*.sh`, `beacon-report.sh`, `rita-analyze.sh`, etc.)
-- All systemd units and timers
+- All of `/usr/local/bin/` (every deployed script) and `/usr/local/sbin/reboot`
+- All of `/etc/systemd/system/` (units, timers, and the `.wants/` enablement symlinks)
 - Full webapp source (`/home/dm/BeaconButty/`)
-- Network config: NetworkManager profiles (eth0 WAN / eth1 LAN), dnsmasq, iptables rules, sysctl tweaks, promiscuous-mode interface hooks
-- App config: RITA (`/etc/rita/`), Suricata, ClickHouse log path override, Zeek site policy
+- **Site config `/etc/beaconbutty/local.env`** — BB_HOST, LAN subnet/gateway MAC, alert Lambda URL + shared secret. Without this the alert pipeline and gateway-impersonation check are dead; restore it before enabling services.
+- Network config: NetworkManager profiles (eth0 WAN / eth1 LAN), the capture-offload dispatcher hook (`/etc/NetworkManager/dispatcher.d/99-bb-capture-offload`), dnsmasq, iptables rules, sysctl tweaks
+- App config: RITA (`/etc/rita/`), Suricata, ClickHouse `config.d/` overrides (memory cap, log path, TTLs), Zeek site policy
 - False positive registry, asset cache, Slack config
-- SSH server config, fail2ban, sudoers entries, log2ram config
+- SSH server config, fail2ban, all of `/etc/sudoers.d/`, log2ram config, unattended-upgrades origins (`52beaconbutty-autoupdate`)
+- root's crontab (`zeekctl cron` watchdog)
 - Boot firmware config (`/boot/firmware/config.txt`, `cmdline.txt`)
 - certbot renewal config, ACME account, deploy hook, AWS credentials for Route 53
+- Tailscale TLS cert + key (`/etc/ssl/tailscale/`) and the monthly renew script/timer
 
 **NOT included — needs separate action:**
 | Item | Action |

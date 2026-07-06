@@ -1,0 +1,26 @@
+#!/bin/sh
+# BeaconButty — capture-interface settings for Zeek/Suricata.
+#
+# GRO/GSO/TSO coalesce packets into super-frames, inflating byte counts and
+# breaking TCP-seq accounting in the capture pipeline. The interface is
+# NetworkManager-managed, so ifupdown stanzas under
+# /etc/network/interfaces.d/ never apply — this dispatcher hook re-applies
+# the settings on every interface up.
+#
+# Deployed to /etc/NetworkManager/dispatcher.d/ by scripts/05_configure.sh.
+
+CAPTURE_IFACE="eth1"
+[ -f /etc/beaconbutty/local.env ] && . /etc/beaconbutty/local.env
+CAPTURE_IFACE="${BB_CAPTURE_IFACE:-$CAPTURE_IFACE}"
+
+[ "$1" = "$CAPTURE_IFACE" ] || exit 0
+
+case "$2" in
+    up)
+        ethtool -K "$CAPTURE_IFACE" \
+            rx off tx off sg off tso off ufo off gso off gro off lro off \
+            2>/dev/null || true
+        ip link set "$CAPTURE_IFACE" promisc on 2>/dev/null || true
+        ;;
+esac
+exit 0

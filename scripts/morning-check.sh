@@ -104,7 +104,7 @@ echo "────────────────────────�
 ALERT_COUNT=0
 
 mapfile -t DATABASES < <(
-    rita list 2>/dev/null \
+    (cd /etc/rita && rita list) 2>/dev/null \
     | grep -oE "${RITA_DB_PREFIX}_[0-9]+" \
     | sort | tail -n 3
 )
@@ -133,7 +133,8 @@ else
             fi
             [[ "$SCORE_COL" -eq 0 ]] && continue
             SCORE=$(echo "$line" | cut -d',' -f"$SCORE_COL" | tr -d ' ')
-            if [[ "$SCORE" =~ ^[0-9]+\.[0-9]+$ ]]; then
+            # RITA prints a perfect score as integer "1" — decimal part optional
+            if [[ "$SCORE" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
                 if awk "BEGIN{exit !($SCORE >= $ALERT_THRESHOLD)}"; then
                     echo -e "  ${RED}${SCORE}${RESET}  ${DISPLAY_DATE}  ${line#*,}"
                     ALERT_COUNT=$(( ALERT_COUNT + 1 ))

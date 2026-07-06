@@ -1,6 +1,6 @@
 [Unit]
 Description=BeaconButty thermal & health watchdog
-After=network.target beaconbutty-health.sh
+After=network.target
 
 [Service]
 Type=simple

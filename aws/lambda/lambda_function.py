@@ -80,21 +80,13 @@ def lambda_handler(event, context):
 
     try:
         resp = table.get_item(Key={"fingerprint": fingerprint})
-        if "Item" in resp:
+        item = resp.get("Item")
+        # DynamoDB TTL deletion is lazy (can lag by days) — enforce the
+        # window ourselves or an expired item over-suppresses.
+        if item and int(item.get("expires_at", 0)) > now_ts:
             return {"statusCode": 200, "body": "Deduplicated"}
     except Exception as e:
         print(f"DynamoDB read error: {e}")
-
-    try:
-        table.put_item(Item={
-            "fingerprint": fingerprint,
-            "expires_at":  expires,
-            "alert_type":  alert_type,
-            "device":      device,
-            "created_at":  now_ts,
-        })
-    except Exception as e:
-        print(f"DynamoDB write error: {e}")
 
     # ── Format Slack message ──────────────────────────────────────────────────
     emoji = SEVERITY_EMOJI.get(severity, "⚪")
@@ -150,6 +142,20 @@ def lambda_handler(event, context):
     except Exception as e:
         print(f"Slack post error: {e}")
         return {"statusCode": 502, "body": str(e)}
+
+    # Record the dedup fingerprint only AFTER Slack accepted the post — a
+    # write before a failed post would swallow every retry/recurrence for
+    # the whole dedup window.
+    try:
+        table.put_item(Item={
+            "fingerprint": fingerprint,
+            "expires_at":  expires,
+            "alert_type":  alert_type,
+            "device":      device,
+            "created_at":  now_ts,
+        })
+    except Exception as e:
+        print(f"DynamoDB write error: {e}")
 
     print(f"Alert sent: {alert_type} / {severity} / {device}")
     return {"statusCode": 200, "body": "OK"}

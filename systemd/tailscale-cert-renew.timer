@@ -1,0 +1,9 @@
+[Unit]
+Description=Monthly Tailscale cert renewal
+
+[Timer]
+OnCalendar=monthly
+Persistent=true
+
+[Install]
+WantedBy=timers.target

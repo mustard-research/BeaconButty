@@ -70,7 +70,10 @@ for sid, msg, proto, src, dst in p1_today:
     if key in seen_lan:
         continue
     seen_lan.add(key)
-    detail = f"SID {sid} — {msg[:80]} ({proto} {src} → {dst})"
+    # No ports in the detail: the Lambda dedups on (type, device, detail) and
+    # an ephemeral source port would make every occurrence look new.
+    dst_host = dst.rsplit(':', 1)[0]
+    detail = f"SID {sid} — {msg[:80]} ({proto} {src_host} → {dst_host})"
     send('suricata_p1_lan', 'high', src_host, detail)
 
 # suricata_p1_repeated — any P1 rule that fired ≥ REPEAT_THRESHOLD times today
@@ -81,7 +84,9 @@ for sid, count in sid_count.items():
     seen_rep.add(sid)
     # Find msg for this sid
     msg = next((m for s, m, *_ in p1_today if s == sid), 'unknown rule')
-    detail = f"SID {sid} fired {count}× today — {msg[:80]}"
+    # Threshold, not live count, in the detail — a growing count defeats
+    # Lambda dedup and re-pages hourly.
+    detail = f"SID {sid} fired ≥{repeat_thresh}× today — {msg[:80]}"
     send('suricata_p1_repeated', 'high', 'bb0', detail)
 
 print(f"P1 alerts today: {len(p1_today)}  LAN-source alerts: {len(seen_lan)}  Repeated SIDs: {len(seen_rep)}")

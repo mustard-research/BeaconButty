@@ -43,52 +43,16 @@ tar -czf "$OUT" \
     --exclude='*/.DS_Store' \
     /boot/firmware/config.txt \
     /boot/firmware/cmdline.txt \
-    /usr/local/bin/bb0-display.py \
-    /usr/local/bin/bb0-fan \
-    /usr/local/bin/bb0-led \
-    /usr/local/bin/bb-watchdog \
-    /usr/local/bin/beaconbutty-alert.sh \
-    /usr/local/bin/beaconbutty-assets.sh \
-    /usr/local/bin/beaconbutty-backup.sh \
-    /usr/local/bin/beaconbutty-fp.sh \
-    /usr/local/bin/beaconbutty-harden.sh \
-    /usr/local/bin/beaconbutty-health.sh \
-    /usr/local/bin/beaconbutty-housekeeping.sh \
-    /usr/local/bin/beaconbutty-morning.sh \
-    /usr/local/bin/beaconbutty-summary.sh \
-    /usr/local/bin/beacon-report.sh \
-    /usr/local/bin/rita-analyze.sh \
-    /usr/local/bin/wan-watchdog.sh \
-    /etc/systemd/system/bb0-display.service \
-    /etc/systemd/system/bb-graphs.service \
-    /etc/systemd/system/bb-watchdog.service \
-    /etc/systemd/system/beaconbutty-assets.service \
-    /etc/systemd/system/beaconbutty-assets.timer \
-    /etc/systemd/system/beaconbutty-backup.service \
-    /etc/systemd/system/beaconbutty-backup.timer \
-    /etc/systemd/system/beaconbutty-health.service \
-    /etc/systemd/system/beaconbutty-health.timer \
-    /etc/systemd/system/beaconbutty-housekeeping.service \
-    /etc/systemd/system/beaconbutty-housekeeping.timer \
-    /etc/systemd/system/beacon-report.service \
-    /etc/systemd/system/beacon-report.timer \
-    /etc/systemd/system/iptables.service \
-    /etc/systemd/system/ip6tables.service \
-    /etc/systemd/system/log2ram.service \
-    /etc/systemd/system/log2ram-daily.service \
-    /etc/systemd/system/log2ram-daily.timer \
-    /etc/systemd/system/rita-analyze.service \
-    /etc/systemd/system/rita-analyze.timer \
-    /etc/systemd/system/suricata-alert-check.service \
-    /etc/systemd/system/suricata-alert-check.timer \
-    /etc/systemd/system/suricata-update.service \
-    /etc/systemd/system/suricata-update.timer \
-    /etc/systemd/system/wan-watchdog.service \
-    /etc/systemd/system/wan-watchdog.timer \
-    /etc/systemd/system/zeek.service \
+    /usr/local/bin/ \
+    /usr/local/sbin/reboot \
+    /etc/systemd/system/ \
     /etc/NetworkManager/system-connections/bb-lan.nmconnection \
     /etc/NetworkManager/system-connections/bb-wan.nmconnection \
-    /etc/network/interfaces.d/ \
+    /etc/NetworkManager/dispatcher.d/99-bb-capture-offload \
+    /etc/beaconbutty/ \
+    /etc/apt/apt.conf.d/52beaconbutty-autoupdate \
+    /etc/ssl/tailscale/ \
+    /var/spool/cron/crontabs/root \
     /etc/dhcpcd.conf \
     /etc/dnsmasq.d/beaconbutty.conf \
     /etc/iptables/rules.v4 \
@@ -99,9 +63,7 @@ tar -czf "$OUT" \
     /etc/clickhouse-server/config.d/ \
     /etc/GeoIP.conf \
     /etc/fail2ban/jail.d/beaconbutty-ssh.conf \
-    /etc/sudoers.d/bb-health \
-    /etc/sudoers.d/bb-backup \
-    /etc/sudoers.d/beaconbutty-suricatasc \
+    /etc/sudoers.d/ \
     /etc/sysctl.d/99-beaconbutty-capture.conf \
     /etc/sysctl.d/99-beaconbutty-hardening.conf \
     /etc/sysctl.d/99-beaconbutty-router.conf \

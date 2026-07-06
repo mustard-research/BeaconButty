@@ -1,0 +1,25 @@
+<clickhouse>
+    <!-- Retention for system log tables. Default is no TTL (grows forever).
+         trace_log is the biggest offender at ~3 GB with no expiry. -->
+    <trace_log>
+        <ttl>event_date + INTERVAL 14 DAY DELETE</ttl>
+    </trace_log>
+    <query_log>
+        <ttl>event_date + INTERVAL 14 DAY DELETE</ttl>
+    </query_log>
+    <metric_log>
+        <ttl>event_date + INTERVAL 14 DAY DELETE</ttl>
+    </metric_log>
+    <part_log>
+        <ttl>event_date + INTERVAL 14 DAY DELETE</ttl>
+    </part_log>
+    <asynchronous_metric_log>
+        <ttl>event_date + INTERVAL 14 DAY DELETE</ttl>
+    </asynchronous_metric_log>
+    <text_log>
+        <ttl>event_date + INTERVAL 14 DAY DELETE</ttl>
+    </text_log>
+    <processors_profile_log>
+        <ttl>event_date + INTERVAL 14 DAY DELETE</ttl>
+    </processors_profile_log>
+</clickhouse>

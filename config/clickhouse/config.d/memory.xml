@@ -1,0 +1,5 @@
+<?xml version="1.0"?>
+<clickhouse>
+    <!-- 5 GiB cap. Pi has 8 GB; Suricata ~1.4 GB, Zeek ~0.25 GB, webapp ~0.2 GB, OS ~0.5 GB. -->
+    <max_server_memory_usage replace="replace">5368709120</max_server_memory_usage>
+</clickhouse>

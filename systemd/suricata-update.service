@@ -6,5 +6,6 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 ExecStart=/usr/bin/suricata-update
-# Reload Suricata after updating so new rules take effect without a full restart
-ExecStartPost=/bin/systemctl reload-or-restart suricata
+# Wait for the Suricata command socket to be ready before reloading rules,
+# so this doesn't race on boot when Persistent= triggers immediately.
+ExecStartPost=/bin/bash -c 'timeout 60 bash -c "until [ -S /var/run/suricata-command.socket ]; do sleep 2; done"; systemctl reload-or-restart suricata'

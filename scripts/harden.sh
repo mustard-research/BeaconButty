@@ -341,6 +341,9 @@ cat > /etc/apt/apt.conf.d/52beaconbutty-autoupdate <<'EOF'
 Unattended-Upgrade::Origins-Pattern {
     "origin=Debian,codename=${distro_codename},label=Debian-Security";
     "origin=Raspbian,codename=${distro_codename},label=Raspbian";
+    // Kernel/firmware security updates on 64-bit RPi OS ship from this
+    // origin — without it they are never auto-applied.
+    "origin=Raspberry Pi Foundation";
 };
 Unattended-Upgrade::Automatic-Reboot "false";
 Unattended-Upgrade::Remove-Unused-Dependencies "true";

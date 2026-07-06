@@ -696,6 +696,15 @@ def is_safe_dest_row(row):
     raw_ip = row[COL['Destination IP']].strip()
     return bool(is_benign(d)) or bool(is_benign_ip(raw_ip)) or _is_safe_org_ip(raw_ip)
 
+# Capture threat-intel rows BEFORE the benign filter: a TI hit is
+# high-confidence on its own, and real C2 is routinely hosted inside the
+# blanket vendor /8s (EC2/Azure/GCP), so those must not suppress it. Explicit
+# user-curated suppressions (domain safe list, org FPs) still apply.
+ti_rows = [r for r in rows
+           if r[COL['Threat Intel']].strip().lower() == 'true'
+           and not is_benign(dest(r))
+           and not _is_safe_org_ip(r[COL['Destination IP']].strip())]
+
 rows = [r for r in rows if not is_safe_dest_row(r)]
 
 # ── 3. Severity breakdown ────────────────────────────────────────────────────
@@ -775,7 +784,7 @@ else:
 print()
 
 # ── 6. Alerts (threat intel / strobes) ───────────────────────────────────────
-threat  = [r for r in rows if r[COL['Threat Intel']].strip().lower() == 'true']
+threat  = ti_rows  # pre-benign-filter capture — see comment above the filter
 strobes = [r for r in rows if r[COL['Strobe']].strip().lower()        == 'true']
 
 print('ALERTS')

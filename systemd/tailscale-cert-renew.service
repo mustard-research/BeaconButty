@@ -1,0 +1,6 @@
+[Unit]
+Description=Renew Tailscale TLS certificate for BeaconButty
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/tailscale-cert-renew.sh

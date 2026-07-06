@@ -109,18 +109,12 @@ def load_cidrs() -> dict:
 
 
 def load_fp_macs() -> set[str]:
-    macs: set[str] = set()
+    """MACs on the FP devices list (false-positives.conf is JSON v2)."""
     try:
-        for line in FP_FILE.read_text().splitlines():
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            parts = line.split()
-            if parts and ":" in parts[0] and len(parts[0]) == 17:
-                macs.add(parts[0].lower())
-    except FileNotFoundError:
-        pass
-    return macs
+        return {m.lower()
+                for m in json.loads(FP_FILE.read_text()).get("devices", {})}
+    except (FileNotFoundError, json.JSONDecodeError):
+        return set()
 
 
 def fp_source_ips(fp_macs: set[str]) -> set[str]:
