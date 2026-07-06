@@ -32,5 +32,8 @@ if [ "$rows" -lt 5 ]; then
     exit 3
 fi
 
-install -m 0644 "$TMP" "$DEST"
+# Atomic swap: `install` straight onto $DEST truncates-and-copies in place,
+# so a webapp read mid-copy sees a partial CSV.
+install -m 0644 "$TMP" "${DEST}.new"
+mv -f "${DEST}.new" "$DEST"
 echo "[ja4db-refresh] installed $DEST ($rows rows)"

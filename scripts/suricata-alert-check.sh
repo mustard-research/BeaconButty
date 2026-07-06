@@ -13,7 +13,11 @@ set -euo pipefail
 
 FAST_LOG="/var/log/suricata/fast.log"
 ALERT_BIN="${ALERT_BIN:-beaconbutty-alert.sh}"
-LAN_PREFIX="${LAN_PREFIX:-192.168.50.}"
+# LAN prefix from site config when present (BB_LAN_SUBNET=…/24 → "a.b.c.")
+[[ -f /etc/beaconbutty/local.env ]] && source /etc/beaconbutty/local.env
+_prefix_from_subnet=$(echo "${BB_LAN_SUBNET:-192.168.50.0/24}" \
+    | sed -E 's|^([0-9]+\.[0-9]+\.[0-9]+)\..*|\1.|')
+LAN_PREFIX="${LAN_PREFIX:-$_prefix_from_subnet}"
 REPEAT_THRESHOLD="${REPEAT_THRESHOLD:-5}"
 
 # Nothing to do if Suricata isn't installed or log is absent

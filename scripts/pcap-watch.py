@@ -127,6 +127,32 @@ def cleanup_domain_dir(domain: str) -> None:
         shutil.rmtree(d, ignore_errors=True)
 
 
+MAX_DOMAIN_DIR_BYTES = int(os.environ.get("BB_PCAP_DIR_CAP_MB", "2048")) * 1024 * 1024
+
+
+def enforce_dir_cap(domain: str) -> None:
+    """The tcpdump ring caps file COUNT (-G/-W) but not per-file size — a
+    high-volume domain (busy CDN at 50 Mbps ≈ 1.9 GB per 5-min file) could
+    exhaust the NVMe and take ClickHouse down with it. Trim oldest ring
+    files (never the newest, which tcpdump is writing) past the cap."""
+    d = domain_dir(domain)
+    try:
+        files = sorted(d.glob("*.pcap"), key=lambda p: p.stat().st_mtime)
+        total = sum(f.stat().st_size for f in files)
+    except OSError:
+        return
+    while len(files) > 1 and total > MAX_DOMAIN_DIR_BYTES:
+        oldest = files.pop(0)
+        try:
+            size = oldest.stat().st_size
+            oldest.unlink()
+        except OSError:
+            break
+        total -= size
+        log.warning("dir cap: removed %s (%.0f MB) from %s ring",
+                    oldest.name, size / 1048576, domain)
+
+
 def resolve_via_getent(domain: str) -> set[str]:
     out: set[str] = set()
     for cmd in (["getent", "ahostsv4", domain], ["getent", "ahostsv6", domain]):
@@ -231,12 +257,16 @@ def spawn_tcpdump(domain: str, ips: set[str]) -> subprocess.Popen | None:
     ]
     log.info("starting tcpdump for %s (%d IPs): %s",
              domain, len(ips), " ".join(cmd))
-    proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-        start_new_session=True,
-    )
+    # stderr to a file, not a PIPE: nothing drains a pipe while tcpdump
+    # runs, so 64 KB of chatter would block it and silently stall capture.
+    # The reaper reads this file's tail when tcpdump dies.
+    with open(pcap_dir / ".tcpdump.err", "wb") as errf:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=errf,
+            start_new_session=True,
+        )
     return proc
 
 
@@ -255,8 +285,17 @@ def stop_tcpdump(proc: subprocess.Popen) -> None:
         try:
             os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
             proc.wait(timeout=5)
-        except (ProcessLookupError, subprocess.TimeoutExpired):
+        except ProcessLookupError:
             pass
+        except subprocess.TimeoutExpired:
+            # A wedged tcpdump would keep writing into a dir we may be
+            # about to delete — invisible disk usage on deleted inodes.
+            log.warning("tcpdump pid %s survived SIGTERM — SIGKILL", proc.pid)
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                proc.wait(timeout=5)
+            except Exception:
+                pass
 
 
 class Daemon:
@@ -298,13 +337,14 @@ class Daemon:
                 rc = ctx["proc"].returncode
                 err = b""
                 try:
-                    err = ctx["proc"].stderr.read() or b""
-                except Exception:
+                    err = (domain_dir(domain) / ".tcpdump.err").read_bytes()
+                except OSError:
                     pass
                 log.warning("tcpdump for %s exited rc=%s — %s",
                             domain, rc, err[-400:].decode(errors="replace"))
                 ctx["proc"] = None
 
+            enforce_dir_cap(domain)
             ips_now = resolve_ips(domain)
             new_ips = ips_now - ctx["ips"]
             need_start = ctx["proc"] is None and ips_now

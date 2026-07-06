@@ -1138,7 +1138,7 @@ def build_suricata_data(ip_to_host, alerts=None):
     # signature summary and the LAN rows match what the user expects to see.
     fp_all = load_fp_all()
     mac_to_ip, _ = load_leases()
-    fp_ips = {mac_to_ip[mac] for mac in fp_all["devices"] if mac in mac_to_ip}
+    fp_ips = _fp_device_ips(fp_all["devices"], mac_to_ip)
     alerts = [a for a in alerts if a["src_ip"] not in fp_ips and a["dst_ip"] not in fp_ips]
     total_alerts = len(alerts)
 
@@ -1310,7 +1310,7 @@ def count_alerts_by_priority():
     alerts = filter_infra_noise(parse_fast_log_today())
     fp_all = load_fp_all()
     mac_to_ip, _ = load_leases()
-    fp_ips = {mac_to_ip[mac] for mac in fp_all["devices"] if mac in mac_to_ip}
+    fp_ips = _fp_device_ips(fp_all["devices"], mac_to_ip)
     counts = {1: 0, 2: 0, 3: 0, 4: 0}
     for a in alerts:
         if a.get("src_ip") in fp_ips or a.get("dst_ip") in fp_ips:
@@ -1327,7 +1327,7 @@ def count_beacon_findings_today():
     surfaces as the dashboard tile disagreeing with the Hotlist itself."""
     mac_to_ip, _ = load_leases()
     fp_all       = load_fp_all()
-    fp_ips       = {mac_to_ip[mac] for mac in fp_all["devices"] if mac in mac_to_ip}
+    fp_ips       = _fp_device_ips(fp_all["devices"], mac_to_ip)
     fp_domains   = fp_all["domains"]
     fp_protocols = fp_all["protocols"]
 
@@ -1695,6 +1695,15 @@ def enrich_ips_batch(pairs, days: int = 7) -> dict:
                 by_dst[d] = entry
                 _IP_ENRICH_CACHE[d] = {**entry, "ts": now}
 
+    # Evict expired entries occasionally — TTL is otherwise only checked on
+    # read, so every external IP ever seen accumulates for the process
+    # lifetime (the one unbounded structure in the app).
+    if len(_IP_ENRICH_CACHE) > 5000:
+        cutoff = now - _IP_ENRICH_TTL
+        for k in [k for k, v in _IP_ENRICH_CACHE.items()
+                  if v.get("ts", 0) < cutoff]:
+            del _IP_ENRICH_CACHE[k]
+
     # Attach external threat-intel from the local cache (refreshed daily by
     # beaconbutty-ip-intel.service). Adds an `intel` sub-dict on each entry;
     # callers that don't care can ignore it.
@@ -1745,6 +1754,7 @@ def get_bandwidth_data(days=1, top_n=8, dest_limit=20):
                     "top_device_bytes": 0, "window_days": days},
         "timeseries": [],
         "series_order": [],
+        "series_labels": {},   # keep the shape identical to the full payload
         "talkers": [],
         "destinations": [],
     }
@@ -1947,6 +1957,46 @@ def _write_json_atomic(path, obj, **dump_kwargs):
     tmp = p.with_name(p.name + ".tmp")
     tmp.write_text(json.dumps(obj, **dump_kwargs))
     tmp.replace(p)
+
+
+_ASSETS_HISTORY_IPS_CACHE = {"mtime": 0.0, "mac_to_ips": {}}
+
+
+def _history_mac_to_ips():
+    """mac → {IPs seen in the last 14 days} from assets-history.json,
+    mtime-cached. Lets FP suppression keep covering a device after it
+    renumbers or goes offline (current dnsmasq leases alone lose it)."""
+    try:
+        mtime = ASSETS_HISTORY_FILE.stat().st_mtime
+    except OSError:
+        return {}
+    if mtime != _ASSETS_HISTORY_IPS_CACHE["mtime"]:
+        m2i: dict = {}
+        try:
+            with open(ASSETS_HISTORY_FILE) as f:
+                for hist_ip, info in json.load(f).items():
+                    mac = (info.get("mac") or "").lower()
+                    if mac:
+                        m2i.setdefault(mac, set()).add(hist_ip)
+        except (OSError, json.JSONDecodeError):
+            m2i = {}
+        _ASSETS_HISTORY_IPS_CACHE["mtime"] = mtime
+        _ASSETS_HISTORY_IPS_CACHE["mac_to_ips"] = m2i
+    return _ASSETS_HISTORY_IPS_CACHE["mac_to_ips"]
+
+
+def _fp_device_ips(fp_devices, mac_to_ip):
+    """All IPs — current lease plus 14-day history — for FP'd device MACs.
+    The single source for every fp_ips derivation (14 sites used to inline
+    the lease-only set comprehension and drift independently)."""
+    hist = _history_mac_to_ips()
+    ips = set()
+    for mac in fp_devices:
+        mac = mac.lower()
+        if mac in mac_to_ip:
+            ips.add(mac_to_ip[mac])
+        ips.update(hist.get(mac, ()))
+    return ips
 
 
 def _run_fp_script(*args):
@@ -2305,7 +2355,7 @@ def ja4_summary_for_ip(src_ip):
     # and Slack alerts, both of which already FP-filter.
     fp_all = load_fp_all()
     mac_to_ip, _ = load_leases()
-    fp_ips = {mac_to_ip[m] for m in fp_all["devices"] if m in mac_to_ip}
+    fp_ips = _fp_device_ips(fp_all["devices"], mac_to_ip)
     device_is_fp = src_ip in fp_ips
 
     pair_idx = _ja4_index(lookback_days=1)
@@ -2575,7 +2625,7 @@ def build_ja4_threat_matches(ip_to_host, assets=None):
     """
     fp_all = load_fp_all()
     mac_to_ip, _ = load_leases()
-    fp_ips = {mac_to_ip[mac] for mac in fp_all["devices"] if mac in mac_to_ip}
+    fp_ips = _fp_device_ips(fp_all["devices"], mac_to_ip)
 
     pair_idx = _ja4_index(lookback_days=1)
     by_src: dict[str, Counter] = {}
@@ -2740,7 +2790,7 @@ def build_ja4_inventory(ip_to_host, assets=None):
     """
     fp_all = load_fp_all()
     mac_to_ip, _ = load_leases()
-    fp_ips = {mac_to_ip[mac] for mac in fp_all["devices"] if mac in mac_to_ip}
+    fp_ips = _fp_device_ips(fp_all["devices"], mac_to_ip)
 
     pair_idx = _ja4_index(lookback_days=1)
     by_src = {}
@@ -2805,7 +2855,7 @@ def build_tls_anomalies(ip_to_host, assets=None):
     """
     fp_all = load_fp_all()
     mac_to_ip, _ = load_leases()
-    fp_ips     = {mac_to_ip[mac] for mac in fp_all["devices"] if mac in mac_to_ip}
+    fp_ips     = _fp_device_ips(fp_all["devices"], mac_to_ip)
     fp_domains = fp_all["domains"]
 
     # (src, dst_ip, issue) → count
@@ -2903,7 +2953,7 @@ def build_exfil_candidates(ip_to_host, assets=None):
     """
     fp_all = load_fp_all()
     mac_to_ip, _ = load_leases()
-    fp_ips = {mac_to_ip[mac] for mac in fp_all["devices"] if mac in mac_to_ip}
+    fp_ips = _fp_device_ips(fp_all["devices"], mac_to_ip)
 
     # Use orig_ip_bytes (real IP-layer bytes Zeek observed) rather than
     # orig_bytes (payload estimator that can inflate on TCP-sequence-wrap
@@ -2957,7 +3007,7 @@ def build_night_activity(ip_to_host, assets=None):
     """
     fp_all = load_fp_all()
     mac_to_ip, _ = load_leases()
-    fp_ips = {mac_to_ip[mac] for mac in fp_all["devices"] if mac in mac_to_ip}
+    fp_ips = _fp_device_ips(fp_all["devices"], mac_to_ip)
 
     # See build_exfil_candidates — ip_bytes, not payload bytes.
     src_conns = {}
@@ -3009,7 +3059,7 @@ def build_dns_anomalies(ip_to_host, assets=None):
     """
     fp_all = load_fp_all()
     mac_to_ip, _ = load_leases()
-    fp_ips = {mac_to_ip[mac] for mac in fp_all["devices"] if mac in mac_to_ip}
+    fp_ips = _fp_device_ips(fp_all["devices"], mac_to_ip)
     fp_domains = fp_all["domains"]  # pattern → reason
 
     def _fp_domain_match_q(q):
@@ -3102,7 +3152,7 @@ def build_weird_events(ip_to_host, assets=None):
     """
     fp_all = load_fp_all()
     mac_to_ip, _ = load_leases()
-    fp_ips = {mac_to_ip[mac] for mac in fp_all["devices"] if mac in mac_to_ip}
+    fp_ips = _fp_device_ips(fp_all["devices"], mac_to_ip)
 
     agg = {}  # name → {count, lan_srcs: set, addl: str}
 
@@ -3165,7 +3215,7 @@ def build_beacon_persistence(ip_to_host, assets=None):
 
     fp_all = load_fp_all()
     mt2i, _ = load_leases()
-    fp_ips     = {mt2i[mac] for mac in fp_all["devices"] if mac in mt2i}
+    fp_ips     = _fp_device_ips(fp_all["devices"], mt2i)
     fp_domains = fp_all["domains"]
 
     results = []
@@ -3232,7 +3282,7 @@ def build_new_beacons(ip_to_host, assets=None):
 
     fp_all = load_fp_all()
     mt2i, _ = load_leases()
-    fp_ips       = {mt2i[mac] for mac in fp_all["devices"] if mac in mt2i}
+    fp_ips       = _fp_device_ips(fp_all["devices"], mt2i)
     fp_domains   = fp_all["domains"]
     fp_protocols = fp_all["protocols"]
 
@@ -3401,7 +3451,10 @@ def _network_cache_warmer():
                 _NETWORK_CACHE["data"] = data
                 _NETWORK_CACHE["ts"]   = time.time()
         except Exception:
-            pass
+            # Log it — a persistently-failing warmer otherwise leaves zero
+            # journal evidence until the cache TTL-expires and a request
+            # pays the cold rebuild (and surfaces the error as a 500).
+            app.logger.exception("network cache warmer rebuild failed")
         _NETWORK_REBUILD_REQUEST.wait(timeout=interval)
 
 
@@ -3621,7 +3674,7 @@ def build_suricata_extras(ip_to_host, today_alerts=None, week_alerts=None, eve_e
 
     fps    = load_fps()
     mt2i, _ = load_leases()
-    fp_ips = {mt2i[mac] for mac in fps if mac in mt2i}
+    fp_ips = _fp_device_ips(fps, mt2i)
 
     beacon_ips = set()
     for path in sorted(REPORTS_DIR.glob("beacon-report-*.txt"), reverse=True)[:1]:
@@ -4205,7 +4258,6 @@ def assets():
     # Merge in "ghost" entries — devices seen in the last 14 days that aren't
     # currently live. Keeps Assets coherent with the multi-day Slow-Cadence
     # view: a laptop that disappeared mid-window is still findable here.
-    today_iso = date.today().isoformat()
     try:
         with open(ASSETS_HISTORY_FILE) as f:
             history = json.load(f)
@@ -4215,14 +4267,17 @@ def assets():
         if ip in data:
             continue
         last = info.get("last_seen", "")
-        if not last or last == today_iso:
-            continue   # not a ghost — either malformed or seen today
+        if not last:
+            continue
         try:
             d = date.fromisoformat(last)
             days_ago = (date.today() - d).days
         except ValueError:
             continue
-        if days_ago < 1 or days_ago > 14:
+        # days_ago == 0 is a valid ghost: present at the morning assets run
+        # but gone from the live set now (the `ip in data` check above
+        # already excluded currently-live devices).
+        if days_ago < 0 or days_ago > 14:
             continue
         ghost = dict(info)
         ghost["ghost"]       = True
@@ -4336,21 +4391,6 @@ def fps_add_protocol():
             reason = reason[:50]
         _run_fp_script("add-protocol", svc, reason)
     return redirect(url_for("fps"))
-
-
-@app.route("/fps/add-device", methods=["POST"])
-def fps_add_device():
-    """Add a device FP by IP (used by fetch() calls from network intel page)."""
-    ip     = request.form.get("ip", "").strip()
-    reason = request.form.get("reason", "").strip()
-    if not ip or not reason or not _IP_RE.match(ip):
-        return jsonify({"ok": False, "error": "invalid"}), 400
-    if len(reason) > 50:
-        reason = reason[:50]
-    ok, err = _run_fp_script("add", ip, reason)
-    if not ok:
-        return jsonify({"ok": False, "error": err}), 500
-    return jsonify({"ok": True})
 
 
 @app.route("/fps/remove-protocol", methods=["POST"])
@@ -4617,8 +4657,16 @@ def api_slack_message_count():
         return {"ok": False, "message": f"Could not read Slack config: {e}"}, 500
     try:
         from slack_cleaner2 import SlackCleaner, match
-        s = SlackCleaner(token)
-        count = sum(1 for _ in s.msgs(filter(match(channel), s.channels)))
+        # slack_cleaner2 exposes no timeout — bound its sockets or a
+        # black-holed slack.com parks this request thread forever.
+        import socket
+        _old_to = socket.getdefaulttimeout()
+        socket.setdefaulttimeout(30)
+        try:
+            s = SlackCleaner(token)
+            count = sum(1 for _ in s.msgs(filter(match(channel), s.channels)))
+        finally:
+            socket.setdefaulttimeout(_old_to)
         return {"ok": True, "count": count, "has_more": False, "channel": channel}
     except Exception as e:
         return {"ok": False, "message": str(e)}, 500
@@ -4635,11 +4683,17 @@ def api_slack_clear_channel():
         return {"ok": False, "message": f"Could not read Slack config: {e}"}, 500
     try:
         from slack_cleaner2 import SlackCleaner, match
-        s = SlackCleaner(token)
-        deleted = 0
-        for msg in s.msgs(filter(match(channel), s.channels)):
-            msg.delete()
-            deleted += 1
+        import socket
+        _old_to = socket.getdefaulttimeout()
+        socket.setdefaulttimeout(30)
+        try:
+            s = SlackCleaner(token)
+            deleted = 0
+            for msg in s.msgs(filter(match(channel), s.channels)):
+                msg.delete()
+                deleted += 1
+        finally:
+            socket.setdefaulttimeout(_old_to)
         return {"ok": True, "message": f"Deleted {deleted} message{'s' if deleted != 1 else ''} from #{channel}"}
     except Exception as e:
         return {"ok": False, "message": str(e)}, 500

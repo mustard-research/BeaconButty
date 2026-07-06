@@ -405,6 +405,7 @@ def main() -> int:
     failures = 0
     for i, ip in enumerate(capped, 1):
         entry = cache.get(ip, {})
+        refreshed_ok = True
         # Only refetch Shodan if we don't already have it or entry expired.
         shodan_stale = ("shodan" not in entry) or entry.get("ts", "") < refresh_cutoff
         if shodan_stale:
@@ -413,6 +414,7 @@ def main() -> int:
                 entry["shodan"] = sh
             else:
                 failures += 1
+                refreshed_ok = False
             time.sleep(SHODAN_SLEEP)
         # Same for AbuseIPDB — don't burn quota re-checking what we already have.
         abuse_stale = ("abuseipdb" not in entry) or entry.get("ts", "") < refresh_cutoff
@@ -420,9 +422,15 @@ def main() -> int:
             ab = abuseipdb_check(ip, api_key)
             if ab is not None:
                 entry["abuseipdb"] = ab
+            else:
+                refreshed_ok = False
             time.sleep(ABUSEIPDB_SLEEP)
 
-        entry["ts"] = now
+        # Stamp fresh only when the refresh succeeded — bumping ts on a
+        # failed refetch presents month-old intel as fresh for another
+        # 30 days instead of retrying on the next run.
+        if refreshed_ok:
+            entry["ts"] = now
         cache[ip] = entry
         if i % 25 == 0:
             save_cache_atomic(cache)

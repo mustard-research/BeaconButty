@@ -23,6 +23,12 @@ export {
         dst_mac:   string   &log &optional;
         dst_ip:    addr     &log &optional;
         info:      string   &log &optional;  # bad_arp explanation, if any
+        # Appended fields (order matters — l2-alert-check parses arp.log
+        # positionally): the ARP-payload sender MAC, and whether it differs
+        # from the Ethernet frame source — a classic poisoning tell that
+        # frame-MAC-only logging masks.
+        sha:       string   &log &optional;
+        mismatch:  bool     &log &optional;
     };
 }
 
@@ -41,7 +47,9 @@ event arp_request(mac_src: string, mac_dst: string,
         $src_mac=mac_src,
         $src_ip=SPA,
         $dst_mac=mac_dst,
-        $dst_ip=TPA
+        $dst_ip=TPA,
+        $sha=SHA,
+        $mismatch=(to_lower(mac_src) != to_lower(SHA))
     ]);
 }
 
@@ -55,7 +63,9 @@ event arp_reply(mac_src: string, mac_dst: string,
         $src_mac=mac_src,
         $src_ip=SPA,
         $dst_mac=mac_dst,
-        $dst_ip=TPA
+        $dst_ip=TPA,
+        $sha=SHA,
+        $mismatch=(to_lower(mac_src) != to_lower(SHA))
     ]);
 }
 

@@ -37,6 +37,15 @@ TIMEOUT_SEC  = 15
 USER_AGENT   = "BeaconButty/1.0 (teams-cidr-refresh; +https://github.com/mustard-research/BeaconButty)"
 
 
+def _cidr_sort_key(c: str):
+    """Numeric sort with a fallback: one malformed feed entry must not
+    crash the whole refresh (the existing file would just go stale)."""
+    try:
+        return (0, tuple(int(p) for p in c.split("/")[0].split(".")))
+    except ValueError:
+        return (1, (c,))
+
+
 def fetch_endpoints() -> list:
     qs   = f"?clientrequestid={uuid.uuid4()}"
     url  = ENDPOINT_URL + qs
@@ -67,7 +76,7 @@ def extract_teams(entries: list) -> dict:
         "version": dt.date.today().isoformat(),
         "source":  "endpoints.office.com — Microsoft 365 Skype service area",
         "comment": "Refreshed by beaconbutty-teams-cidr-refresh.timer (daily).",
-        "ipv4_cidrs":   sorted(cidrs_v4, key=lambda x: tuple(int(p) for p in x.split("/")[0].split("."))),
+        "ipv4_cidrs":   sorted(cidrs_v4, key=_cidr_sort_key),
         "sni_suffixes": sorted(sni_suffix),
         "sni_exact":    sorted(sni_exact),
     }

@@ -167,8 +167,19 @@ try:
 except Exception:
     pass
 
+# Manual name overrides — same semantics as the webapp's ip_label():
+# device-names.json wins over the DHCP hostname (the summary previously
+# ignored the override file entirely, so the two surfaces disagreed).
+name_overrides = {}
+try:
+    with open('/var/lib/beaconbutty/device-names.json') as f:
+        name_overrides = {k: v for k, v in json.load(f).items()
+                          if isinstance(v, str) and v}
+except Exception:
+    pass
+
 def ip_label(ip):
-    h = ip_to_host.get(ip, '')
+    h = name_overrides.get(ip) or ip_to_host.get(ip, '')
     return f"{ip} ({h})" if h else ip
 
 # ── MAC→IP history from Zeek DHCP logs ───────────────────────────────────────
@@ -959,8 +970,11 @@ if send_alerts:
                 dst    = dest(r)
                 fire, reason = gate(dst_ip, port_from(r), fqdn)
                 if fire:
+                    # No live numbers in alert details \u2014 Lambda dedup keys on
+                    # (type, device, detail) and a varying score/count makes
+                    # the same logical finding page again and again.
                     _alert('high_score_beacon', 'high', src,
-                           f"Score {s:.3f} \u2192 {dst[:80]}")
+                           f"Score-1.0 beacon \u2192 {dst[:80]}")
                     fired['high_score_beacon'] += 1
                 else:
                     gated['high_score_beacon'][reason] += 1
@@ -974,7 +988,7 @@ if send_alerts:
             fire, reason = gate(dst_ip, port_from(r), fqdn)
             if fire:
                 _alert('persistent_beacon', 'high', src,
-                       f"Strobe {conns(r)} conns \u2192 {dst[:80]}")
+                       f"Strobe \u2192 {dst[:80]}")
                 fired['persistent_beacon'] += 1
             else:
                 gated['persistent_beacon'][reason] += 1
@@ -988,10 +1002,13 @@ if send_alerts:
                    f"Threat intel hit \u2192 {dst[:80]}")
             fired['threat_intel_hit'] += 1
 
-        # tor_contact — Tor egress from a LAN device. No gate.
+        # tor_contact — Tor egress from a LAN device. No gate. Detail names
+        # the destination, not the flag message (whose conn/MB counts change
+        # run to run and defeat Lambda dedup).
         for (ip, ft), g in grouped.items():
             if ft == 'tor':
-                _alert('tor_contact', 'high', ip, g['msgs'][0][:100])
+                _alert('tor_contact', 'high', ip,
+                       f"Tor exit contact → {g['dests'][0][:80]}")
                 fired['tor_contact'] += 1
 
         write_gate_stats('daily_summary', fired, gated)

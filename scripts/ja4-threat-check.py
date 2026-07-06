@@ -140,6 +140,15 @@ def fp_source_ips() -> set[str]:
                     ips.add(parts[2])
     except FileNotFoundError:
         pass
+    # Also cover IPs the MAC held earlier in the window — current leases
+    # alone lose an FP'd device that renumbered or went offline.
+    try:
+        with open("/var/lib/beaconbutty/assets-history.json") as f:
+            for hist_ip, info in json.load(f).items():
+                if (info.get("mac") or "").lower() in fp_macs:
+                    ips.add(hist_ip)
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
     return ips
 
 

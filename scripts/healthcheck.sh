@@ -284,6 +284,10 @@ fi
 IPV4_INPUT_POLICY=$(iptables -L INPUT --line-numbers -n 2>/dev/null | head -1 | grep -oP 'policy \K\w+' || echo "UNKNOWN")
 if [[ "$IPV4_INPUT_POLICY" == "DROP" ]]; then
     OK "IPv4 INPUT policy: DROP"
+elif [[ "$IPV4_INPUT_POLICY" == "UNKNOWN" && $EUID -ne 0 ]]; then
+    # Non-root can't read iptables at all — that's a permissions artefact,
+    # not a missing firewall; don't page on it.
+    WARN "IPv4 INPUT policy: unreadable without root — re-run with sudo"
 else
     FAIL "IPv4 INPUT policy: ${IPV4_INPUT_POLICY} — should be DROP (run beaconbutty-harden.sh)"
     send_alert service_down high bb0 "IPv4 INPUT policy is ${IPV4_INPUT_POLICY} — firewall not in place"

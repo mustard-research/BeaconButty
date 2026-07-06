@@ -35,15 +35,17 @@ fi
 # TimeoutStopSec=infinity so systemd waits indefinitely, but the watchdog
 # won't — stopping it here first gives it unlimited time before the countdown
 # starts.
+# A failure here must not abort the script — under set -e that would leave
+# the box up after a scripted `sudo reboot` silently did nothing.
 if systemctl is-active --quiet clickhouse-server; then
     echo "ClickHouse: stopping..."
-    systemctl stop clickhouse-server
+    systemctl stop clickhouse-server || echo "WARNING: ClickHouse stop failed — rebooting anyway"
     echo "ClickHouse: stopped"
 fi
 
 # ── 4. Flush log2ram ──────────────────────────────────────────────────────────
 echo "log2ram: syncing to disk..."
-log2ram write
+log2ram write || echo "WARNING: log2ram flush failed — rebooting anyway"
 echo "log2ram: done"
 
 # ── 5. Reboot ─────────────────────────────────────────────────────────────────

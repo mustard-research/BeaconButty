@@ -104,8 +104,14 @@ echo "-- Beacon reports under $REPORTS_DIR --"
 
 REPORTS_DELETED=0
 while IFS= read -r f; do
-    # Filenames are beacon-report-YYYYMMDD.txt
-    file_date=$(basename "$f" | grep -oP '\d{8}')
+    # Filenames are beacon-report-YYYYMMDD.txt. Guard the extraction: under
+    # set -e a non-conforming name would kill the whole run mid-way,
+    # silently skipping the later cleanup sections.
+    file_date=$(basename "$f" | grep -oP '\d{8}' | head -1) || true
+    if [[ ! "$file_date" =~ ^[0-9]{8}$ ]]; then
+        echo "  Skipping (no date in name): $f"
+        continue
+    fi
     if [[ "$file_date" -lt "$CUTOFF" ]]; then
         echo "  Deleting $f"
         rm -f "$f"

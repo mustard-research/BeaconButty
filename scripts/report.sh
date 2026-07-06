@@ -47,6 +47,8 @@ hr() { printf '%.0s─' {1..60}; echo; }
     )
 
     if [[ ${#DATABASES[@]} -eq 0 ]]; then
+        # NB: this exit only leaves the { … } | tee subshell, not the
+        # script — the marker line is checked after the pipe.
         echo "  No RITA databases found."
         echo "  Run:  rita-analyze.sh"
         echo ""
@@ -75,6 +77,14 @@ hr() { printf '%.0s─' {1..60}; echo; }
     done
 
 } | tee "$REPORT_FILE"
+
+# The no-databases early-exit above only left the subshell — don't keep (or
+# log success for) a placeholder report.
+if grep -q 'No RITA databases found' "$REPORT_FILE" 2>/dev/null; then
+    logger -t beaconbutty "Daily report skipped — no RITA databases yet"
+    rm -f "$REPORT_FILE"
+    exit 0
+fi
 
 # Send a summary line to syslog so it appears in journalctl
 FINDING_COUNT=$(grep -cE '^(Critical|High|Medium|Low|None),' "$REPORT_FILE" 2>/dev/null) || FINDING_COUNT=0

@@ -811,10 +811,11 @@ if [[ $# -ge 1 ]]; then
     exit 0
 fi
 
-# Interactive loop
+# Interactive loop. `|| true`: a failed menu action (e.g. non-root picking a
+# root-only item) must return to the menu, not kill the console via set -e.
 while true; do
     print_menu
     echo -n "  Select [0-18]: "
     read -r choice || true
-    dispatch "${choice:-}"
+    dispatch "${choice:-}" || true
 done

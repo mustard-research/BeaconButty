@@ -76,8 +76,10 @@ def lambda_handler(event, context):
     timestamp  = body.get("timestamp", datetime.now(timezone.utc).isoformat())
 
     # ── Deduplication ─────────────────────────────────────────────────────────
+    # Full detail (an 80-char prefix conflated long-FQDN details) and
+    # severity (an escalation must page even inside the medium window).
     fingerprint = hashlib.sha256(
-        f"{alert_type}:{device}:{detail[:80]}".encode()
+        f"{alert_type}:{severity}:{device}:{detail}".encode()
     ).hexdigest()[:32]
 
     dedup_hours = DEDUP_HOURS_HIGH if severity == "high" else DEDUP_HOURS_MEDIUM

@@ -73,14 +73,19 @@ logging.basicConfig(
 log = logging.getLogger('bb-watchdog')
 
 # ── Sensor reads ──────────────────────────────────────────────────────────────
+_last_temp = 50.0   # conservative default until the first successful read
+
 def read_temperature() -> float:
-    """CPU temperature in degrees C from thermal_zone0."""
+    """CPU temperature in degrees C from thermal_zone0. Holds the last good
+    reading on sensor error — returning 0.0 switched the fan OFF exactly
+    when the thermal sensor was misbehaving."""
+    global _last_temp
     try:
         raw = Path('/sys/class/thermal/thermal_zone0/temp').read_text().strip()
-        return round(int(raw) / 1000.0, 1)
+        _last_temp = round(int(raw) / 1000.0, 1)
     except Exception as e:
-        log.warning(f'read_temperature failed: {e}')
-        return 0.0
+        log.warning(f'read_temperature failed: {e} — holding {_last_temp}')
+    return _last_temp
 
 
 def read_fan_states() -> tuple:

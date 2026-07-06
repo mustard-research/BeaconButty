@@ -41,9 +41,13 @@ awk -F'\t' -v gw="$GATEWAY_IP" -v me="${BB0_GW_MAC,,}" '
         if (m != "" && m != me && m != "-") print m
     }
 ' "$ARP_LOG" | sort -u | while read -r rogue_mac; do
+    # || true: one alert.sh failure (Lambda 5xx, WAN down) must not abort
+    # the subshell under set -e — later rogue MACs in the same batch would
+    # never be alerted and the 5-min timer unit would flap into failed.
     "$ALERT_BIN" \
         gateway_impersonation \
         high \
         "$GATEWAY_IP" \
-        "Rogue MAC ${rogue_mac} announced as gateway ${GATEWAY_IP} — possible router takeover (bb0 MAC is ${BB0_GW_MAC})"
+        "Rogue MAC ${rogue_mac} announced as gateway ${GATEWAY_IP} — possible router takeover (bb0 MAC is ${BB0_GW_MAC})" \
+        || true
 done

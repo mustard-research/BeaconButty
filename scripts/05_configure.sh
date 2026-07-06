@@ -100,6 +100,12 @@ install -m 755 "$SCRIPT_DIR/scripts/bb0-fan"          /usr/local/bin/bb0-fan
 mkdir -p /var/lib/beaconbutty/reports
 mkdir -p /var/lib/beaconbutty/backups
 mkdir -p /var/log/beaconbutty
+# State dir is written by BOTH root (timer scripts) and dm (webapp: FP
+# registry via fp.sh, alert-config, domain-watch, teams config). All writers
+# use atomic tmp+rename, which needs DIRECTORY write permission — group dm
+# + setgid so either side can replace files regardless of file owner.
+chgrp dm /var/lib/beaconbutty
+chmod 2775 /var/lib/beaconbutty
 # alerts.log written by both root (systemd) and dm (interactive) — owned by dm
 touch /var/log/beaconbutty/alerts.log
 chown dm:dm /var/log/beaconbutty/alerts.log

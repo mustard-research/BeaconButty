@@ -35,11 +35,16 @@ SCAN_GREP="${CACHE_DIR}/scan.gnmap"
 HOSTS_FILE="${CACHE_DIR}/hosts.txt"
 ASSETS_JSON="${CACHE_DIR}/assets.json"
 LOGFILE="/var/log/beaconbutty/assets.log"
-NEW_DEVICES_TMP="/tmp/beaconbutty_new_devices.json"
 ALERT_BIN="${ALERT_BIN:-beaconbutty-alert.sh}"
 ZEEK_LOG_DIR="${ZEEK_LOG_DIR:-/var/log/zeek}"
 
 mkdir -p "$CACHE_DIR" /var/log/beaconbutty
+
+# Private per-run temp for the new-device list. Was a fixed, world-guessable
+# /tmp path: concurrent runs interleaved on it, and a local user could
+# pre-plant a symlink that root would follow on write.
+NEW_DEVICES_TMP=$(mktemp "${CACHE_DIR}/.new-devices.XXXXXX.json")
+trap 'rm -f "$NEW_DEVICES_TMP"' EXIT
 exec >> "$LOGFILE" 2>&1
 
 echo ""

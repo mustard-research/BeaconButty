@@ -112,6 +112,10 @@ mapfile -t DATABASES < <(
 if [[ ${#DATABASES[@]} -eq 0 ]]; then
     echo -e "  ${YELLOW}!${RESET}  No RITA datasets available yet."
 else
+    # Dedup across the 3 daily DBs: a persistent beacon appears in each one,
+    # tripling the finding count and cluttering triage. Key on the
+    # src,dst,fqdn columns; first (oldest) occurrence wins.
+    declare -A SEEN_TRIAGE
     for DB in "${DATABASES[@]}"; do
         DATE_PART="${DB#${RITA_DB_PREFIX}_}"
         DISPLAY_DATE="${DATE_PART:0:4}-${DATE_PART:4:2}-${DATE_PART:6:2}"
@@ -136,8 +140,12 @@ else
             # RITA prints a perfect score as integer "1" — decimal part optional
             if [[ "$SCORE" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
                 if awk "BEGIN{exit !($SCORE >= $ALERT_THRESHOLD)}"; then
-                    echo -e "  ${RED}${SCORE}${RESET}  ${DISPLAY_DATE}  ${line#*,}"
-                    ALERT_COUNT=$(( ALERT_COUNT + 1 ))
+                    KEY=$(echo "$line" | cut -d',' -f2-4)   # src,dst,fqdn
+                    if [[ -z "${SEEN_TRIAGE[$KEY]:-}" ]]; then
+                        SEEN_TRIAGE[$KEY]=1
+                        echo -e "  ${RED}${SCORE}${RESET}  ${DISPLAY_DATE}  ${line#*,}"
+                        ALERT_COUNT=$(( ALERT_COUNT + 1 ))
+                    fi
                 fi
             fi
         done < <(cd /etc/rita && rita view --config "$RITA_CONFIG" --stdout "$DB" 2>/dev/null || true)

@@ -118,13 +118,23 @@ def load_fp_macs() -> set[str]:
 
 
 def fp_source_ips(fp_macs: set[str]) -> set[str]:
-    if not fp_macs or not DHCP_LEASES.exists():
+    if not fp_macs:
         return set()
     ips: set[str] = set()
-    for line in DHCP_LEASES.read_text().splitlines():
-        parts = line.split()
-        if len(parts) >= 3 and parts[1].lower() in fp_macs:
-            ips.add(parts[2])
+    if DHCP_LEASES.exists():
+        for line in DHCP_LEASES.read_text().splitlines():
+            parts = line.split()
+            if len(parts) >= 3 and parts[1].lower() in fp_macs:
+                ips.add(parts[2])
+    # Also cover IPs the MAC held earlier in the window — current leases
+    # alone lose an FP'd device that renumbered or went offline.
+    try:
+        with open("/var/lib/beaconbutty/assets-history.json") as f:
+            for hist_ip, info in json.load(f).items():
+                if (info.get("mac") or "").lower() in fp_macs:
+                    ips.add(hist_ip)
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
     return ips
 
 
