@@ -1,6 +1,5 @@
 [Unit]
 Description=BeaconButty — daily storage housekeeping at 08:00
-Requires=beaconbutty-housekeeping.service
 
 [Timer]
 # Run at 08:00, after the 07:00 beacon report has completed

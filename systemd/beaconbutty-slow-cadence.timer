@@ -1,6 +1,5 @@
 [Unit]
 Description=BeaconButty — run slow-cadence detector hourly
-Requires=beaconbutty-slow-cadence.service
 
 [Timer]
 # RITA imports kick off at *:05 and may take several minutes per outstanding

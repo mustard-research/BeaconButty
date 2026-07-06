@@ -1,6 +1,5 @@
 [Unit]
 Description=BeaconButty — daily slow-cadence hunt digest
-Requires=beaconbutty-slow-cadence-digest.service
 
 [Timer]
 # Daily at 08:00 UTC (= 09:00 BST). Lines up with the morning report

@@ -1,6 +1,5 @@
 [Unit]
 Description=BeaconButty — daily Suricata rule update at 06:00
-Requires=suricata-update.service
 
 [Timer]
 # Run at 06:00, one hour before the daily beacon report (07:00),

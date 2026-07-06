@@ -17,7 +17,11 @@ STAMP=$(date +%Y-%m-%d)
 OUT="${BACKUP_DIR}/config-${STAMP}.tar.gz"
 PKG="${BACKUP_DIR}/packages-${STAMP}.txt"
 
-mkdir -p "$BACKUP_DIR"
+# Snapshots contain AWS credentials, ACME account keys and the Slack token.
+# Dir is setgid so files inherit its group (the webapp user's group, for the
+# Backup page's download links); no access for other users.
+umask 027
+install -d -m 2750 "$BACKUP_DIR"
 
 log() { echo "[$(date '+%H:%M:%S')] $*"; }
 

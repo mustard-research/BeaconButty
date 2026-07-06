@@ -1,6 +1,5 @@
 [Unit]
 Description=BeaconButty — daily beacon report at 07:00
-Requires=beacon-report.service
 
 [Timer]
 # Run at 07:00 each morning, after overnight traffic has been analysed

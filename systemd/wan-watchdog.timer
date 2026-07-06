@@ -1,6 +1,5 @@
 [Unit]
 Description=BeaconButty — check WAN connectivity every 5 minutes
-Requires=wan-watchdog.service
 
 [Timer]
 # First check 2 minutes after boot (give DHCP time to settle)

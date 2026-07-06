@@ -1,6 +1,5 @@
 [Unit]
 Description=BeaconButty — run RITA analysis every hour
-Requires=rita-analyze.service
 
 [Timer]
 # Run 5 minutes after Zeek rotates its logs (which happens on the hour)

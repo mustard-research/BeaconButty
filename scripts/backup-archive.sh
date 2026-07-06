@@ -21,7 +21,11 @@ STAMP=$(date +%Y-%m-%d)
 OUT="${BACKUP_DIR}/archive-${STAMP}.tar.gz"
 LOCK="/var/lock/beaconbutty-archive.lock"
 
-mkdir -p "$BACKUP_DIR"
+# Archives contain /etc/shadow, private keys and credentials. Dir is setgid
+# so files inherit its group (the webapp user's group, for the Backup page's
+# download links); no access for other users.
+umask 027
+install -d -m 2750 "$BACKUP_DIR"
 
 # Prevent overlapping runs (manual webapp trigger + weekly timer)
 exec 200>"$LOCK"
@@ -35,6 +39,25 @@ log() { echo "[$(date '+%H:%M:%S')] $*"; }
 log "BeaconButty full archive — ${STAMP}"
 log "Output: ${OUT}"
 
+# ── Pause the hourly RITA import ─────────────────────────────────────────────
+# rita-analyze.service Requires=clickhouse-server: an import firing mid-tar
+# would restart ClickHouse and tear the snapshot. Hold the timer for the
+# duration and wait out any import already in flight (a running oneshot
+# reports ActiveState=activating, not active).
+RITA_TIMER_WAS_ACTIVE=0
+if systemctl is-active --quiet rita-analyze.timer; then
+    RITA_TIMER_WAS_ACTIVE=1
+    log "Pausing rita-analyze.timer for the duration of the archive..."
+    systemctl stop rita-analyze.timer
+fi
+if [[ "$(systemctl show -p ActiveState --value rita-analyze.service)" == "activating" ]]; then
+    log "Waiting for in-flight RITA import to finish (up to 15 min)..."
+    for _ in $(seq 1 90); do
+        sleep 10
+        [[ "$(systemctl show -p ActiveState --value rita-analyze.service)" == "activating" ]] || break
+    done
+fi
+
 # ── Stop ClickHouse for a consistent snapshot ────────────────────────────────
 CH_WAS_RUNNING=0
 if systemctl is-active --quiet clickhouse-server; then
@@ -43,13 +66,16 @@ if systemctl is-active --quiet clickhouse-server; then
     systemctl stop clickhouse-server
 fi
 
-restart_clickhouse() {
+resume_services() {
     if [[ $CH_WAS_RUNNING -eq 1 ]]; then
         log "Restarting clickhouse-server..."
         systemctl start clickhouse-server || log "WARNING: failed to restart clickhouse-server"
     fi
+    if [[ $RITA_TIMER_WAS_ACTIVE -eq 1 ]]; then
+        systemctl start rita-analyze.timer || log "WARNING: failed to restart rita-analyze.timer"
+    fi
 }
-trap restart_clickhouse EXIT
+trap resume_services EXIT
 
 # ── Create archive ───────────────────────────────────────────────────────────
 log "Creating archive (this may take several minutes)..."
@@ -75,16 +101,21 @@ tar -czf "$OUT" \
     / \
     /boot/firmware \
     /var/log \
-    2>&1 | grep -v 'socket ignored' || true
+    2>&1 | grep -v 'socket ignored'
 
+# grep exits 1 when tar wrote nothing to stderr (the normal case) — only tar's
+# own exit code matters here. No `|| true`: it would run on pipeline failure
+# and reset PIPESTATUS to 0, masking real tar errors. (tar rc 1 = "file
+# changed while reading", tolerable; >1 = fatal.)
 TAR_RC=${PIPESTATUS[0]}
-if [[ $TAR_RC -ne 0 && $TAR_RC -ne 1 ]]; then
-    log "ERROR: tar exited with code ${TAR_RC}"
+if [[ $TAR_RC -gt 1 ]]; then
+    log "ERROR: tar exited with code ${TAR_RC} — removing incomplete archive"
+    rm -f "$OUT"
     exit $TAR_RC
 fi
 
-# ── Restart ClickHouse ───────────────────────────────────────────────────────
-restart_clickhouse
+# ── Restart ClickHouse + RITA timer ──────────────────────────────────────────
+resume_services
 trap - EXIT
 
 # ── Rotation ─────────────────────────────────────────────────────────────────
