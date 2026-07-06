@@ -78,6 +78,9 @@
       {% endif %}
       <div class="stat-sub">{{ beacon_data.date_range }}</div>
       <div class="sev-strip mt-8">
+        {% if beacon_data.sev_counts.Critical > 0 %}
+          <span class="badge badge-high">Critical {{ beacon_data.sev_counts.Critical }}</span>
+        {% endif %}
         {% if beacon_data.sev_counts.High > 0 %}
           <span class="badge badge-high">High {{ beacon_data.sev_counts.High }}</span>
         {% endif %}
@@ -308,7 +311,9 @@
           {% for b in beacon_data.top_beacons %}
           <tr>
             <td>
-              {% if b.severity == 'High' %}
+              {% if b.severity == 'Critical' %}
+                <span class="badge badge-high">Critical</span>
+              {% elif b.severity == 'High' %}
                 <span class="badge badge-high">High</span>
               {% elif b.severity == 'Medium' %}
                 <span class="badge badge-med">Med</span>

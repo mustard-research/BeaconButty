@@ -48,6 +48,12 @@ ALERT_TYPE_LABELS = {
     "disk_critical":        "Disk Space Critical",
     "health_check_fail":    "Health Check Failed",
     "teams_relay_anomaly":  "Teams Relay Anomaly (DragonForce pattern)",
+    "slow_cadence_beacon":  "Slow-Cadence Beacon",
+    "slow_cadence_digest":  "Slow-Cadence Daily Digest",
+    "gateway_impersonation": "Gateway Impersonation (ARP)",
+    "sustained_high_cpu":   "Sustained High CPU",
+    "config_invalid":       "Config File Invalid",
+    "config_stray_files":   "Stray Config Files",
 }
 
 

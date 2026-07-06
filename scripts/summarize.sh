@@ -389,8 +389,11 @@ def get_lan_talkers_map():
         out = subprocess.run([CH], input=sql, capture_output=True, text=True,
                              timeout=300, check=True).stdout
     except Exception as e:
+        # None (not {}) — an empty map would make every destination look
+        # "lonely" and a ClickHouse outage would fire the full ungated
+        # alert set. The gate treats None as "unknown → don't page".
         print(f'lan_talkers query failed: {e}', file=sys.stderr)
-        return {}
+        return None
     result = {}
     for line in out.splitlines():
         if not line.strip(): continue
@@ -713,7 +716,7 @@ for r in rows:
     sev_counts[r[COL['Severity']].strip()] += 1
 
 print('SEVERITY BREAKDOWN')
-sev_data = [(s, sev_counts[s]) for s in ('High', 'Medium', 'Low', 'None') if sev_counts[s]]
+sev_data = [(s, sev_counts[s]) for s in ('Critical', 'High', 'Medium', 'Low', 'None') if sev_counts[s]]
 sev_data.append(('Total', sum(c for _, c in sev_data)))
 print(table(['Severity', 'Count'], sev_data, ['<', '>']))
 print()
@@ -727,8 +730,8 @@ for r in rows:
     sev = r[COL['Severity']].strip()
     d   = dev[ip]
     d['total'] += 1
-    if   sev == 'High':   d['H'] += 1
-    elif sev == 'Medium': d['M'] += 1
+    if   sev in ('Critical', 'High'): d['H'] += 1
+    elif sev == 'Medium':             d['M'] += 1
     if s > d['max']:
         d['max'] = s
         d['top'] = dest(r)
@@ -909,8 +912,17 @@ if send_alerts:
         # Pre-compute the lan-talkers map once for the gate decisions.
         lan_talkers_map = get_lan_talkers_map()
 
+        # FQDN-keyed rows (dst "::") can never hit the IP-keyed talkers map,
+        # so count LAN talkers per FQDN from the report itself for those.
+        fqdn_talkers = defaultdict(set)
+        for _r in rows:
+            _fq = _r[COL['FQDN']].strip()
+            if _fq:
+                fqdn_talkers[_fq].add(_r[COL['Source IP']].strip())
+
         def gate(dst_ip, dst_port, fqdn=''):
-            """Return (fire, reason). reason in {'hyperscaler','shared_lan',''}.
+            """Return (fire, reason). reason in {'hyperscaler','shared_lan',
+            'talkers_unknown',''}.
 
             RITA represents FQDN-keyed beacons with Destination IP = "::",
             which gives no useful ASN. When the IP is unusable, fall back
@@ -919,14 +931,21 @@ if send_alerts:
             org = asn_org_for(dst_ip) if dst_ip and dst_ip != '::' else ''
             if is_hyperscaler(org) or is_hyperscaler_fqdn(fqdn):
                 return False, 'hyperscaler'
-            if lan_talkers_map.get((dst_ip, int(dst_port)), 1) > 1:
+            if lan_talkers_map is None:
+                return False, 'talkers_unknown'
+            if dst_ip and dst_ip != '::':
+                if lan_talkers_map.get((dst_ip, int(dst_port)), 1) > 1:
+                    return False, 'shared_lan'
+            elif len(fqdn_talkers.get(fqdn, ())) > 1:
                 return False, 'shared_lan'
             return True, ''
 
         fired = {'high_score_beacon': 0, 'persistent_beacon': 0,
                  'threat_intel_hit':  0, 'tor_contact':       0}
-        gated = {'high_score_beacon': {'hyperscaler': 0, 'shared_lan': 0},
-                 'persistent_beacon': {'hyperscaler': 0, 'shared_lan': 0}}
+        gated = {'high_score_beacon': {'hyperscaler': 0, 'shared_lan': 0,
+                                       'talkers_unknown': 0},
+                 'persistent_beacon': {'hyperscaler': 0, 'shared_lan': 0,
+                                       'talkers_unknown': 0}}
 
         # high_score_beacon — RITA score 1.0; gated by lonely + non-hyperscaler.
         # Score 1.0 alone catches a lot of long-running CDN flows; the gate

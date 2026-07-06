@@ -4,7 +4,15 @@
 
 for arg in "$@"; do
     if [[ "$arg" == "--force" || "$arg" == "-f" ]]; then
-        exec /usr/sbin/reboot "$@"
+        # Strip the flag before exec: to the real reboot, -f/--force means a
+        # HARD reboot (skips systemd shutdown entirely — no ClickHouse stop,
+        # no clean unmounts), the opposite of what "skip bb-reboot's extras"
+        # intends on this box.
+        args=()
+        for a in "$@"; do
+            [[ "$a" == "--force" || "$a" == "-f" ]] || args+=("$a")
+        done
+        exec /usr/sbin/reboot "${args[@]}"
     fi
 done
 

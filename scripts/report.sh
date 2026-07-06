@@ -77,7 +77,7 @@ hr() { printf '%.0s─' {1..60}; echo; }
 } | tee "$REPORT_FILE"
 
 # Send a summary line to syslog so it appears in journalctl
-FINDING_COUNT=$(grep -cE '^(High|Medium|Low|None),' "$REPORT_FILE" 2>/dev/null) || FINDING_COUNT=0
+FINDING_COUNT=$(grep -cE '^(Critical|High|Medium|Low|None),' "$REPORT_FILE" 2>/dev/null) || FINDING_COUNT=0
 logger -t beaconbutty "Daily report written: $REPORT_FILE  (${FINDING_COUNT} CSV rows)"
 
 echo "Report saved to: $REPORT_FILE"

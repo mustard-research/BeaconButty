@@ -13,6 +13,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 import threading
 import time
 import psutil
@@ -648,7 +649,7 @@ def get_beacon_data(report_file, mac_to_ip, ip_to_host, assets=None):
                 return pat, reason
         return None, None
 
-    sev_counts = {"High": 0, "Medium": 0, "Low": 0, "None": 0}
+    sev_counts = {"Critical": 0, "High": 0, "Medium": 0, "Low": 0, "None": 0}
     suppressed = 0
     suppressed_groups_map = {}  # (rule_type, rule) → {rule_type, rule, reason, rows}
     devices_map = {}  # ip → {label, high, med, total, max_score, top_dests}
@@ -793,7 +794,9 @@ def get_beacon_data(report_file, mac_to_ip, ip_to_host, assets=None):
                         "fqdn": fqdn.strip(), "raw_dst": dst.strip(), "severity": sev,
                         "dst_org": _dst_org or ""}
         d["all_beacons"].append(beacon_entry)
-        if sev == "High":
+        # RITA emits "Critical" above High — fold it into the High rollup so
+        # those rows appear in the hotlist counts and drill-downs.
+        if sev in ("Critical", "High"):
             d["high"] += 1
             d["high_beacons"].append(beacon_entry)
         elif sev == "Medium":
@@ -1299,30 +1302,20 @@ def build_suricata_data(ip_to_host, alerts=None):
 
 
 def count_alerts_by_priority():
-    """Count today's Suricata alerts by priority using fast.log."""
-    alerts = filter_infra_noise(parse_fast_log_today())
-    counts = {1: 0, 2: 0, 3: 0, 4: 0}
-    for a in alerts:
-        p = a.get("priority", 4)
-        counts[p] = counts.get(p, 0) + 1
-    return counts
+    """Count today's Suricata alerts by priority using fast.log.
 
-
-def count_sigs_by_priority():
-    """Count distinct signatures today by priority — matches the Suricata tab row count."""
+    Applies the same FP-device suppression as build_suricata_data so the
+    dashboard tile agrees with the /suricata page — an FP'd device tripping
+    a rule must not show a count the page then can't explain."""
     alerts = filter_infra_noise(parse_fast_log_today())
     fp_all = load_fp_all()
     mac_to_ip, _ = load_leases()
     fp_ips = {mac_to_ip[mac] for mac in fp_all["devices"] if mac in mac_to_ip}
-    seen = {}  # rule -> priority (first seen wins)
+    counts = {1: 0, 2: 0, 3: 0, 4: 0}
     for a in alerts:
         if a.get("src_ip") in fp_ips or a.get("dst_ip") in fp_ips:
             continue
-        rule = a.get("rule", "")
-        if rule not in seen:
-            seen[rule] = a.get("priority", 4)
-    counts = {1: 0, 2: 0, 3: 0, 4: 0}
-    for p in seen.values():
+        p = a.get("priority", 4)
         counts[p] = counts.get(p, 0) + 1
     return counts
 
@@ -1944,6 +1937,36 @@ def _invalidate_network_cache():
     and swaps the fresh, FP-filtered result in atomically. Readers keep getting
     the previous (one-edit-stale) data until then, so nothing ever blocks."""
     _NETWORK_REBUILD_REQUEST.set()
+
+
+def _write_json_atomic(path, obj, **dump_kwargs):
+    """tmp + os.replace so a crash mid-write never leaves a truncated file
+    for the next reader to silently fall back to defaults on."""
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_name(p.name + ".tmp")
+    tmp.write_text(json.dumps(obj, **dump_kwargs))
+    tmp.replace(p)
+
+
+def _run_fp_script(*args):
+    """Run fp.sh, surfacing failures instead of reporting success on a
+    failed registry write. On success, bust every cache FP state feeds."""
+    try:
+        r = subprocess.run([str(FP_SCRIPT), *args],
+                           capture_output=True, text=True, timeout=10)
+    except subprocess.TimeoutExpired:
+        app.logger.error("fp.sh %s: timed out", " ".join(args))
+        return False, "fp.sh timed out"
+    if r.returncode != 0:
+        lines = (r.stderr or r.stdout or "").strip().splitlines()
+        msg = lines[-1] if lines else f"fp.sh exited {r.returncode}"
+        app.logger.error("fp.sh %s failed rc=%s: %s",
+                         " ".join(args), r.returncode, msg)
+        return False, msg
+    _invalidate_network_cache()
+    _suricata_cache["ts"] = 0  # the /suricata page cache must not outlive an FP edit
+    return True, ""
 
 
 def _domain_entropy(query):
@@ -3259,7 +3282,7 @@ def build_new_beacons(ip_to_host, assets=None):
             "first_seen": fs,
             "severity":   row[COL["Severity"]],
         })
-    sev_rank = {"High": 3, "Medium": 2, "Low": 1}
+    sev_rank = {"Critical": 4, "High": 3, "Medium": 2, "Low": 1}
     def _row_key(r):
         return (sev_rank.get(r["severity"], 0), r["score"])
     # Group by source IP; group order = best row in group; rows within group sorted same way.
@@ -3703,7 +3726,12 @@ def _group_dates_by_week(date_list):
 
     groups: dict = {}
     for ds, fp in date_list:
-        d = date.fromisoformat(ds)
+        try:
+            d = date.fromisoformat(ds)
+        except ValueError:
+            # A corrupt report header can yield an impossible date — one bad
+            # file must not 500 the whole /beacons page.
+            continue
         week_start = d - timedelta(days=d.weekday())
         groups.setdefault(week_start, []).append((ds, fp))
 
@@ -4262,11 +4290,7 @@ def fps_add():
     if not (_MAC_RE.match(addr) or _IP_RE.match(addr)):
         return redirect(url_for("fps"))
 
-    subprocess.run(
-        [str(FP_SCRIPT), "add", addr, reason],
-        capture_output=True, timeout=10
-    )
-    _invalidate_network_cache()
+    _run_fp_script("add", addr, reason)
     if nxt.startswith("/") and not nxt.startswith("//"):
         return redirect(nxt)
     return redirect(url_for("fps"))
@@ -4276,11 +4300,7 @@ def fps_add():
 def fps_remove():
     mac = request.form.get("mac", "").strip()
     if _MAC_RE.match(mac):
-        subprocess.run(
-            [str(FP_SCRIPT), "remove", mac],
-            capture_output=True, timeout=10
-        )
-        _invalidate_network_cache()
+        _run_fp_script("remove", mac)
     return redirect(url_for("fps"))
 
 
@@ -4292,11 +4312,7 @@ def fps_add_domain():
     if pattern and reason:
         if len(reason) > 50:
             reason = reason[:50]
-        subprocess.run(
-            [str(FP_SCRIPT), "add-domain", pattern, reason],
-            capture_output=True, timeout=10
-        )
-        _invalidate_network_cache()
+        _run_fp_script("add-domain", pattern, reason)
     # Only honour same-origin paths to prevent open-redirect.
     if nxt.startswith("/") and not nxt.startswith("//"):
         return redirect(nxt)
@@ -4307,11 +4323,7 @@ def fps_add_domain():
 def fps_remove_domain():
     pattern = request.form.get("pattern", "").strip()
     if pattern:
-        subprocess.run(
-            [str(FP_SCRIPT), "remove-domain", pattern],
-            capture_output=True, timeout=10
-        )
-        _invalidate_network_cache()
+        _run_fp_script("remove-domain", pattern)
     return redirect(url_for("fps"))
 
 
@@ -4322,11 +4334,7 @@ def fps_add_protocol():
     if svc and reason:
         if len(reason) > 50:
             reason = reason[:50]
-        subprocess.run(
-            [str(FP_SCRIPT), "add-protocol", svc, reason],
-            capture_output=True, timeout=10
-        )
-        _invalidate_network_cache()
+        _run_fp_script("add-protocol", svc, reason)
     return redirect(url_for("fps"))
 
 
@@ -4339,11 +4347,9 @@ def fps_add_device():
         return jsonify({"ok": False, "error": "invalid"}), 400
     if len(reason) > 50:
         reason = reason[:50]
-    subprocess.run(
-        [str(FP_SCRIPT), "add", ip, reason],
-        capture_output=True, timeout=10
-    )
-    _invalidate_network_cache()  # background rebuild so FP takes effect without blocking
+    ok, err = _run_fp_script("add", ip, reason)
+    if not ok:
+        return jsonify({"ok": False, "error": err}), 500
     return jsonify({"ok": True})
 
 
@@ -4351,28 +4357,20 @@ def fps_add_device():
 def fps_remove_protocol():
     svc = request.form.get("svc", "").strip()
     if svc:
-        subprocess.run(
-            [str(FP_SCRIPT), "remove-protocol", svc],
-            capture_output=True, timeout=10
-        )
-        _invalidate_network_cache()
+        _run_fp_script("remove-protocol", svc)
     return redirect(url_for("fps"))
 
 
 @app.route("/fps/add-org", methods=["POST"])
 def fps_add_org():
-    """Add an org-level FP — fnmatch against GeoIP ASN owner. Only the slow
-    detector consults it today, so skip the network-cache invalidation."""
+    """Add an org-level FP — fnmatch against GeoIP ASN owner."""
     pattern = request.form.get("pattern", "").strip()
     reason  = request.form.get("reason", "").strip()
     nxt     = request.form.get("next", "").strip()
     if pattern and reason:
         if len(reason) > 50:
             reason = reason[:50]
-        subprocess.run(
-            [str(FP_SCRIPT), "add-org", pattern, reason],
-            capture_output=True, timeout=10
-        )
+        _run_fp_script("add-org", pattern, reason)
     if nxt.startswith("/") and not nxt.startswith("//"):
         return redirect(nxt)
     return redirect(url_for("fps"))
@@ -4382,10 +4380,7 @@ def fps_add_org():
 def fps_remove_org():
     pattern = request.form.get("pattern", "").strip()
     if pattern:
-        subprocess.run(
-            [str(FP_SCRIPT), "remove-org", pattern],
-            capture_output=True, timeout=10
-        )
+        _run_fp_script("remove-org", pattern)
     return redirect(url_for("fps"))
 
 
@@ -4438,7 +4433,7 @@ def health():
                 'led_alert':  has_issues,
             }
             try:
-                HEALTH_STATUS_FILE.write_text(json.dumps(status, indent=2))
+                _write_json_atomic(HEALTH_STATUS_FILE, status, indent=2)
             except Exception:
                 pass
     except Exception as e:
@@ -4470,6 +4465,10 @@ ALERT_TYPES = [
     "suricata_p1_repeated",
     "new_device",
     "slow_cadence_digest",
+    "slow_cadence_beacon",
+    "gateway_impersonation",
+    "config_invalid",
+    "config_stray_files",
     "health_check_fail",
     "sustained_high_cpu",
     "teams_relay_anomaly",
@@ -4487,9 +4486,7 @@ def load_alert_config():
 
 
 def save_alert_config(enabled):
-    os.makedirs(os.path.dirname(ALERT_CONFIG_PATH), exist_ok=True)
-    with open(ALERT_CONFIG_PATH, "w") as f:
-        json.dump({"enabled": enabled}, f, indent=2)
+    _write_json_atomic(ALERT_CONFIG_PATH, {"enabled": enabled}, indent=2)
 
 
 @app.route("/api/alert-config", methods=["GET"])
@@ -4535,11 +4532,9 @@ def load_teams_detector_config():
 
 
 def save_teams_detector_config(cfg):
-    os.makedirs(os.path.dirname(TEAMS_DETECTOR_CONFIG_PATH), exist_ok=True)
     out = dict(TEAMS_DETECTOR_DEFAULTS)
     out.update({k: v for k, v in cfg.items() if k in TEAMS_DETECTOR_DEFAULTS})
-    with open(TEAMS_DETECTOR_CONFIG_PATH, "w") as f:
-        json.dump(out, f, indent=2)
+    _write_json_atomic(TEAMS_DETECTOR_CONFIG_PATH, out, indent=2)
 
 
 def load_teams_detector_report():
@@ -4827,7 +4822,12 @@ def api_pcap_snapshot():
     PCAP_SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
     name = f"{_pcap_sanitise(domain)}-{datetime.now().strftime('%Y%m%dT%H%M%S')}.pcap.gz"
     out_path = PCAP_SNAPSHOT_DIR / name
-    merged = Path(f"/tmp/bb-pcap-snap-{os.getpid()}.pcap")
+    # Unique per request — a pid-keyed name is identical for every thread of
+    # this single Flask process, so concurrent snapshots would clobber and
+    # unlink each other's merge output.
+    fd, tmp_name = tempfile.mkstemp(prefix="bb-pcap-snap-", suffix=".pcap")
+    os.close(fd)
+    merged = Path(tmp_name)
     try:
         r = subprocess.run(
             ["mergecap", "-w", str(merged), *[str(f) for f in files]],
@@ -4899,7 +4899,9 @@ def api_pcap_view():
         return ("No PCAP data yet for this domain.\n", 200,
                 {"Content-Type": "text/plain; charset=utf-8"})
 
-    merged = Path(f"/tmp/bb-pcap-view-{os.getpid()}-{_pcap_sanitise(domain)}.pcap")
+    fd, tmp_name = tempfile.mkstemp(prefix="bb-pcap-view-", suffix=".pcap")
+    os.close(fd)
+    merged = Path(tmp_name)
     try:
         r = subprocess.run(
             ["mergecap", "-w", str(merged), *[str(f) for f in files]],
@@ -4909,12 +4911,16 @@ def api_pcap_view():
             return (f"mergecap failed: {r.stderr.strip()}", 500)
 
         if mode == "download":
-            return send_file(
+            resp = send_file(
                 str(merged),
                 mimetype="application/vnd.tcpdump.pcap",
                 as_attachment=True,
                 download_name=f"{_pcap_sanitise(domain)}.pcap",
             )
+            # /tmp is RAM-backed tmpfs — deleting after the response streams
+            # (not never) is what stops merged rings accumulating in memory.
+            resp.call_on_close(lambda: merged.unlink(missing_ok=True))
+            return resp
 
         if mode == "conv":
             cmd = ["tshark", "-r", str(merged),
@@ -4935,7 +4941,7 @@ def api_pcap_view():
             body += "\n--- stderr ---\n" + (rr.stderr or "")
         return (body, 200, {"Content-Type": "text/plain; charset=utf-8"})
     finally:
-        # Keep merged file around for download streaming response.
+        # download mode cleans up via call_on_close after streaming.
         if mode != "download":
             merged.unlink(missing_ok=True)
 
@@ -5011,10 +5017,10 @@ def api_pironman_fan():
         return {"ok": False, "message": "state must be 'on' or 'off', or send {clear: true}"}, 400
     expires = datetime.now() + timedelta(minutes=_FAN_OVERRIDE_TTL_MIN)
     try:
-        _FAN_OVERRIDE_FILE.write_text(json.dumps({
+        _write_json_atomic(_FAN_OVERRIDE_FILE, {
             "state":   state,
             "expires": expires.isoformat(timespec="seconds"),
-        }))
+        })
         # Apply immediately so bb0-display flips GPIO within 0.5s; bb-watchdog
         # will re-assert on its next 60s tick and keep it until expiry.
         _FAN_STATE_FILE.write_text(state)

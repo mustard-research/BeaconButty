@@ -49,8 +49,17 @@ fi
 # Run rita from /etc/rita so it finds its .env file
 cd /etc/rita
 
-# Fetch existing datasets once to avoid a rita list call per directory
-EXISTING_DBS=$(rita list 2>/dev/null || true)
+# Fetch existing datasets once to avoid a rita list call per directory.
+# rita list renders a box-drawing table, so extract the dataset names —
+# a whole-line grep against the raw output can never match.
+EXISTING_DBS=$(rita list 2>/dev/null | grep -oP "${RITA_DB_PREFIX}_[0-9]{8}" | sort -u || true)
+
+# Today's dir receives new hour-chunks all day, and yesterday's gets its
+# final 23:00-00:00 chunk at midnight rotation — both must be re-imported
+# even when their DB already exists (RITA only ingests new files). Older
+# dirs with an existing DB are genuinely done.
+TODAY_TAG=$(date +%F)
+YESTERDAY_TAG=$(date -d yesterday +%F)
 
 IMPORTED=0
 SKIPPED=0
@@ -62,24 +71,34 @@ for LATEST_DIR in "${LOG_DIRS[@]}"; do
     echo "Log directory : $LATEST_DIR"
     echo "RITA database : $DB"
 
-    if echo "$EXISTING_DBS" | grep -qx "$DB"; then
+    DB_EXISTS=0
+    echo "$EXISTING_DBS" | grep -qx "$DB" && DB_EXISTS=1
+
+    if [[ $DB_EXISTS -eq 1 && "$DATE_TAG" != "$TODAY_TAG" && "$DATE_TAG" != "$YESTERDAY_TAG" ]]; then
         echo "Already imported — skipping."
         (( SKIPPED++ )) || true
+        continue
+    fi
+
+    echo "Importing and analysing (RITA v5 does both in one step)..."
+    RITA_OUT=$(rita import \
+        --config "$RITA_CONFIG" \
+        --database "$DB" \
+        --logs "$LATEST_DIR" 2>&1) && RITA_RC=0 || RITA_RC=$?
+    echo "$RITA_OUT"
+    if [[ $RITA_RC -eq 0 ]]; then
+        (( IMPORTED++ )) || true
+    elif echo "$RITA_OUT" | grep -q "all files were previously imported"; then
+        echo "Note: all files already imported — nothing new to process."
+        (( SKIPPED++ )) || true
+    elif [[ $DB_EXISTS -eq 1 ]]; then
+        # DB present and import errored — a no-op re-import refusal (exact
+        # wording varies across RITA releases) must not kill the hourly
+        # pipeline. A genuine first-import failure still aborts below.
+        echo "Note: rc=${RITA_RC} for existing dataset — treating as up-to-date."
+        (( SKIPPED++ )) || true
     else
-        echo "Importing and analysing (RITA v5 does both in one step)..."
-        RITA_OUT=$(rita import \
-            --config "$RITA_CONFIG" \
-            --database "$DB" \
-            --logs "$LATEST_DIR" 2>&1) && RITA_RC=0 || RITA_RC=$?
-        echo "$RITA_OUT"
-        if [[ $RITA_RC -eq 0 ]]; then
-            (( IMPORTED++ )) || true
-        elif echo "$RITA_OUT" | grep -q "all files were previously imported"; then
-            echo "Note: all files already imported — nothing new to process."
-            (( SKIPPED++ )) || true
-        else
-            exit $RITA_RC
-        fi
+        exit $RITA_RC
     fi
 done
 

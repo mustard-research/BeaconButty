@@ -233,12 +233,14 @@
   <div class="stat-card">
     <div class="stat-label">Health</div>
     {% if health %}
-      {% if health.exit_code == 0 %}
-        <div class="stat-value"><span class="badge badge-ok">Good</span></div>
-      {% elif health.exit_code == 1 %}
+      {# healthcheck.sh exits 1 for FAILURES (warnings don't affect the exit
+         code), so badge from the failure/warning lists, not the code #}
+      {% if health.failures or health.exit_code != 0 %}
+        <div class="stat-value"><span class="badge badge-err">FAIL</span></div>
+      {% elif health.warnings %}
         <div class="stat-value"><span class="badge badge-warn">WARN</span></div>
       {% else %}
-        <div class="stat-value"><span class="badge badge-err">FAIL</span></div>
+        <div class="stat-value"><span class="badge badge-ok">Good</span></div>
       {% endif %}
       {% if health.last_check %}
         <div class="stat-sub">{{ health.last_check }}</div>

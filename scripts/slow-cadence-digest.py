@@ -27,6 +27,7 @@ Run via beaconbutty-slow-cadence-digest.timer (daily 08:00 UTC).
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import os
 import sys
@@ -37,7 +38,45 @@ from datetime import date
 REPORT       = "/var/lib/beaconbutty/reports/slow-cadence.json"
 SLACK_CONF   = "/var/lib/beaconbutty/slack-config.json"
 ALERT_CONFIG = "/var/lib/beaconbutty/alert-config.json"
+FP_PATH      = "/var/lib/beaconbutty/false-positives.conf"
+LEASES       = "/var/lib/misc/dnsmasq.leases"
 TOP_N        = 10
+
+
+def fp_filter(cands: list[dict]) -> list[dict]:
+    """Drop candidates matching the current FP registry (device/domain/org).
+    The detector filters at scan time, but an FP added since its last run —
+    or one added from the slow-beacons page itself — must not resurface in
+    the morning digest."""
+    try:
+        with open(FP_PATH) as f:
+            fp = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return cands
+    doms = list(fp.get("domains", {}))
+    orgs = list(fp.get("orgs", {}))
+    macs = {m.lower() for m in fp.get("devices", {})}
+    fp_ips: set[str] = set()
+    try:
+        with open(LEASES) as f:
+            for line in f:
+                p = line.split()
+                if len(p) >= 3 and p[1].lower() in macs:
+                    fp_ips.add(p[2])
+    except FileNotFoundError:
+        pass
+
+    def match(host, pats):
+        return bool(host) and any(
+            fnmatch.fnmatch(host, pat)
+            or (pat.startswith("*.") and host == pat[2:])
+            for pat in pats)
+
+    return [c for c in cands
+            if c.get("src") not in fp_ips
+            and not match(c.get("sni", ""), doms)
+            and not match(c.get("dst", ""), doms)
+            and not match(c.get("dst_org", ""), orgs)]
 
 
 def is_enabled() -> bool:
@@ -103,7 +142,7 @@ def format_candidate(idx: int, c: dict) -> str:
 def build_message(report: dict):
     """Return (text, n_hunt) — text is None when there's nothing worth
     posting, so the caller can skip the Slack hit entirely on empty days."""
-    cands = report.get("candidates", [])
+    cands = fp_filter(report.get("candidates", []))
     # Hunt-only: candidates the alert gate demoted (alert_eligible == False).
     hunt = [c for c in cands if not c.get("alert_eligible")]
     if not hunt:

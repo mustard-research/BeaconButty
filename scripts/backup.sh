@@ -11,6 +11,14 @@
 set -euo pipefail
 [[ $EUID -ne 0 ]] && { echo "Run as root: sudo $0"; exit 1; }
 
+# Prevent overlapping runs (manual webapp trigger + daily timer) — two
+# writers on the same $OUT interleave into a corrupt gzip stream.
+exec 200>"/var/lock/beaconbutty-backup.lock"
+if ! flock -n 200; then
+    echo "Another backup run is already in progress — exiting."
+    exit 0
+fi
+
 BACKUP_DIR="/var/lib/beaconbutty/backups"
 KEEP=14
 STAMP=$(date +%Y-%m-%d)

@@ -8,7 +8,8 @@ set -euo pipefail
 #   2. Fall back to compiling from source if packages unavailable (slow, ~60-90 min on Pi 4)
 
 ZEEK_PREFIX="${ZEEK_PREFIX:-/opt/zeek}"
-ZEEK_VERSION="7.0.4"   # Check https://zeek.org/get-zeek/ for latest stable
+ZEEK_VERSION="8.1.0"   # Source-build fallback only. Check https://zeek.org/get-zeek/
+                       # — bb0 runs the 8.x line; a rebuild must not regress to 7.x.
 
 if [[ -x "$ZEEK_PREFIX/bin/zeek" ]]; then
     echo "Zeek already installed at $ZEEK_PREFIX ($("${ZEEK_PREFIX}/bin/zeek" --version 2>&1 | head -1))"
@@ -17,7 +18,12 @@ fi
 
 # ── Option 1: OBS pre-built packages ─────────────────────────────────────────
 install_zeek_packages() {
-    local OBS_BASE="https://download.opensuse.org/repositories/security:/zeek/Debian_12"
+    # Match the OBS path to the running OS release — a hardcoded Debian_12
+    # keeps installing bookworm builds after the OS moves on (bb0 is trixie).
+    # Verify the path exists at https://download.opensuse.org/repositories/security:/zeek/
+    local DEBIAN_VER
+    DEBIAN_VER=$(. /etc/os-release && echo "${VERSION_ID:-12}")
+    local OBS_BASE="https://download.opensuse.org/repositories/security:/zeek/Debian_${DEBIAN_VER}"
 
     echo "Trying Zeek packages from OpenSUSE Build Service..."
 

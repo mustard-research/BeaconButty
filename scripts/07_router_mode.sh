@@ -248,12 +248,20 @@ EOF
 # Pi's own resolver — point directly to upstream.
 # dnsmasq handles DNS for LAN clients; the Pi itself resolves via 1.1.1.1/8.8.8.8.
 # Replace any symlink (e.g. systemd-resolved stub) with a static file now.
+# resolv-conf-guard sets chattr +i on this file (2026-07-01 DNS incident) —
+# lift and re-apply the flag or a re-run dies here mid-configuration.
 [[ -L /etc/resolv.conf ]] && unlink /etc/resolv.conf
+RESOLV_WAS_IMMUTABLE=0
+if lsattr /etc/resolv.conf 2>/dev/null | grep -q '^....i'; then
+    RESOLV_WAS_IMMUTABLE=1
+    chattr -i /etc/resolv.conf
+fi
 cat > /etc/resolv.conf <<EOF
 # BeaconButty: static resolv.conf — Pi resolves upstream directly
 nameserver 1.1.1.1
 nameserver 8.8.8.8
 EOF
+[[ $RESOLV_WAS_IMMUTABLE -eq 1 ]] && chattr +i /etc/resolv.conf
 
 # Build the upstream server list for dnsmasq
 DNSMASQ_SERVERS=""

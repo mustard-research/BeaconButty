@@ -119,6 +119,16 @@ def fp_domains() -> list[str]:
         return []
 
 
+def fp_orgs() -> list[str]:
+    """Org FPs — fnmatch against the GeoIP ASN owner (mirrors the webapp's
+    render-time filter, which alone can't stop the Slack alert)."""
+    try:
+        with open(FP_PATH) as f:
+            return list(json.load(f).get("orgs", {}).keys())
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+
+
 def fp_source_ips() -> set[str]:
     """LAN source IPs whose MAC appears in the FP devices list — used to
     drop entire devices from slow-cadence output."""
@@ -385,6 +395,7 @@ def main() -> int:
     talkers_map = count_lan_talkers(dbs, dst_ips)
     fp_pats = fp_domains()
     fp_srcs = fp_source_ips()
+    org_pats = fp_orgs()
 
     candidates = []
     for r in pairs:
@@ -406,6 +417,8 @@ def main() -> int:
             continue
 
         dst_org, dst_cc = geoip_lookup(dst_ip)
+        if dst_org and fp_match(dst_org, org_pats):
+            continue
         hyper = is_hyperscaler(dst_org)
         talkers = talkers_map.get((r["dst"], r["dst_port"]), 1)
         # Slack-alert gate: only page when a single LAN device is talking

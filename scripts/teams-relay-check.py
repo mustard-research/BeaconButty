@@ -350,8 +350,12 @@ def evaluate(flows: dict, history: dict, cfg: dict) -> tuple[list[dict], dict]:
         seeded     = bool(device_hist.get("seeded"))
         first_seen = device_hist.get("first_seen") or date.today().isoformat()
 
-        for ja4 in ja4s:
-            today_by_device[src].add(ja4)
+        # Record the device in today's baseline even when the flow carries
+        # no JA4 (UDP/TURN-only traffic): a device must still become
+        # "seeded", or the UDP low-bw signal — the DragonForce-tunnelling
+        # shape this detector exists for — stays structurally dead for any
+        # device that never makes a TCP TLS connection to Teams.
+        today_by_device[src].update(ja4s)
 
         # Day-1 is seed-only across ALL signals: the detector records today's
         # flows into the per-device baseline but stays silent. From day 2+ the

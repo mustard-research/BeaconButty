@@ -465,17 +465,23 @@ if known_macs:   # suppress all alerts on very first run (no baseline)
 current_macs = {(h.get('mac') or '').lower() for h in cache.values() if h.get('mac')}
 current_macs.discard('')
 known_macs.update(current_macs)
+# Atomic writes throughout: summarize.sh and the webapp read these files
+# constantly; a torn read silently degrades to {} (and a truncated
+# known-macs file would re-alert every sleeping device as "new").
 try:
-    with open(KNOWN_MACS_FILE, 'w') as f:
+    with open(KNOWN_MACS_FILE + '.tmp', 'w') as f:
         json.dump(sorted(known_macs), f, indent=2)
+    os.replace(KNOWN_MACS_FILE + '.tmp', KNOWN_MACS_FILE)
 except Exception as e:
     print(f"  Warning: could not write {KNOWN_MACS_FILE}: {e}")
 
-with open(new_dev_file, 'w') as f:
+with open(new_dev_file + '.tmp', 'w') as f:
     json.dump(new_devices, f)
+os.replace(new_dev_file + '.tmp', new_dev_file)
 
-with open(out_file, 'w') as f:
+with open(out_file + '.tmp', 'w') as f:
     json.dump(cache, f, indent=2)
+os.replace(out_file + '.tmp', out_file)
 PYEOF
 
 # ── Step 2: write host list for nmap ─────────────────────────────────────────
@@ -564,8 +570,9 @@ with open(scan_file) as f:
         h['last_seen'] = now_str
         nmap_count += 1
 
-with open(out_file, 'w') as f:
+with open(out_file + '.tmp', 'w') as f:
     json.dump(cache, f, indent=2)
+os.replace(out_file + '.tmp', out_file)
 
 print(f"  nmap enriched {nmap_count} records.")
 print(f"  Total hosts in cache: {len(cache)}")

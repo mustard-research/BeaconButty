@@ -275,7 +275,7 @@ def draw_frame(oled, font, font_small):
 def main():
     oled = SSD1306()
     if not oled.is_ready():
-        print("OLED not ready — check I2C is enabled (dtparam=i2c_arm=on in /boot/firmware/config.txt)")
+        print("OLED not ready — check I2C is enabled (dtparam=i2c_arm=on in /boot/firmware/config.txt)", flush=True)
         return
 
     font       = load_font(FONT_SIZE)
@@ -300,11 +300,15 @@ def main():
                 fan.sync()
 
                 if DISPLAY_OFF_FLAG.exists() and DISPLAY_OFF_FLAG.read_text().strip() == "1":
-                    # User has toggled display off — blank OLED, leave LEDs alone
+                    # User has toggled display off — blank the OLED but keep
+                    # applying LED state: the case LEDs are the health signal
+                    # (bb-watchdog's red-solid alert must not be frozen out
+                    # just because the screen is off).
                     if not oled_blanked:
                         oled.clear()
                         oled.display()
                         oled_blanked = True
+                    led.sync()
                     time.sleep(2)
                     continue
 
@@ -322,7 +326,7 @@ def main():
 
                 draw_frame(oled, font, font_small)
             except Exception as e:
-                print(f"Display error: {e}")
+                print(f"Display error: {e}", flush=True)
             time.sleep(0.5)
     finally:
         # Show shutdown screen unless the user has blanked the display.

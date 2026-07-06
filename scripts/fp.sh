@@ -156,9 +156,13 @@ def load_conf(fp_file):
     return data
 
 def save_conf(fp_file, conf):
+    # Atomic: a reader catching a truncated registry mid-write falls back to
+    # "no FPs" and resurfaces every suppressed finding for that render.
     os.makedirs(os.path.dirname(fp_file), exist_ok=True)
-    with open(fp_file, 'w') as f:
+    tmp = fp_file + ".tmp"
+    with open(tmp, 'w') as f:
         json.dump(conf, f, indent=2, sort_keys=True)
+    os.replace(tmp, fp_file)
 
 def leases_lookup(key, field_ip=True):
     src_idx, dst_idx = (2, 1) if field_ip else (1, 2)
@@ -236,9 +240,13 @@ def load_conf(fp_file):
     return data
 
 def save_conf(fp_file, conf):
+    # Atomic: a reader catching a truncated registry mid-write falls back to
+    # "no FPs" and resurfaces every suppressed finding for that render.
     os.makedirs(os.path.dirname(fp_file), exist_ok=True)
-    with open(fp_file, 'w') as f:
+    tmp = fp_file + ".tmp"
+    with open(tmp, 'w') as f:
         json.dump(conf, f, indent=2, sort_keys=True)
+    os.replace(tmp, fp_file)
 
 def leases_mac_for_ip(ip):
     try:
@@ -317,9 +325,13 @@ def load_conf(fp_file):
     return data
 
 def save_conf(fp_file, conf):
+    # Atomic: a reader catching a truncated registry mid-write falls back to
+    # "no FPs" and resurfaces every suppressed finding for that render.
     os.makedirs(os.path.dirname(fp_file), exist_ok=True)
-    with open(fp_file, 'w') as f:
+    tmp = fp_file + ".tmp"
+    with open(tmp, 'w') as f:
         json.dump(conf, f, indent=2, sort_keys=True)
+    os.replace(tmp, fp_file)
 
 conf = load_conf(fp_file)
 already = pattern in conf["domains"]
@@ -356,9 +368,13 @@ def load_conf(fp_file):
     return data
 
 def save_conf(fp_file, conf):
+    # Atomic: a reader catching a truncated registry mid-write falls back to
+    # "no FPs" and resurfaces every suppressed finding for that render.
     os.makedirs(os.path.dirname(fp_file), exist_ok=True)
-    with open(fp_file, 'w') as f:
+    tmp = fp_file + ".tmp"
+    with open(tmp, 'w') as f:
         json.dump(conf, f, indent=2, sort_keys=True)
+    os.replace(tmp, fp_file)
 
 conf = load_conf(fp_file)
 if pattern not in conf["domains"]:
@@ -403,9 +419,13 @@ def load_conf(fp_file):
     return data
 
 def save_conf(fp_file, conf):
+    # Atomic: a reader catching a truncated registry mid-write falls back to
+    # "no FPs" and resurfaces every suppressed finding for that render.
     os.makedirs(os.path.dirname(fp_file), exist_ok=True)
-    with open(fp_file, 'w') as f:
+    tmp = fp_file + ".tmp"
+    with open(tmp, 'w') as f:
         json.dump(conf, f, indent=2, sort_keys=True)
+    os.replace(tmp, fp_file)
 
 conf = load_conf(fp_file)
 already = svc in conf["protocols"]
@@ -442,9 +462,13 @@ def load_conf(fp_file):
     return data
 
 def save_conf(fp_file, conf):
+    # Atomic: a reader catching a truncated registry mid-write falls back to
+    # "no FPs" and resurfaces every suppressed finding for that render.
     os.makedirs(os.path.dirname(fp_file), exist_ok=True)
-    with open(fp_file, 'w') as f:
+    tmp = fp_file + ".tmp"
+    with open(tmp, 'w') as f:
         json.dump(conf, f, indent=2, sort_keys=True)
+    os.replace(tmp, fp_file)
 
 conf = load_conf(fp_file)
 if svc not in conf["protocols"]:
@@ -489,9 +513,13 @@ def load_conf(fp_file):
     return data
 
 def save_conf(fp_file, conf):
+    # Atomic: a reader catching a truncated registry mid-write falls back to
+    # "no FPs" and resurfaces every suppressed finding for that render.
     os.makedirs(os.path.dirname(fp_file), exist_ok=True)
-    with open(fp_file, 'w') as f:
+    tmp = fp_file + ".tmp"
+    with open(tmp, 'w') as f:
         json.dump(conf, f, indent=2, sort_keys=True)
+    os.replace(tmp, fp_file)
 
 conf = load_conf(fp_file)
 already = pattern in conf["orgs"]
@@ -528,9 +556,13 @@ def load_conf(fp_file):
     return data
 
 def save_conf(fp_file, conf):
+    # Atomic: a reader catching a truncated registry mid-write falls back to
+    # "no FPs" and resurfaces every suppressed finding for that render.
     os.makedirs(os.path.dirname(fp_file), exist_ok=True)
-    with open(fp_file, 'w') as f:
+    tmp = fp_file + ".tmp"
+    with open(tmp, 'w') as f:
         json.dump(conf, f, indent=2, sort_keys=True)
+    os.replace(tmp, fp_file)
 
 conf = load_conf(fp_file)
 if pattern not in conf["orgs"]:
@@ -565,9 +597,13 @@ def load_conf(fp_file):
     return data
 
 def save_conf(fp_file, conf):
+    # Atomic: a reader catching a truncated registry mid-write falls back to
+    # "no FPs" and resurfaces every suppressed finding for that render.
     os.makedirs(os.path.dirname(fp_file), exist_ok=True)
-    with open(fp_file, 'w') as f:
+    tmp = fp_file + ".tmp"
+    with open(tmp, 'w') as f:
         json.dump(conf, f, indent=2, sort_keys=True)
+    os.replace(tmp, fp_file)
 
 # Read raw to detect format before normalising
 try:

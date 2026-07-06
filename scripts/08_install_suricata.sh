@@ -274,6 +274,13 @@ else
     INFO "Run manually after install: sudo suricata-update"
 fi
 
+# Custom local signatures — suricata.yaml lists local.rules in rule-files,
+# so Suricata fails to start on a rebuild if this file is never installed.
+if [[ -f "$SCRIPT_DIR/config/local.rules" ]]; then
+    install -m 0644 "$SCRIPT_DIR/config/local.rules" /var/lib/suricata/rules/local.rules
+    OK "local.rules installed ($(grep -c '^alert' /var/lib/suricata/rules/local.rules 2>/dev/null || echo 0) custom rules)."
+fi
+
 # ── 5. Deploy threshold config (suppresses stream engine noise) ───────────────
 if [[ -f "$SCRIPT_DIR/config/threshold.config" ]]; then
     cp "$SCRIPT_DIR/config/threshold.config" /etc/suricata/threshold.config

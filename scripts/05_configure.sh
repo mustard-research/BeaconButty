@@ -165,15 +165,27 @@ else
     echo "  Skipping suricata-alert-check.timer — Suricata not installed."
 fi
 
+# zeekctl cron — supervises Zeek workers (zeek.service is a oneshot wrapper
+# whose "active" state means nothing after boot; this crontab is what
+# actually restarts crashed workers). Idempotent add.
+if ! crontab -l 2>/dev/null | grep -q 'zeekctl cron'; then
+    (crontab -l 2>/dev/null; echo '*/5 * * * * /opt/zeek/bin/zeekctl cron >/dev/null 2>&1') | crontab -
+    echo "  Installed root crontab entry: zeekctl cron every 5 min."
+fi
+
 # ── Log rotation ──────────────────────────────────────────────────────────────
 cat > /etc/logrotate.d/beaconbutty <<'EOF'
-# BeaconButty operational logs (on log2ram — weekly, keep 8 weeks)
+# BeaconButty operational logs (on log2ram — weekly, keep 8 weeks).
+# copytruncate: bb-pcap-watch appends to its log via an open fd for the
+# daemon's whole lifetime — a rename-rotate would leave it writing to a
+# deleted inode (logs lost, tmpfs space invisibly held) until restart.
 /var/log/beaconbutty/*.log {
     weekly
     rotate 8
     compress
     missingok
     notifempty
+    copytruncate
 }
 
 # dnsmasq query log (live on log2ram; archives live on NVMe via olddir —

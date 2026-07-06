@@ -55,8 +55,10 @@ pip3 install --break-system-packages flask psutil geoip2
 if ! command -v log2ram &>/dev/null; then
     echo "Installing log2ram..."
     curl -fsSL https://raw.githubusercontent.com/azlux/log2ram/master/install.sh | bash
-    # Set RAM log size to 128 MB (default 40 MB is too small for BeaconButty)
-    sed -i 's/^SIZE=.*/SIZE=128M/' /etc/log2ram.conf 2>/dev/null || true
+    # Set RAM log size to 1 GB — matches live bb0 (journal + dnsmasq +
+    # suricata + beaconbutty logs overflow the old 128M within a day,
+    # destroying live logs; see the 2026-04-15 Suricata gap).
+    sed -i 's/^SIZE=.*/SIZE=1G/' /etc/log2ram.conf 2>/dev/null || true
 else
     echo "log2ram already installed."
 fi

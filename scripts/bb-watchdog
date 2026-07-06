@@ -124,7 +124,9 @@ def read_cpu_pct():
 # ── LED control ───────────────────────────────────────────────────────────────
 def _write_led(state: dict):
     try:
-        LED_STATE.write_text(json.dumps(state))
+        tmp = LED_STATE.with_name(LED_STATE.name + '.tmp')
+        tmp.write_text(json.dumps(state))
+        tmp.replace(LED_STATE)
     except Exception as e:
         log.warning(f'LED write failed: {e}')
 
@@ -156,7 +158,11 @@ def append_record(d: date, record: dict):
     else:
         data = {'date': d.isoformat(), 'records': []}
     data['records'].append(record)
-    path.write_text(json.dumps(data, separators=(',', ':')))
+    # Atomic: a crash mid-write truncates the file, and the next tick's
+    # decode failure silently resets the whole day's thermal/CPU history.
+    tmp = path.with_name(path.name + '.tmp')
+    tmp.write_text(json.dumps(data, separators=(',', ':')))
+    tmp.replace(path)
 
 # ── High-CPU detector ─────────────────────────────────────────────────────────
 def _recent_cpu_samples(today: date, count: int) -> list:
@@ -319,7 +325,10 @@ def check_high_cpu(today: date) -> None:
             suppress = (age < HIGH_CPU_REALERT_H * 3600)
         except Exception:
             suppress = False
-    if state.get('in_elevated_state') and suppress:
+    # Suppress on the re-alert window alone: gating on in_elevated_state too
+    # let a spike-then-quiet profile (30-min mean below reset, 60-min mean
+    # still hot) clear the flag and re-fire every 60s tick.
+    if suppress:
         return  # already alerted recently for the same elevated period
 
     diag = _capture_high_cpu_diagnostic(mean)
@@ -363,7 +372,9 @@ def run_health_check():
     }
 
     try:
-        STATUS_FILE.write_text(json.dumps(status, indent=2))
+        tmp = STATUS_FILE.with_name(STATUS_FILE.name + '.tmp')
+        tmp.write_text(json.dumps(status, indent=2))
+        tmp.replace(STATUS_FILE)
     except Exception as e:
         log.warning(f'Could not write health status: {e}')
 
@@ -573,7 +584,9 @@ def cmd_status():
     led_ok()
     status['led_alert'] = False
     try:
-        STATUS_FILE.write_text(json.dumps(status, indent=2))
+        tmp = STATUS_FILE.with_name(STATUS_FILE.name + '.tmp')
+        tmp.write_text(json.dumps(status, indent=2))
+        tmp.replace(STATUS_FILE)
     except Exception:
         pass
 
