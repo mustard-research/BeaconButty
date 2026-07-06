@@ -70,15 +70,22 @@ print(json.dumps({
 }))
 " "$TYPE" "$SEVERITY" "$DEVICE" "$DETAIL" "$TIMESTAMP")
 
-HTTP_CODE=$(curl -s -o /tmp/alert_response.txt -w "%{http_code}" \
+# Per-invocation response file: a fixed /tmp path breaks under concurrent
+# callers and is unwritable when a different user created it first.
+RESPONSE_FILE=$(mktemp /tmp/alert_response.XXXXXX)
+trap 'rm -f "$RESPONSE_FILE"' EXIT
+
+# `|| HTTP_CODE=000` so a transport failure (DNS down, WAN out) still
+# reaches the log line below instead of dying silently on set -e.
+HTTP_CODE=$(curl -s -o "$RESPONSE_FILE" -w "%{http_code}" \
     -X POST \
     -H "Content-Type: application/json" \
     -H "X-BeaconButty-Secret: ${SHARED_SECRET}" \
     --data "$PAYLOAD" \
     --max-time 10 \
-    "$LAMBDA_URL")
+    "$LAMBDA_URL") || HTTP_CODE="000"
 
-RESPONSE=$(cat /tmp/alert_response.txt 2>/dev/null || echo "")
+RESPONSE=$(cat "$RESPONSE_FILE" 2>/dev/null || echo "")
 
 mkdir -p "$(dirname "$LOGFILE")"
 echo "$(date -u +"%Y-%m-%dT%H:%M:%SZ")  $TYPE  $SEVERITY  $DEVICE  HTTP=$HTTP_CODE  $DETAIL" >> "$LOGFILE"
