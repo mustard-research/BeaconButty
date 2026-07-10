@@ -109,6 +109,11 @@ header = next(reader)
 COL    = {name.strip(): i for i, name in enumerate(header)}
 rows   = [r for r in reader if len(r) >= len(header) - 1]
 
+# RITA emits some FQDNs in DNS root-anchored form ("foo.com."); normalise so
+# FP patterns, the hyperscaler-suffix gate and (src,dst,fqdn) dedup all match.
+for r in rows:
+    r[COL['FQDN']] = r[COL['FQDN']].rstrip('.')
+
 # Each report file bundles the last 3 RITA daily databases, so a persistent
 # beacon appears once per day. Collapse to one row per distinct
 # (src, dst, fqdn) — highest score wins, the later (more recent) day breaks

@@ -596,6 +596,10 @@ def parse_beacon_report(path):
                     # Pad/truncate to expected column count
                     while len(parts) < len(BEACON_COLS):
                         parts.append("")
+                    # RITA emits some FQDNs in DNS root-anchored form
+                    # ("foo.com."); normalise so FP patterns, safe-list
+                    # suffix checks and (src,dst,fqdn) dedup all match.
+                    parts[COL["FQDN"]] = parts[COL["FQDN"]].rstrip(".")
                     rows_by_date[current_date].append(parts)
     except FileNotFoundError:
         pass
