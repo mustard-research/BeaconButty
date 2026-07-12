@@ -1,5 +1,7 @@
 <?xml version="1.0"?>
 <clickhouse>
-    <!-- 5 GiB cap. Pi has 8 GB; Suricata ~1.4 GB, Zeek ~0.25 GB, webapp ~0.2 GB, OS ~0.5 GB. -->
-    <max_server_memory_usage replace="replace">5368709120</max_server_memory_usage>
+    <!-- 4 GiB cap. Pi has 8 GB; Suricata ~1.4 GB, Zeek ~0.25 GB, webapp ~0.2 GB, OS ~0.5 GB.
+         CH steady-states at 2.5-2.8 GiB resident (36h trend, 2026-07-12), so 4 GiB keeps
+         headroom for merges while ruling out CH+Suricata jointly reaching OOM territory. -->
+    <max_server_memory_usage replace="replace">4294967296</max_server_memory_usage>
 </clickhouse>

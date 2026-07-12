@@ -1409,10 +1409,10 @@ def load_watchdog_day(day_str):
 
 def get_system_data(days=1):
     """
-    Load system telemetry (temp + CPU + fans) for the last N days.
-    If days > 2: aggregate hourly, taking max of temp_c and cpu_pct per hour
-    (fan flags OR'd per hour).
-    Returns list of {time, temp_c, cpu_pct, rpi_fan, pironman_fan}.
+    Load system telemetry (temp + CPU + memory + fans) for the last N days.
+    If days > 2: aggregate hourly, taking max of temp_c/cpu_pct/mem_pct per
+    hour (fan flags OR'd per hour).
+    Returns list of {time, temp_c, cpu_pct, mem_pct, rpi_fan, pironman_fan}.
     """
     records = []
     for i in range(days - 1, -1, -1):
@@ -1428,7 +1428,8 @@ def get_system_data(days=1):
             t = rec.get("time", "")
             hour_key = t[:13] + ":00" if len(t) >= 13 else t
             h = hourly.setdefault(hour_key, {
-                "temps": [], "cpus": [], "rpi_fan": False, "pironman_fan": False,
+                "temps": [], "cpus": [], "mems": [],
+                "rpi_fan": False, "pironman_fan": False,
             })
             temp = rec.get("temp_c")
             if temp is not None:
@@ -1436,6 +1437,9 @@ def get_system_data(days=1):
             cpu = rec.get("cpu_pct")
             if cpu is not None:
                 h["cpus"].append(cpu)
+            mem = rec.get("mem_pct")
+            if mem is not None:
+                h["mems"].append(mem)
             if rec.get("rpi_fan"):
                 h["rpi_fan"] = True
             if rec.get("pironman_fan"):
@@ -1448,6 +1452,7 @@ def get_system_data(days=1):
                 "time":         hour_key,
                 "temp_c":       round(max(h["temps"]), 1) if h["temps"] else None,
                 "cpu_pct":      round(max(h["cpus"]), 1) if h["cpus"] else None,
+                "mem_pct":      round(max(h["mems"]), 1) if h["mems"] else None,
                 "rpi_fan":      h["rpi_fan"],
                 "pironman_fan": h["pironman_fan"],
             })
@@ -1458,6 +1463,7 @@ def get_system_data(days=1):
                 "time":         r.get("time", ""),
                 "temp_c":       r.get("temp_c"),
                 "cpu_pct":      r.get("cpu_pct"),
+                "mem_pct":      r.get("mem_pct"),
                 "rpi_fan":      bool(r.get("rpi_fan")),
                 "pironman_fan": bool(r.get("pironman_fan")),
             }
@@ -5096,6 +5102,103 @@ def api_system():
     days = max(1, min(days, 30))
     data = get_system_data(days)
     return jsonify(data)
+
+
+# ── Memory consumers (current snapshot for the /system page) ─────────────────
+#
+# Friendly names + expected-RSS ceilings (MiB) for the processes we expect to
+# dominate on bb0. Group RSS above the ceiling flags the row "high"; anything
+# not listed shares a generic ceiling. Ceilings sit ~30% above the observed
+# steady state (2026-07-12) so normal drift doesn't nag.
+_MEM_KNOWN = [
+    (re.compile(r"clickhouse-server"),          "ClickHouse",     3600),
+    (re.compile(r"/usr/bin/suricata"),          "Suricata",       2000),
+    (re.compile(r"/opt/zeek/bin/zeek"),         "Zeek",            800),
+    (re.compile(r"webapp/app\.py"),             "Webapp (Flask)",  600),
+    (re.compile(r"chroma-mcp|claude-mem"),      "claude-mem",      600),
+    (re.compile(r"(^|/)claude( |$)"),           "Claude Code",    2000),
+    (re.compile(r"tailscaled"),                 "Tailscale",       300),
+    (re.compile(r"bb-watchdog|bb0-display"),    "Pi monitoring",   250),
+    (re.compile(r"syncthing"),                  "Syncthing",       300),
+    (re.compile(r"dnsmasq"),                    "dnsmasq",         100),
+]
+_MEM_GENERIC_CEILING_MB = 500
+_MEM_LIST_FLOOR_MB      = 50   # hide the long tail of tiny processes
+
+
+@app.route("/api/memory-consumers")
+def api_memory_consumers():
+    info = {}
+    try:
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            key, _, rest = line.partition(":")
+            info[key] = int(rest.split()[0])   # kB
+    except Exception:
+        pass
+    total_kb = info.get("MemTotal", 0)
+    avail_kb = info.get("MemAvailable", 0)
+    swap_used_kb = max(info.get("SwapTotal", 0) - info.get("SwapFree", 0), 0)
+
+    # Per-process RSS grouped under friendly names. Unknown interpreters
+    # (python3/bun/node scripts) group by script basename, not the binary.
+    groups = {}
+    try:
+        out = subprocess.run(
+            ["ps", "-eo", "rss=,args="],
+            capture_output=True, text=True, timeout=10,
+        )
+        for line in out.stdout.splitlines():
+            parts = line.strip().split(None, 1)
+            if len(parts) != 2 or not parts[0].isdigit():
+                continue
+            rss_kb, args_str = int(parts[0]), parts[1]
+            name, ceiling = None, _MEM_GENERIC_CEILING_MB
+            for rx, label, ceil in _MEM_KNOWN:
+                if rx.search(args_str):
+                    name, ceiling = label, ceil
+                    break
+            if name is None:
+                toks = args_str.split()
+                exe = os.path.basename(toks[0])
+                if exe.startswith(("python", "node", "bun", "bash", "sh", "perl")):
+                    for t in toks[1:]:
+                        if not t.startswith("-"):
+                            exe = os.path.basename(t)
+                            break
+                name = exe
+            g = groups.setdefault(name, {"rss_kb": 0, "ceiling_mb": ceiling, "procs": 0})
+            g["rss_kb"] += rss_kb
+            g["procs"] += 1
+    except Exception:
+        pass
+
+    consumers = []
+    for name, g in groups.items():
+        rss_mb = g["rss_kb"] / 1024
+        if rss_mb < _MEM_LIST_FLOOR_MB:
+            continue
+        consumers.append({
+            "name":       name,
+            "rss_mb":     round(rss_mb),
+            "pct":        round(100 * g["rss_kb"] / total_kb, 1) if total_kb else None,
+            "procs":      g["procs"],
+            "status":     "high" if rss_mb > g["ceiling_mb"] else "ok",
+            "ceiling_mb": g["ceiling_mb"],
+        })
+    consumers.sort(key=lambda c: -c["rss_mb"])
+
+    # "Used" = total - MemAvailable, matching the graph's mem_pct definition
+    # (reclaimable buff/cache doesn't count as used).
+    avail_gb = avail_kb / 1048576
+    overall = "ok" if avail_gb >= 1.0 else ("warn" if avail_gb >= 0.5 else "high")
+    return jsonify({
+        "total_mb":     round(total_kb / 1024),
+        "used_mb":      round(max(total_kb - avail_kb, 0) / 1024),
+        "available_mb": round(avail_kb / 1024),
+        "swap_used_mb": round(swap_used_kb / 1024),
+        "status":       overall,
+        "consumers":    consumers[:12],
+    })
 
 
 @app.route("/api/temperature")

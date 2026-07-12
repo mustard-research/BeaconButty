@@ -7,7 +7,7 @@ Modes:
   bb-watchdog status    show health issues and reset LEDs to normal
 
 Daemon behaviour:
-  Every 60 s   : record (time, temp_c, cpu_pct, rpi_fan, pironman_fan) to daily JSON
+  Every 60 s   : record (time, temp_c, cpu_pct, mem_pct, rpi_fan, pironman_fan) to daily JSON
   Every 30 min : run beaconbutty-health.sh; set LEDs red on failure
   Just after midnight : generate temperature/fan graph for the previous day
 
@@ -125,6 +125,20 @@ def read_cpu_pct():
     if prev_total is None or total <= prev_total:
         return None
     return round(100.0 * (1 - (idle - prev_idle) / (total - prev_total)), 1)
+
+def read_mem_pct():
+    """Return system memory usage % (100 * (1 - MemAvailable/MemTotal)), or
+    None on error. MemAvailable is the kernel's own reclaimable estimate, so
+    buff/cache the kernel would drop under pressure doesn't count as used."""
+    try:
+        info = {}
+        for line in Path('/proc/meminfo').read_text().splitlines():
+            key, _, rest = line.partition(':')
+            info[key] = int(rest.split()[0])
+        return round(100.0 * (1 - info['MemAvailable'] / info['MemTotal']), 1)
+    except Exception as e:
+        log.warning(f'read_mem_pct failed: {e}')
+        return None
 
 # ── LED control ───────────────────────────────────────────────────────────────
 def _write_led(state: dict):
@@ -643,10 +657,12 @@ def run_daemon():
         temp            = read_temperature()
         rpi_fan, p5_fan = read_fan_states()
         cpu_pct         = read_cpu_pct()
+        mem_pct         = read_mem_pct()
         record = {
             'time':         now.isoformat(timespec='seconds'),
             'temp_c':       temp,
             'cpu_pct':      cpu_pct,
+            'mem_pct':      mem_pct,
             'rpi_fan':      rpi_fan,
             'pironman_fan': p5_fan,
         }

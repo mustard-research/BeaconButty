@@ -8,7 +8,7 @@
 {% block content %}
 <div class="page-header">
   <h1>System</h1>
-  <p>Thermal, fan and CPU history from the bb-watchdog telemetry feed.</p>
+  <p>Thermal, fan, CPU and memory history from the bb-watchdog telemetry feed.</p>
 </div>
 
 <div class="card">
@@ -29,10 +29,11 @@
 </div>
 
 <div class="card">
-  <div class="card-title">CPU Usage</div>
+  <div class="card-title">CPU &amp; Memory Usage</div>
   <div class="chart-container sm">
     <canvas id="cpuChart"></canvas>
   </div>
+  <div id="mem-consumers" style="margin-top: 14px;"></div>
 </div>
 {% endblock %}
 
@@ -325,6 +326,7 @@
   function renderCpuChart(data) {
     const labels = data.map(function(d) { return d.time; });
     const cpu    = data.map(function(d) { return d.cpu_pct; });
+    const mem    = data.map(function(d) { return d.mem_pct !== undefined ? d.mem_pct : null; });
 
     const ctx = document.getElementById('cpuChart').getContext('2d');
     if (cpuChart) { cpuChart.destroy(); cpuChart = null; }
@@ -340,6 +342,19 @@
             data: cpu,
             borderColor: DARK.purple,
             backgroundColor: DARK.purpleBg,
+            borderWidth: 2,
+            pointRadius: 0,
+            pointHoverRadius: 4,
+            tension: 0.3,
+            fill: true,
+            spanGaps: true,
+            yAxisID: 'yCpu',
+          },
+          {
+            label: 'Memory (%)',
+            data: mem,
+            borderColor: DARK.green,
+            backgroundColor: DARK.greenBg,
             borderWidth: 2,
             pointRadius: 0,
             pointHoverRadius: 4,
@@ -368,7 +383,8 @@
             callbacks: {
               title: function(items) { return items[0].label.replace('T', ' ').slice(0, 16); },
               label: function(item) {
-                return ' CPU: ' + (item.raw !== null ? item.raw + ' %' : '—');
+                const name = item.datasetIndex === 0 ? 'CPU' : 'Memory';
+                return ' ' + name + ': ' + (item.raw !== null && item.raw !== undefined ? item.raw + ' %' : '—');
               },
             },
           },
@@ -399,8 +415,64 @@
     });
   }
 
+  // ── Memory consumers list ─────────────────────────────────────────────────
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, function(c) {
+      return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+    });
+  }
+
+  function fmtMb(mb) {
+    return mb >= 1024 ? (mb / 1024).toFixed(1) + ' GB' : mb + ' MB';
+  }
+
+  function statusBadge(status, text) {
+    const cls = status === 'ok' ? 'badge-ok' : (status === 'warn' ? 'badge-warn' : 'badge-err');
+    return '<span class="badge ' + cls + '">' + text + '</span>';
+  }
+
+  function renderMemConsumers(d) {
+    const el = document.getElementById('mem-consumers');
+    if (!el || !d || !d.consumers) return;
+
+    const overallText = d.status === 'ok' ? 'OK' : (d.status === 'warn' ? 'GETTING TIGHT' : 'LOW MEMORY');
+    let html =
+      '<div style="margin-bottom: 8px; color: #8b949e; font-size: 13px;">' +
+      'Right now: <strong style="color:#c9d1d9;">' + fmtMb(d.used_mb) + '</strong> of ' +
+      fmtMb(d.total_mb) + ' used &middot; ' + fmtMb(d.available_mb) + ' available &middot; ' +
+      fmtMb(d.swap_used_mb) + ' swap ' + statusBadge(d.status, overallText) +
+      '</div>';
+
+    html += '<div class="table-wrap"><table><thead><tr>' +
+            '<th>Process</th><th>Memory</th><th>% of RAM</th><th>Status</th>' +
+            '</tr></thead><tbody>';
+    d.consumers.forEach(function(c) {
+      const procs = c.procs > 1
+        ? ' <span style="color:#8b949e; font-size:11px;">&times;' + c.procs + '</span>'
+        : '';
+      const status = c.status === 'ok'
+        ? statusBadge('ok', 'OK')
+        : statusBadge('high', 'HIGH') +
+          ' <span style="color:#8b949e; font-size:11px;">usually &le; ' + fmtMb(c.ceiling_mb) + '</span>';
+      html += '<tr><td>' + esc(c.name) + procs + '</td>' +
+              '<td>' + fmtMb(c.rss_mb) + '</td>' +
+              '<td>' + (c.pct !== null ? c.pct + '%' : '—') + '</td>' +
+              '<td>' + status + '</td></tr>';
+    });
+    html += '</tbody></table></div>';
+    el.innerHTML = html;
+  }
+
+  function loadMemConsumers() {
+    fetch('/api/memory-consumers')
+      .then(function(r) { return r.json(); })
+      .then(renderMemConsumers)
+      .catch(function(err) { console.error('Memory consumers fetch error:', err); });
+  }
+
   // Initial load
   fetchAndRender(1);
+  loadMemConsumers();
   window.setDays = setDays;
 })();
 </script>
