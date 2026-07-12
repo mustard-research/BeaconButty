@@ -1411,8 +1411,10 @@ def get_system_data(days=1):
     """
     Load system telemetry (temp + CPU + memory + fans) for the last N days.
     If days > 2: aggregate hourly, taking max of temp_c/cpu_pct/mem_pct per
-    hour (fan flags OR'd per hour).
-    Returns list of {time, temp_c, cpu_pct, mem_pct, rpi_fan, pironman_fan}.
+    hour (fan flags OR'd per hour); top_cpu/top_mem come from the record at
+    the hour's CPU/memory peak, so the tooltip explains the peak it shows.
+    Returns list of {time, temp_c, cpu_pct, mem_pct, top_cpu, top_mem,
+    rpi_fan, pironman_fan}.
     """
     records = []
     for i in range(days - 1, -1, -1):
@@ -1437,9 +1439,15 @@ def get_system_data(days=1):
             cpu = rec.get("cpu_pct")
             if cpu is not None:
                 h["cpus"].append(cpu)
+                if rec.get("top_cpu") and cpu >= h.get("_cpu_peak", -1):
+                    h["_cpu_peak"] = cpu
+                    h["top_cpu"] = rec["top_cpu"]
             mem = rec.get("mem_pct")
             if mem is not None:
                 h["mems"].append(mem)
+                if rec.get("top_mem") and mem >= h.get("_mem_peak", -1):
+                    h["_mem_peak"] = mem
+                    h["top_mem"] = rec["top_mem"]
             if rec.get("rpi_fan"):
                 h["rpi_fan"] = True
             if rec.get("pironman_fan"):
@@ -1453,6 +1461,8 @@ def get_system_data(days=1):
                 "temp_c":       round(max(h["temps"]), 1) if h["temps"] else None,
                 "cpu_pct":      round(max(h["cpus"]), 1) if h["cpus"] else None,
                 "mem_pct":      round(max(h["mems"]), 1) if h["mems"] else None,
+                "top_cpu":      h.get("top_cpu"),
+                "top_mem":      h.get("top_mem"),
                 "rpi_fan":      h["rpi_fan"],
                 "pironman_fan": h["pironman_fan"],
             })
@@ -1464,6 +1474,8 @@ def get_system_data(days=1):
                 "temp_c":       r.get("temp_c"),
                 "cpu_pct":      r.get("cpu_pct"),
                 "mem_pct":      r.get("mem_pct"),
+                "top_cpu":      r.get("top_cpu"),
+                "top_mem":      r.get("top_mem"),
                 "rpi_fan":      bool(r.get("rpi_fan")),
                 "pironman_fan": bool(r.get("pironman_fan")),
             }

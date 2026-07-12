@@ -43,6 +43,7 @@
   let currentDays = 1;
   let tempChart = null;
   let cpuChart  = null;
+  let sysData   = [];  // thinned records backing the charts — tooltip reads top_cpu/top_mem
   let dayBoundaries = [];  // [{index, label}] for midnight dividers, shared by both charts
 
   const DARK = {
@@ -153,6 +154,7 @@
       .then(function(r) { return r.json(); })
       .then(function(data) {
         data = thinData(data, 150);
+        sysData = data;
         computeDayBoundaries(data);
         updateDataRange(data);
         renderTempChart(data);
@@ -385,6 +387,13 @@
               label: function(item) {
                 const name = item.datasetIndex === 0 ? 'CPU' : 'Memory';
                 return ' ' + name + ': ' + (item.raw !== null && item.raw !== undefined ? item.raw + ' %' : '—');
+              },
+              afterLabel: function(item) {
+                const rec = sysData[item.dataIndex];
+                if (!rec) return;
+                const top = item.datasetIndex === 0 ? rec.top_cpu : rec.top_mem;
+                if (!top || !top.length) return;
+                return top.map(function(t) { return '      ' + t[0] + ': ' + t[1] + '%'; });
               },
             },
           },

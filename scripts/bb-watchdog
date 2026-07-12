@@ -7,7 +7,8 @@ Modes:
   bb-watchdog status    show health issues and reset LEDs to normal
 
 Daemon behaviour:
-  Every 60 s   : record (time, temp_c, cpu_pct, mem_pct, rpi_fan, pironman_fan) to daily JSON
+  Every 60 s   : record (time, temp_c, cpu_pct, mem_pct, top_cpu, top_mem,
+                 rpi_fan, pironman_fan) to daily JSON
   Every 30 min : run beaconbutty-health.sh; set LEDs red on failure
   Just after midnight : generate temperature/fan graph for the previous day
 
@@ -125,6 +126,110 @@ def read_cpu_pct():
     if prev_total is None or total <= prev_total:
         return None
     return round(100.0 * (1 - (idle - prev_idle) / (total - prev_total)), 1)
+
+# ── Top CPU/memory consumers ─────────────────────────────────────────────────
+# Recorded per tick so the /system chart tooltip can say who was using the
+# CPU/RAM at that moment. CPU % is a true interval figure: per-process jiffy
+# deltas between ticks over the total jiffy delta (same 0-100 system-wide
+# scale as cpu_pct). ps %cpu would give cumulative-since-start — misleading.
+
+_COMM_LABELS = {
+    'clickhouse-serv': 'ClickHouse',
+    'Suricata-Main':   'Suricata',
+    'zeek':            'Zeek',
+    'tailscaled':      'Tailscale',
+    'app.py':          'Webapp',
+    'bb-watchdog':     'bb-watchdog',
+    'bb0-display.py':  'bb0-display',
+}
+
+_prev_proc_jiffies = {}    # (pid, starttime) -> utime+stime at last tick
+_prev_total_jiffies = None
+_PAGE_KB = os.sysconf('SC_PAGE_SIZE') // 1024
+_mem_total_kb = None
+
+
+def _resolve_proc_name(proc_dir: Path, comm: str) -> str:
+    """Friendly name for a process: interpreter processes (python3, bun, …)
+    resolve to their script's basename, then both go through _COMM_LABELS."""
+    name = comm
+    if comm.startswith(('python', 'node', 'bun', 'bash', 'sh', 'perl')):
+        try:
+            argv = (proc_dir / 'cmdline').read_bytes().decode(errors='replace').split('\0')
+            for a in argv[1:]:
+                if a and not a.startswith('-'):
+                    name = os.path.basename(a)
+                    break
+        except Exception:
+            pass
+    return _COMM_LABELS.get(name, name)
+
+
+def read_top_consumers():
+    """Return (top_cpu, top_mem): up to 3 [name, pct] pairs each, grouped by
+    friendly name. top_cpu is None on the first tick (no jiffy baseline yet)."""
+    global _prev_proc_jiffies, _prev_total_jiffies, _mem_total_kb
+    try:
+        fields = Path('/proc/stat').read_text().splitlines()[0].split()
+        total = sum(int(x) for x in fields[1:])
+        if _mem_total_kb is None:
+            for line in Path('/proc/meminfo').read_text().splitlines():
+                if line.startswith('MemTotal:'):
+                    _mem_total_kb = int(line.split()[1])
+                    break
+    except Exception as e:
+        log.warning(f'read_top_consumers failed: {e}')
+        return None, None
+
+    cur = {}
+    cpu_deltas = {}
+    mem_kb = {}
+    for p in Path('/proc').iterdir():
+        if not p.name.isdigit():
+            continue
+        try:
+            stat = (p / 'stat').read_text()
+            statm = (p / 'statm').read_text().split()
+        except Exception:
+            continue  # process exited mid-scan
+        head, _, rest = stat.rpartition(')')
+        comm = head.split('(', 1)[1] if '(' in head else p.name
+        f = rest.split()
+        try:
+            jiff = int(f[11]) + int(f[12])   # utime + stime (stat fields 14+15)
+            starttime = f[19]                # stat field 22 — guards PID reuse
+            rss_kb = int(statm[1]) * _PAGE_KB
+        except (IndexError, ValueError):
+            continue
+        key = (p.name, starttime)
+        cur[key] = jiff
+        name = _resolve_proc_name(p, comm)
+        mem_kb[name] = mem_kb.get(name, 0) + rss_kb
+        prev = _prev_proc_jiffies.get(key)
+        if prev is not None and jiff > prev:
+            cpu_deltas[name] = cpu_deltas.get(name, 0) + (jiff - prev)
+
+    prev_total = _prev_total_jiffies
+    _prev_total_jiffies = total
+    _prev_proc_jiffies = cur
+
+    top_mem = None
+    if _mem_total_kb:
+        top_mem = [
+            [name, round(100.0 * kb / _mem_total_kb, 1)]
+            for name, kb in sorted(mem_kb.items(), key=lambda kv: -kv[1])[:3]
+        ]
+
+    if prev_total is None or total <= prev_total:
+        return None, top_mem
+    dt = total - prev_total
+    top_cpu = [
+        [name, round(100.0 * d / dt, 1)]
+        for name, d in sorted(cpu_deltas.items(), key=lambda kv: -kv[1])[:3]
+        if round(100.0 * d / dt, 1) > 0
+    ]
+    return top_cpu or None, top_mem
+
 
 def read_mem_pct():
     """Return system memory usage % (100 * (1 - MemAvailable/MemTotal)), or
@@ -658,6 +763,7 @@ def run_daemon():
         rpi_fan, p5_fan = read_fan_states()
         cpu_pct         = read_cpu_pct()
         mem_pct         = read_mem_pct()
+        top_cpu, top_mem = read_top_consumers()
         record = {
             'time':         now.isoformat(timespec='seconds'),
             'temp_c':       temp,
@@ -666,6 +772,10 @@ def run_daemon():
             'rpi_fan':      rpi_fan,
             'pironman_fan': p5_fan,
         }
+        if top_cpu:
+            record['top_cpu'] = top_cpu
+        if top_mem:
+            record['top_mem'] = top_mem
         try:
             append_record(today, record)
         except Exception as e:
