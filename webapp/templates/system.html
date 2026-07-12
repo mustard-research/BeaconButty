@@ -168,6 +168,9 @@
     const result = [];
     const step = arr.length / target;
     for (let i = 0; i < target; i++) result.push(arr[Math.floor(i * step)]);
+    // Always keep the newest record — uniform sampling can drop the tail,
+    // which hides young metrics (e.g. mem_pct) that only exist there yet.
+    if (result[result.length - 1] !== arr[arr.length - 1]) result.push(arr[arr.length - 1]);
     return result;
   }
 
@@ -358,7 +361,10 @@
             borderColor: DARK.green,
             backgroundColor: DARK.greenBg,
             borderWidth: 2,
-            pointRadius: 0,
+            // While memory history is still sparse (recording began
+            // 2026-07-12 evening) a 2-point line is invisible — draw dots.
+            pointRadius: mem.filter(function(v) { return v !== null; }).length < 10 ? 3 : 0,
+            pointBackgroundColor: DARK.green,
             pointHoverRadius: 4,
             tension: 0.3,
             fill: true,
