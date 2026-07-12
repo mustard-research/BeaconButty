@@ -28,7 +28,8 @@ Deployment happens via `scripts/05_configure.sh` (lines 89–104) using `install
 | `harden.sh` | `beaconbutty-harden.sh` | Manual | System hardening / audit |
 | `clickhouse-upgrade.sh` | `beaconbutty-clickhouse-upgrade.sh` | Manual (interactive, `--yes` to skip prompt) | Safe ClickHouse upgrade: preflight → snapshot config.d/ → pause RITA → apt-mark unhold/install/re-hold → verify (config.d intact, SELECT 1, memory cap, dataset count) → resume RITA + wait for new `=== done:` marker. Stops on any verify failure; snapshot kept at `/var/lib/beaconbutty/ch-upgrade/<UTC-ts>/` for manual recovery. Added 2026-06-16 in response to that day's silent-degradation incident — see *Upgrade Log* |
 | `midsummer-fan-check.py` | `beaconbutty-midsummer-fan-check.py` | `beaconbutty-midsummer-fan-check.timer` (one-shot 2026-07-15) | Compare summer temps to Apr-24 baseline on [Fan Control](../hardware/fan-control.md) |
-| `wan-watchdog.sh` | `wan-watchdog.sh` | `bb-watchdog.service` | WAN failure detection + auto-recover |
+| `wan-watchdog.sh` | `wan-watchdog.sh` | `wan-watchdog.timer` (5 min) | WAN failure detection + auto-recover (nmcli-only since 2026-07-03) |
+| `bb-watchdog` | `bb-watchdog` | `bb-watchdog.service` (daemon) | Thermal & health watchdog — 60 s telemetry incl. `mem_pct` + top CPU/memory consumers (since 2026-07-12), fan hysteresis, LED health signal, 30-min health checks |
 | `bb0-display.py` | `bb0-display.py` | `bb0-display.service` | OLED display + Pironman LED control |
 | `bb0-led` | `bb0-led` | Called by display script | LED strip control |
 | `bb0-fan` | `bb0-fan` | Called by display script | Pironman fan control |

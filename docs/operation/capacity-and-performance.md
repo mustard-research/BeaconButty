@@ -28,16 +28,18 @@ free -h && df -h / /var/log && du -sh /var/lib/clickhouse /var/lib/beaconbutty
 
 | Consumer | Typical RSS |
 |----------|------------|
-| ClickHouse | ~3.0–4.5 GB (5 GiB hard cap from `config.d/memory.xml`; spikes during RITA materialised-view rebuilds — was 3 GiB pre-2026-06-16 and that proved too tight as the cumulative dataset grew, see *Upgrade Log*) |
+| ClickHouse | ~2.5–2.9 GB steady (14-day peak 2.86 GB); **4 GiB hard cap** from `config.d/memory.xml` — dropped from 5 GiB on 2026-07-12 since steady state never approached it. Was 3 GiB pre-2026-06-16, which proved too tight as the cumulative dataset grew (see *Upgrade Log*); if `code: 241` returns, raise it again (see *Troubleshooting*) |
 | Zeek workers | ~300–500 MB |
-| Suricata | ~200–400 MB (ruleset-dependent) |
+| Suricata | ~1.3–1.5 GB (full ET ruleset + af-packet buffers) |
 | `bb-graphs` (Flask) | ~150–300 MB |
 | dnsmasq | ~10–20 MB |
 | log2ram tmpfs | ~460 MB (counted as used by the kernel) |
 | Zeek spool tmpfs | ~3–10 MB |
 | Kernel / OS / everything else | ~500 MB |
 
-Peak headroom ~2–3 GB with everything running. The 8 GB Pi model was chosen specifically for ClickHouse + Zeek co-residence. The 4 GB bb1 node showed OOM pressure under RITA import bursts — why bb0 exists.
+Steady state is ~65 % used: ≈2 GB genuinely available plus ~2.5 GB of reclaimable cache, and ~800 MB of cold pages parked in swap with no churn (normal). The 8 GB Pi model was chosen specifically for ClickHouse + Zeek co-residence. The 4 GB bb1 node showed OOM pressure under RITA import bursts — why bb0 exists.
+
+Live view: the **/system page** charts memory history (since 2026-07-12) alongside CPU and lists current per-service consumers with OK/HIGH badges against expected ceilings.
 
 ## NVMe capacity
 

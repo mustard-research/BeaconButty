@@ -20,7 +20,7 @@ The BeaconButty web interface is a Flask application served over HTTPS on port 4
 | ![LAN Assets](../img/bb-lan-assets.png) | ![Bandwidth](../img/bb-bandwidth.png) |
 | **LAN Assets** — live + ghost devices, JA4 threat badge | **Bandwidth** — Top Talkers from RITA ClickHouse `conn` |
 | ![System](../img/bb-system.png) | ![False Positives](../img/bb-fps.png) |
-| **System** — CPU temp + load with fan thresholds | **False Positives** — registry with per-pattern reason |
+| **System** — CPU temp, load and memory with fan thresholds | **False Positives** — registry with per-pattern reason |
 
 
 ## Stack
@@ -42,7 +42,7 @@ The BeaconButty web interface is a Flask application served over HTTPS on port 4
 | Route | Page | Notes |
 |-------|------|-------|
 | `/` | Dashboard | Stat tiles incl. Fans (Pi + Pironman ON/OFF) and Network Intel "N issues" (TLS + DNS + New Beacons only) |
-| `/system` | System | Stacked Chart.js: CPU temp with fan threshold lines (top), CPU usage 0-100 % (bottom). `/temperature` 301-redirects here; `/api/system` ↔ `/api/temperature` same. |
+| `/system` | System | Stacked Chart.js: CPU temp with fan threshold lines (top), CPU + memory usage 0-100 % with top-consumer tooltips and a live memory-consumers table (bottom). `/temperature` 301-redirects here; `/api/system` ↔ `/api/temperature` same. |
 | `/bandwidth` | Bandwidth | ntopng-style Top Talkers view sourced from RITA's ClickHouse `conn` tables. 4-tile summary, stacked-area chart (top-8 devices + Other), Top Talkers table (click device to filter chart), Top Destinations table (GeoIP/ASN-enriched). |
 | `/beacons` | Beacons | Device Hotlist (Total col opens all-severities modal; High/Total/Max Score headers sortable — default Max Score desc; rightmost col "Add to FP" for rows with Total=1, "click counts to add FP" hint otherwise), Investigate, Top Beacons, Suppressed-by-FPs audit card (behind "Show FP" toggle) |
 | `/network` | Network | Two-tier layout: **Alerts** (TLS, DNS, New Beacons — feed dashboard tile) above **Investigate** (Exfil, Night, Protocol, Persistent, context-only) |
@@ -196,18 +196,20 @@ Zeek-side enrichment above answers *"what is this IP?"* from our own captured tr
 
 Wired into: `/beacons` (top + 4 hotlist modals + Investigate), `/network` New Beacons, `/suricata` LAN + unresolved + per-alert ext_ip, `/beacons/slow`.
 
-## System page charts (temp + CPU)
+## System page charts (temp + CPU + memory)
 
-The `/system` page stacks two Chart.js charts backed by one `/api/system?days=N` fetch, sharing the Today / 3 Days / 7 Days selector. The top chart (temp + fans) has threshold lines via the `thresholdPlugin`; the bottom chart (CPU%) is fixed Y 0-100.
+The `/system` page stacks two Chart.js charts backed by one `/api/system?days=N` fetch, sharing the Today / 3 Days / 7 Days selector. The top chart (temp + fans) has threshold lines via the `thresholdPlugin`; the bottom chart (CPU % + memory %, memory added 2026-07-12) is fixed Y 0-100 with a live memory-consumers table beneath it.
 
 Key implementation decisions:
 - **Always destroy and recreate** the chart on view switch. Chart.js inline plugins only fire `afterDraw` on chart creation — calling `chart.update()` does not re-fire the plugin.
 - **Day-divider plugin is parameterised** by the target y-scale id (`makeDayDivPlugin('yTemp' | 'yCpu')`) so both charts share the same midnight-line logic without touching each other.
 - **Y-axis scaling (temp)**: p2/p98 percentile bounds calculated from the data, then 20 % manual grace padding applied. This suppresses outlier spikes without hiding the normal operating range. `grace` is ignored when explicit `min`/`max` are set — must be applied manually.
 - **Y-axis scaling (CPU)**: fixed 0-100 %, stepSize 25. Stable bounds make day-to-day comparison honest.
-- **Multi-day aggregation**: hourly buckets use **maximum** of both `temp_c` and `cpu_pct`, not average. This preserves spikes which are operationally significant.
-- **Data thinning**: client-side `thinData()` reduces dense today views to 150 points for rendering performance.
-- **Data source**: `bb-watchdog` samples `temp_c` + `cpu_pct` (from `/proc/stat` delta-between-ticks) + fan states every 60 s and appends to `/var/lib/beaconbutty/watchdog/data/YYYY-MM-DD.json`. Records before 2026-04-24 have no `cpu_pct` — chart renders null as a gap (`spanGaps: true`).
+- **Multi-day aggregation**: hourly buckets use **maximum** of `temp_c`, `cpu_pct` and `mem_pct`, not average. This preserves spikes which are operationally significant. `top_cpu`/`top_mem` for an hourly bucket come from the record at that hour's CPU/memory peak, so the tooltip explains the peak it shows.
+- **Data thinning**: client-side `thinData()` reduces dense today views to 150 points for rendering performance. It always keeps the newest record — uniform sampling can drop the tail, hiding young metrics that only exist there yet.
+- **Data source**: `bb-watchdog` samples `temp_c` + `cpu_pct` (from `/proc/stat` delta-between-ticks) + `mem_pct` (100·(1−MemAvailable/MemTotal)) + `top_cpu`/`top_mem` (top-3 consumers as `[name, pct]` pairs, friendly-name grouped; CPU % from per-process jiffy deltas between ticks, NOT `ps`'s cumulative %cpu) + fan states every 60 s and appends to `/var/lib/beaconbutty/watchdog/data/YYYY-MM-DD.json`. Records before 2026-04-24 have no `cpu_pct`; records before 2026-07-12 evening have no `mem_pct`/`top_*` — chart renders null as a gap (`spanGaps: true`), and the memory series draws visible dots while it has <10 points on screen.
+- **Tooltip consumers**: hovering the bottom chart shows the top-3 CPU consumers under the CPU value and the top-3 memory users under the Memory value (tooltip `afterLabel` reads `sysData[dataIndex]`).
+- **Memory consumers table**: `/api/memory-consumers` snapshots `ps`, groups RSS by friendly name (`_MEM_KNOWN` in `app.py`), and flags any service above its expected ceiling (~30 % over observed steady state) as HIGH. Rendered below the chart with a totals line (available ≥ 1 GiB OK / ≥ 0.5 warn / else high).
 - **Legacy URLs**: `/temperature` and `/api/temperature` 301-redirect to `/system` and `/api/system` respectively.
 
 ## Suricata page — noise suppression + unified counting (2026-04-24)

@@ -110,11 +110,11 @@ If you see `code: 241, message: (total) memory limit exceeded`, the explicit `ma
 ```xml
 <?xml version="1.0"?>
 <clickhouse>
-    <max_server_memory_usage replace="replace">5368709120</max_server_memory_usage>
+    <max_server_memory_usage replace="replace">4294967296</max_server_memory_usage>
 </clickhouse>
 ```
 
-Restart ClickHouse, re-run `sudo /usr/local/bin/rita-analyze.sh` to backfill. Root-cause history in *Upgrade Log*.
+Restart ClickHouse, re-run `sudo /usr/local/bin/rita-analyze.sh` to backfill. Root-cause history in *Upgrade Log*. Current cap is **4 GiB** (2026-07-12, down from 5 GiB — steady state is 2.5–2.9 GB resident); if the dataset outgrows it, bumping back to 5 GiB is still safe alongside Suricata (~1.4 GB).
 
 ## ClickHouse
 

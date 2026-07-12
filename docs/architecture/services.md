@@ -20,7 +20,7 @@ All services are managed by systemd. The webapp runs as `bb-graphs.service` — 
 | `tailscaled` | Tailscale VPN daemon | No — remote access only |
 | `NetworkManager` | Manages all interfaces (eth0 bb-wan, eth1 bb-lan, wlan0, tailscale0) | Yes — LAN/WAN both go through NM |
 | `log2ram` | Mounts `/var/log` as a 1G tmpfs; one-shot at boot | Yes — without it `/var/log` is empty on the NVMe mount point |
-| `bb-watchdog` | WAN failure detection + auto-recover (via `wan-watchdog.timer`) | No |
+| `bb-watchdog` | Thermal & health watchdog: 60 s telemetry (temp, CPU, memory, top consumers → daily JSON), Pironman fan hysteresis, LED health signal, 30-min health checks | No — telemetry, fan control and LED signal degrade |
 | `news-digest` | Daily news-digest email (ancillary, not BB) — see *News Digest* | No |
 
 > [!warning]
