@@ -45,6 +45,7 @@ ALERT_TYPE_LABELS = {
     "traffic_anomaly":      "Traffic Anomaly",
     "tor_contact":          "Tor Exit Node Contact",
     "service_down":         "Service Down",
+    "service_recovered":    "Service Recovered",
     "disk_critical":        "Disk Space Critical",
     "health_check_fail":    "Health Check Failed",
     "teams_relay_anomaly":  "Teams Relay Anomaly (DragonForce pattern)",

@@ -335,7 +335,22 @@ check_service() {
     fi
 }
 
-check_service clickhouse-server  "ClickHouse"  alert
+# The weekly full archive (beaconbutty-archive.timer, Sun 03:00) stops
+# ClickHouse deliberately for a consistent snapshot — a stopped server during
+# that window is maintenance, not an outage. The unit is a oneshot, so its
+# running state is "activating", not "active".
+ARCHIVE_STATE=$(systemctl show beaconbutty-archive.service --property=ActiveState --value 2>/dev/null || true)
+CH_IN_MAINTENANCE=0
+if [[ "$ARCHIVE_STATE" == "activating" || "$ARCHIVE_STATE" == "active" ]] \
+        && ! systemctl is-active --quiet clickhouse-server 2>/dev/null; then
+    CH_IN_MAINTENANCE=1
+fi
+
+if [[ "$CH_IN_MAINTENANCE" == "1" ]]; then
+    WARN "ClickHouse: stopped for weekly archive snapshot (expected — restarts when archive completes)"
+else
+    check_service clickhouse-server  "ClickHouse"  alert
+fi
 
 # ClickHouse version staleness — informational unless very far behind.
 # Versions encode YY.M.patch.build, so we measure "months behind" from
@@ -503,12 +518,18 @@ if [[ -x /usr/local/bin/rita ]]; then
 
     # rita needs to run from /etc/rita so it finds its .env file
     # rita list outputs a box-drawing table; extract dataset names from column 2
-    RITA_LIST=$(cd /etc/rita && rita list 2>/dev/null | awk -F'│' '/beaconbutty_/ {gsub(/ /,"",$2); print $2}')
-    DB_COUNT=$(echo "$RITA_LIST" | grep -c "beaconbutty_" || true)
+    if [[ "$CH_IN_MAINTENANCE" == "1" ]]; then
+        RITA_LIST=""
+        WARN "RITA datasets: check skipped (weekly archive in progress)"
+        DB_COUNT=-1
+    else
+        RITA_LIST=$(cd /etc/rita && rita list 2>/dev/null | awk -F'│' '/beaconbutty_/ {gsub(/ /,"",$2); print $2}')
+        DB_COUNT=$(echo "$RITA_LIST" | grep -c "beaconbutty_" || true)
+    fi
     if [[ "$DB_COUNT" -gt 0 ]]; then
         LATEST_DB=$(echo "$RITA_LIST" | sort | tail -1)
         OK "RITA datasets: ${DB_COUNT}  (latest: ${LATEST_DB})"
-    else
+    elif [[ "$DB_COUNT" -eq 0 ]]; then
         WARN "RITA datasets: none yet — run rita-analyze.sh after Zeek logs accumulate"
     fi
 else
@@ -516,7 +537,9 @@ else
 fi
 
 # ClickHouse query probe — "service up" is not the same as "actually responsive"
-if command -v clickhouse-client &>/dev/null; then
+if [[ "$CH_IN_MAINTENANCE" == "1" ]]; then
+    WARN "ClickHouse query probe: skipped (weekly archive in progress)"
+elif command -v clickhouse-client &>/dev/null; then
     CH_ARGS=(--user="${CLICKHOUSE_USERNAME:-default}")
     [[ -n "${CLICKHOUSE_PASSWORD:-}" ]] && CH_ARGS+=(--password="$CLICKHOUSE_PASSWORD")
     CH_PROBE=$(timeout 5 clickhouse-client "${CH_ARGS[@]}" -q "SELECT 1" 2>/dev/null)

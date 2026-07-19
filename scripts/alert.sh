@@ -6,7 +6,8 @@
 #
 # Types:    high_score_beacon | persistent_beacon | threat_intel_hit |
 #           suricata_p1_lan | suricata_p1_repeated | new_device |
-#           traffic_anomaly | tor_contact | service_down | disk_critical
+#           traffic_anomaly | tor_contact | service_down | service_recovered |
+#           disk_critical
 #
 # Severity: high | medium | low
 #
