@@ -460,6 +460,25 @@ def _fp_domain_match(q, patterns):
     return False
 
 
+def _fp_service_match(svc, fp_protocols):
+    """Match a RITA service field against registered protocol FPs.
+
+    RITA can bundle several services into one field, e.g.
+    "80:tcp:http,3478:udp:". Protocol FPs are registered per single
+    component ("3478:udp"), so each comma-separated component is tested
+    independently — a whole-string prefix match misses STUN whenever it is
+    not the first service listed. Returns (pattern, reason) on the first
+    hit, else (None, None)."""
+    for comp in (svc or "").strip().split(","):
+        comp = comp.strip()
+        if not comp:
+            continue
+        for pat, reason in fp_protocols.items():
+            if comp == pat or comp.startswith(pat + ":"):
+                return pat, reason
+    return None, None
+
+
 def get_wan_ip():
     """Parse WAN IP from 'ip addr show eth0'."""
     try:
@@ -647,11 +666,7 @@ def get_beacon_data(report_file, mac_to_ip, ip_to_host, assets=None):
         return None, None
 
     def _fp_proto_hit(svc):
-        svc = svc.strip()
-        for pat, reason in fp_protocols.items():
-            if svc == pat or svc.startswith(pat + ":"):
-                return pat, reason
-        return None, None
+        return _fp_service_match(svc, fp_protocols)
 
     sev_counts = {"Critical": 0, "High": 0, "Medium": 0, "Low": 0, "None": 0}
     suppressed = 0
@@ -1336,8 +1351,7 @@ def count_beacon_findings_today():
     fp_protocols = fp_all["protocols"]
 
     def _fp_proto_hit(svc):
-        svc = (svc or "").strip()
-        return any(svc == pat or svc.startswith(pat + ":") for pat in fp_protocols)
+        return _fp_service_match(svc, fp_protocols)[0] is not None
 
     for path in sorted(REPORTS_DIR.glob("beacon-report-*.txt"), reverse=True):
         _, rows_by_date = parse_beacon_report(path)
@@ -3309,8 +3323,7 @@ def build_new_beacons(ip_to_host, assets=None):
     fp_protocols = fp_all["protocols"]
 
     def _fp_proto_match(svc):
-        svc = svc.strip()
-        return any(svc == pat or svc.startswith(pat + ":") for pat in fp_protocols)
+        return _fp_service_match(svc, fp_protocols)[0] is not None
 
     # Pre-pass: enrich every bare-IP candidate (not already FP'd by IP)
     # so the FP-domain check below can match against the Zeek-recovered

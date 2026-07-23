@@ -154,12 +154,15 @@ The webapp exposes "Add to FP" affordances on several pages, but not every page 
 
 ## Protocol-FP — global, dangerous, gated
 
-`_fp_proto_hit(svc)` matches purely on the Zeek service string with no source binding.  An entry like `443:tcp:ssl` would silence every HTTPS beacon on every device forever — effectively turning beacon detection off.
+Protocol matching is done by `_fp_service_match(svc, fp_protocols)` (module-level in `webapp/app.py`, mirrored in `scripts/summarize.sh`), which every consumer calls. It has no source binding — an entry like `443:tcp:ssl` would silence every HTTPS beacon on every device forever, effectively turning beacon detection off.
 
-The FP modal on `/beacons` therefore dims the **Protocol** option and shows a prominent red warning unless the row's service is on a narrow safe list:
+**Compound services.** RITA bundles several services into one field, e.g. `80:tcp:http,3478:udp:` (STUN with a TURN 80/tcp fallback). The matcher splits on commas and tests **each component independently**, so a single-component FP entry (`3478:udp`) suppresses the compound row too. A registered FP entry must therefore be **one component** (`port:proto` or `port:proto:name`) — never the whole compound blob. The `/beacons` dialog's Service field is an editable input pre-filled by `_protoDefault()`: a single-service row auto-normalises `3478:udp:` → `3478:udp`; a compound row is shown whole so you trim it to the one component you mean to suppress.
+
+The FP modal on `/beacons` dims the **Protocol** option and shows a prominent red warning unless the row's service is on a narrow safe list. `_isSafeProto()` inspects **every** component (so STUN paired with an incidental HTTP flow is still recognised) and matches either a Zeek service name or a known-safe `port:proto`:
 
 ```
-ntp · mdns · dhcp · dhcpv6 · llmnr · netbios-ns · netbios-dgm · ssdp
+names: ntp · mdns · dhcp · dhcpv6 · llmnr · netbios-ns · netbios-dgm · ssdp
+ports: 3478:udp · 3478:tcp   (STUN/TURN — Zeek leaves these unlabelled)
 ```
 
 Clicking the dimmed Protocol option fires a `confirm()` dialog spelling out the consequence; only an explicit OK proceeds.  Safe protocols behave normally — single click, no friction.

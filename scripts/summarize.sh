@@ -257,9 +257,16 @@ def _domain_suppressed(fqdn, dst):
     return False
 
 def _proto_suppressed(svc):
+    # RITA bundles services into one field ("80:tcp:http,3478:udp:"); FPs are
+    # registered per single component ("3478:udp"), so test each comma-separated
+    # component rather than prefix-matching the whole string.
     if not fp_protos:
         return False
-    return any(svc == pat or svc.startswith(pat + ':') for pat in fp_protos)
+    for comp in (svc or '').strip().split(','):
+        comp = comp.strip()
+        if comp and any(comp == pat or comp.startswith(pat + ':') for pat in fp_protos):
+            return True
+    return False
 
 fp_domain_count = 0
 fp_proto_count  = 0

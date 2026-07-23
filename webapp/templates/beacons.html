@@ -476,7 +476,11 @@
       <div style="font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--text-dim,#888);margin-bottom:2px;">
         Protocol <span id="fp-proto-warn" style="display:none;color:var(--red);text-transform:none;letter-spacing:0;font-size:11px;font-weight:600;margin-left:6px;">Warning - suppresses this protocol on every device!</span>
       </div>
-      <div id="fp-proto-preview" class="mono" style="font-size:13px;"></div>
+      <input type="text" id="fp-proto-input" class="mono"
+             oninput="fpUpdateSubmitEnabled()"
+             onclick="event.stopPropagation();fpSelectType('proto');"
+             style="width:100%;box-sizing:border-box;padding:4px 6px;background:var(--input-bg,#2a2a3e);border:1px solid var(--border,#444);border-radius:4px;color:inherit;font-size:13px;">
+      <div style="font-size:11px;color:var(--text-dim,#888);margin-top:4px;">One service per FP (<span class="mono">port:proto</span>). Trim compound rows, e.g. <span class="mono">3478:udp</span>.</div>
     </div>
 
     <div style="margin-bottom:14px;">
@@ -687,11 +691,29 @@ var _SAFE_PROTOS = new Set([
   'ntp', 'mdns', 'dhcp', 'dhcpv6', 'llmnr',
   'netbios-ns', 'netbios-dgm', 'ssdp'
 ]);
+// Protocols Zeek leaves unlabelled (no name component) but which are still
+// benign infrastructure noise — keyed on "port:proto". STUN/TURN keepalives
+// are the canonical case.
+var _SAFE_PROTO_PORTS = new Set(['3478:udp', '3478:tcp']);
+// A RITA service field can bundle several services ("80:tcp:http,3478:udp:").
+// Treat the row as safe if ANY component is safe — otherwise a STUN keepalive
+// paired with an incidental HTTP flow would never be recognised.
 function _isSafeProto(svc) {
   if (!svc) return false;
-  var parts = svc.split(',')[0].split(':');   // first svc only, "port:proto:name"
-  var name = (parts[2] || '').toLowerCase();
-  return _SAFE_PROTOS.has(name);
+  return svc.split(',').some(function(c) {
+    var parts = c.trim().split(':');   // "port:proto:name"
+    var name = (parts[2] || '').toLowerCase();
+    if (name && _SAFE_PROTOS.has(name)) return true;
+    return _SAFE_PROTO_PORTS.has((parts[0] || '') + ':' + (parts[1] || ''));
+  });
+}
+// Default pattern to pre-fill for a protocol FP. A single-service row
+// ("3478:udp:") becomes the exact component to register ("3478:udp");
+// a compound row is shown whole so the operator trims it to one service.
+function _protoDefault(svc) {
+  if (!svc) return '';
+  var comps = svc.split(',').map(function(s) { return s.trim(); }).filter(Boolean);
+  return comps.length === 1 ? comps[0].replace(/:$/, '') : svc;
 }
 
 // Single-beacon shortcut: skip the intermediate severity modal and open
@@ -713,7 +735,7 @@ function fpOpen(btn, rowIdx) {
   _fpBtn    = btn || null;
   document.getElementById('fp-msg').style.display = 'none';
   document.getElementById('fp-domain-input').value = domainSuggest(row.fqdn, row.raw_dst, row.enrich_name);
-  document.getElementById('fp-proto-preview').textContent  = row.svc || '(no service)';
+  document.getElementById('fp-proto-input').value = _protoDefault(row.svc);
 
   // Visually dim the protocol option unless this row's service is on the
   // safe list (NTP, mDNS, etc.). Click is still allowed but goes through
@@ -768,8 +790,10 @@ function fpSelectType(t) {
 function fpUpdateSubmitEnabled() {
   var reason = document.getElementById('fp-reason-input').value.trim();
   var pat    = document.getElementById('fp-domain-input').value.trim();
+  var proto  = document.getElementById('fp-proto-input').value.trim();
   var needPat = (_fpType === 'domain') && !pat;
-  document.getElementById('fp-submit-btn').disabled = (_fpType === null) || (reason === '') || needPat;
+  var needProto = (_fpType === 'proto') && !proto;
+  document.getElementById('fp-submit-btn').disabled = (_fpType === null) || (reason === '') || needPat || needProto;
 }
 
 function fpDialogClose() {
@@ -790,8 +814,10 @@ function fpSubmit() {
     fd.append('pattern', pat);
     fd.append('reason', reason);
   } else {
+    var svc = document.getElementById('fp-proto-input').value.trim();
+    if (!svc) { document.getElementById('fp-proto-input').focus(); return; }
     url = '{{ url_for("fps_add_protocol") }}';
-    fd.append('svc', _fpRow.svc);
+    fd.append('svc', svc);
     fd.append('reason', reason);
   }
 
