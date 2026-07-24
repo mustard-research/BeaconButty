@@ -136,8 +136,8 @@
                 </div>
                 {% if alert.ext_enrich %}
                   <div style="font-size:11px;margin-top:1px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
-                       title="From Zeek {{ alert.ext_source }} log">
-                    → {{ alert.ext_enrich }}
+                       title="From Zeek {{ alert.ext_source }} log{% if (alert.ext_enrich|elide_host) != alert.ext_enrich %}&#10;&#10;{{ alert.ext_enrich }}{% endif %}">
+                    → {{ alert.ext_enrich|elide_host }}
                     <span class="text-dim" style="font-size:10px;text-transform:uppercase;letter-spacing:.04em;">{{ alert.ext_source }}</span>
                   </div>
                 {% endif %}
@@ -190,7 +190,7 @@
             <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ a.src_ip }}{{ intel_badge(a.src_intel) }}</div>
             {% if a.src_enrich %}
               <div class="text-dim" style="font-size:11px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
-                   title="From Zeek {{ a.src_source }} log">→ {{ a.src_enrich }}
+                   title="From Zeek {{ a.src_source }} log{% if (a.src_enrich|elide_host) != a.src_enrich %}&#10;&#10;{{ a.src_enrich }}{% endif %}">→ {{ a.src_enrich|elide_host }}
                 <span style="font-size:10px;text-transform:uppercase;letter-spacing:.04em;">{{ a.src_source }}</span></div>
             {% endif %}
           </td>
@@ -198,7 +198,7 @@
             <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ a.dst_ip }}{{ intel_badge(a.dst_intel) }}</div>
             {% if a.dst_enrich %}
               <div class="text-dim" style="font-size:11px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
-                   title="From Zeek {{ a.dst_source }} log">→ {{ a.dst_enrich }}
+                   title="From Zeek {{ a.dst_source }} log{% if (a.dst_enrich|elide_host) != a.dst_enrich %}&#10;&#10;{{ a.dst_enrich }}{% endif %}">→ {{ a.dst_enrich|elide_host }}
                 <span style="font-size:10px;text-transform:uppercase;letter-spacing:.04em;">{{ a.dst_source }}</span></div>
             {% endif %}
           </td>

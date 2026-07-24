@@ -318,12 +318,12 @@
             {% endif %}
           </td>
           <td class="mono text-dim" style="max-width:300px;">
-            <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ row.dest }}{{ intel_badge((row.dest_enrich or {}).get('intel')) }}</div>
+            <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"{% if (row.dest|elide_host) != row.dest %} class="bb-pop" tabindex="0" data-pop="{{ row.dest }}" title="{{ row.dest }}"{% endif %}>{{ row.dest|elide_host }}{{ intel_badge((row.dest_enrich or {}).get('intel')) }}</div>
             {% set e = row.dest_enrich %}
             {% if e and e.name %}
               <div style="font-size:11px;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
-                   title="Pulled from Zeek {{ e.source }} log{% if e.when_days is not none %} — {% if e.when_days == 0 %}today{% elif e.when_days == 1 %}1 day ago{% else %}{{ e.when_days }} days ago{% endif %}{% endif %}. RITA's report only joins same-day DNS so cross-day FQDNs show as bare IPs here.">
-                <span style="color:var(--text);">→ {{ e.name }}</span>
+                   title="Pulled from Zeek {{ e.source }} log{% if e.when_days is not none %} — {% if e.when_days == 0 %}today{% elif e.when_days == 1 %}1 day ago{% else %}{{ e.when_days }} days ago{% endif %}{% endif %}. RITA's report only joins same-day DNS so cross-day FQDNs show as bare IPs here.{% if (e.name|elide_host) != e.name %}&#10;&#10;{{ e.name }}{% endif %}">
+                <span style="color:var(--text);">→ {{ e.name|elide_host }}</span>
                 <span class="text-dim" style="font-size:10px;margin-left:4px;text-transform:uppercase;letter-spacing:.04em;">{{ e.source }}{% if e.when_days is not none and e.when_days > 0 %} · {{ e.when_days }}d{% endif %}</span>
               </div>
             {% endif %}
@@ -458,7 +458,7 @@
             {{ row.total_mb }}
           </td>
           <td class="num text-dim">{{ row.conns }}</td>
-          <td class="mono text-dim" style="max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ row.top_dst }}</td>
+          <td class="mono text-dim" style="max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"{% if (row.top_dst|elide_host) != row.top_dst %} class="bb-pop" tabindex="0" data-pop="{{ row.top_dst }}" title="{{ row.top_dst }}"{% endif %}>{{ row.top_dst|elide_host }}</td>
         </tr>
         {% endfor %}
       </tbody>
@@ -582,7 +582,7 @@
         {% for row in intel.persistence %}
         <tr>
           <td>{{ device_label(row.src_label) }}</td>
-          <td class="mono text-dim" style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ row.dest }}</td>
+          <td class="mono text-dim" style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"{% if (row.dest|elide_host) != row.dest %} class="bb-pop" tabindex="0" data-pop="{{ row.dest }}" title="{{ row.dest }}"{% endif %}>{{ row.dest|elide_host }}</td>
           <td class="num" style="font-weight:600;{% if row.days >= 7 %}color:var(--red){% elif row.days >= 5 %}color:var(--yellow){% endif %}">
             {{ row.days }}
           </td>

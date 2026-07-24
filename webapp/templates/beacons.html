@@ -182,7 +182,7 @@
             <td class="mono" style="max-width:300px;">
               {% for score, dest in dev.top_dests %}
                 <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
-                  <span class="{% if score >= 0.8 %}text-red{% elif score >= 0.5 %}text-yellow{% else %}text-dim{% endif %}" style="font-size:0.75em;margin-right:4px;">{{ "%.2f"|format(score) }}</span>{{ dest }}
+                  <span class="{% if score >= 0.8 %}text-red{% elif score >= 0.5 %}text-yellow{% else %}text-dim{% endif %}" style="font-size:0.75em;margin-right:4px;">{{ "%.2f"|format(score) }}</span><span{% if (dest|elide_host) != dest %} class="bb-pop" tabindex="0" data-pop="{{ dest }}" title="{{ dest }}"{% endif %}>{{ dest|elide_host }}</span>
                 </div>
               {% endfor %}
             </td>
@@ -232,8 +232,8 @@
             <td class="mono text-dim" style="max-width:300px;font-size:12px;">
               {% if item.dest_entries %}
                 {% for d in item.dest_entries %}
-                  <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
-                    {{ d.raw }}
+                  <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"{% if (d.raw|elide_host) != d.raw %} class="bb-pop" tabindex="0" data-pop="{{ d.raw }}" title="{{ d.raw }}"{% endif %}>
+                    {{ d.raw|elide_host }}
                     {% if d.enrich %}
                       <span style="color:var(--text);">→ {{ d.enrich }}</span>
                       <span class="text-dim" style="font-size:10px;text-transform:uppercase;letter-spacing:.04em;">{{ d.source }}</span>
@@ -241,7 +241,7 @@
                   </div>
                 {% endfor %}
               {% else %}
-                <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ item.dest }}</div>
+                <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"{% if (item.dest|elide_host) != item.dest %} class="bb-pop" tabindex="0" data-pop="{{ item.dest }}" title="{{ item.dest }}"{% endif %}>{{ item.dest|elide_host }}</div>
               {% endif %}
             </td>
             <td class="num">
@@ -325,11 +325,11 @@
             </td>
             <td class="mono">{{ b.label }}</td>
             <td class="mono" style="max-width:300px;">
-              <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ b.dest }}{{ intel_badge(b.intel) }}</div>
+              <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"{% if (b.dest|elide_host) != b.dest %} class="bb-pop" tabindex="0" data-pop="{{ b.dest }}" title="{{ b.dest }}"{% endif %}>{{ b.dest|elide_host }}{{ intel_badge(b.intel) }}</div>
               {% if b.enrich_name %}
                 <div style="font-size:11px;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text);"
-                     title="From Zeek {{ b.enrich_source }} log{% if b.enrich_when_days is not none %} ({% if b.enrich_when_days == 0 %}today{% elif b.enrich_when_days == 1 %}1 day ago{% else %}{{ b.enrich_when_days }} days ago{% endif %}){% endif %}. RITA only joins same-day DNS.">
-                  → {{ b.enrich_name }}
+                     title="From Zeek {{ b.enrich_source }} log{% if b.enrich_when_days is not none %} ({% if b.enrich_when_days == 0 %}today{% elif b.enrich_when_days == 1 %}1 day ago{% else %}{{ b.enrich_when_days }} days ago{% endif %}){% endif %}. RITA only joins same-day DNS.{% if (b.enrich_name|elide_host) != b.enrich_name %}&#10;&#10;{{ b.enrich_name }}{% endif %}">
+                  → {{ b.enrich_name|elide_host }}
                   <span class="text-dim" style="font-size:10px;margin-left:4px;text-transform:uppercase;letter-spacing:.04em;">{{ b.enrich_source }}{% if b.enrich_when_days is not none and b.enrich_when_days > 0 %} · {{ b.enrich_when_days }}d{% endif %}</span>
                 </div>
               {% endif %}
@@ -889,7 +889,7 @@ function sgShow(i) {
     var tr = document.createElement('tr');
     tr.innerHTML =
       '<td class="mono">' + escHtml(r.label) + '</td>' +
-      '<td class="mono" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + escHtml(r.dest) + intelBadgeHtml(r.intel) + '</td>' +
+      '<td class="mono" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + '<span title="' + escHtml(r.dest) + '">' + escHtml(bbShortenHost(r.dest)) + '</span>' + intelBadgeHtml(r.intel) + '</td>' +
       '<td class="num"><span class="' + scoreCls + '" style="font-weight:600;">' + r.score.toFixed(3) + '</span></td>' +
       '<td>' + sevBadge + '</td>' +
       '<td class="mono text-dim" style="font-size:11px;">' + escHtml(r.svc) + '</td>';

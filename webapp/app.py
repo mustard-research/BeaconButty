@@ -524,12 +524,25 @@ def shorten_host(host, limit=32, head_max=10):
     h = (host or "").strip()
     if len(h) <= limit:
         return h
+    # Only ever touch a bare hostname. Several columns carry composite labels
+    # like "1.2.3.4 (Akamai Connected Cloud, São Paulo, BR)", which identify
+    # themselves at the START — eliding those drops the org and reads as
+    # corruption ("192.200.0.…com, Inc., CA)"). Leaving them to the existing
+    # CSS clip is correct: the informative half is already leftmost.
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", h):
+        return h
     tail = fp_dst_default(h).lstrip("*.")           # registrable domain
     if tail and len(tail) < limit - 4 and h.lower().endswith(tail):
         tail = h[-len(tail):]                       # preserve original case
         head = h[: min(head_max, max(4, limit - len(tail) - 1))]
         return head + "…" + tail
     return h[: limit - 1] + "…"                     # no usable tail
+
+
+# Every hostname-bearing cell should render through this — see
+# docs/investigation/false-positive-workflow.md. Bare IPs pass through
+# untouched, so it is safe on columns that mix hostnames and IPs.
+app.add_template_filter(shorten_host, "elide_host")
 
 
 @app.context_processor

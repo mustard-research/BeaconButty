@@ -109,6 +109,26 @@
     var take = MULTI[labels.slice(-2).join('.')] ? 3 : 2;
     return '*.' + (labels.length <= take ? h : labels.slice(-take).join('.'));
   };
+
+  // Mirror of shorten_host() in app.py (exposed to Jinja as |elide_host).
+  // A hostname identifies itself at the END, so CSS text-overflow clips the
+  // half that matters; elide the middle and keep both.
+  window.bbShortenHost = function(host, limit, headMax) {
+    limit = limit || 32; headMax = headMax || 10;
+    var h = (host || '').trim();
+    if (h.length <= limit) return h;
+    // Bare hostnames only — composite labels like "1.2.3.4 (Acme, London, GB)"
+    // read left-to-right and must be left to the CSS clip.
+    if (!/^[A-Za-z0-9._-]+$/.test(h)) return h;
+    var tail = bbFpDstDefault(h).replace(/^[*.]+/, '');
+    if (tail && tail.length < limit - 4 &&
+        h.toLowerCase().slice(-tail.length) === tail) {
+      tail = h.slice(-tail.length);
+      var head = h.slice(0, Math.min(headMax, Math.max(4, limit - tail.length - 1)));
+      return head + '…' + tail;
+    }
+    return h.slice(0, limit - 1) + '…';
+  };
 })();
 </script>
 
