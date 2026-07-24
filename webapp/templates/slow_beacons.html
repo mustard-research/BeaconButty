@@ -159,11 +159,18 @@
           </td>
           <td style="font-size:12px;max-width:320px;">
             {% if c.sni %}
-              <div class="mono" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ c.sni }}</div>
+              {# Middle-elided server-side: the registrable domain lives at the
+                 END, and a CSS end-ellipsis would clip exactly that. Full
+                 value in the popover. #}
+              <div class="mono{% if c.sni_short != c.sni %} bb-pop{% endif %}"
+                   style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
+                   {% if c.sni_short != c.sni %}tabindex="0" data-pop="{{ c.sni }}" title="{{ c.sni }}"{% endif %}>{{ c.sni_short }}</div>
             {% elif c.http_host %}
-              <div class="mono" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
-                   title="HTTP Host header (no SNI — this is plain HTTP traffic){% if c.http_hosts and c.http_hosts|length > 1 %}&#10;Other hosts on this dst: {{ c.http_hosts | reject('equalto', c.http_host) | join(', ') }}{% endif %}">
-                {{ c.http_host }}
+              {% set _hh_pop = 'HTTP Host header (no SNI — this is plain HTTP traffic)' ~ ('\n\n' ~ c.http_host if c.http_host_short != c.http_host else '') ~ ('\n\nOther hosts on this dst: ' ~ (c.http_hosts | reject('equalto', c.http_host) | join(', ')) if c.http_hosts and c.http_hosts|length > 1 else '') %}
+              <div class="mono bb-pop" tabindex="0"
+                   style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
+                   data-pop="{{ _hh_pop }}" title="{{ _hh_pop }}">
+                {{ c.http_host_short }}
                 {% if c.http_hosts and c.http_hosts|length > 1 %}
                   <span class="text-dim" style="font-family:inherit;font-size:10px;">+{{ c.http_hosts|length - 1 }}</span>
                 {% endif %}

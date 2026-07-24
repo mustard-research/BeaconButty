@@ -647,8 +647,10 @@ function nfpOpenDst(btn) {
   var nameSrc = (raw && !/^\d+\.\d+\.\d+\.\d+$/.test(raw)) ? raw : enrich;
   var pat;
   if (nameSrc && nameSrc.indexOf('.') !== -1) {
-    var parts = nameSrc.split('.');
-    pat = (parts.length > 2) ? '*.' + parts.slice(1).join('.') : nameSrc;
+    // bbFpDstDefault() in base.html mirrors fp_dst_default() in app.py. The
+    // old inline rule sliced off the first label whenever there were >2,
+    // which turned bbc.co.uk into the far-too-broad '*.co.uk'.
+    pat = bbFpDstDefault(nameSrc);
   } else {
     pat = raw;  // bare IP with no enrichment — fall back to literal
   }

@@ -88,6 +88,30 @@
   {% block content %}{% endblock %}
 </main>
 
+<script>
+// FP destination-pattern prefill — the client-side mirror of fp_dst_default()
+// in app.py, sharing its suffix list via the context processor so the two
+// can't drift. '*.x.y' also matches the bare apex 'x.y' (see
+// _fp_domain_match), so one pattern covers apex + subdomains.
+//
+// Guards two ways of collapsing a hostname into a near-global wildcard:
+// an apex like krebsonsecurity.com must not become '*.com', and a
+// second-level registry like bbc.co.uk must not become '*.co.uk'.
+(function() {
+  var MULTI = {};
+  ({{ fp_multi_label_suffixes | tojson }}).forEach(function(s) { MULTI[s] = 1; });
+  window.bbFpDstDefault = function(host) {
+    var h = (host || '').trim().replace(/\.+$/, '').toLowerCase();
+    if (!h || h.indexOf('.') === -1) return h;   // single label / IPv6
+    if (/^[0-9.]+$/.test(h)) return h;           // bare IPv4
+    if (MULTI[h]) return h;
+    var labels = h.split('.');
+    var take = MULTI[labels.slice(-2).join('.')] ? 3 : 2;
+    return '*.' + (labels.length <= take ? h : labels.slice(-take).join('.'));
+  };
+})();
+</script>
+
 {% block scripts %}{% endblock %}
 
 {# ── Shared confirm modal ──────────────────────────────────────────────────── #}

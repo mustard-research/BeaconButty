@@ -507,16 +507,18 @@ var HB_LABELS = {{ beacon_data.devices | map(attribute='label') | list | tojson 
 var SG = {{ beacon_data.suppressed_groups | tojson }};
 var _hbDevIdx = 0;
 
-// Suggest *.parent.tld from an FQDN. When RITA didn't have an FQDN for
-// this row, fall back to the Zeek-recovered enrichment name (so a Knock
+// Suggest *.registrable-domain from an FQDN. When RITA didn't have an FQDN
+// for this row, fall back to the Zeek-recovered enrichment name (so a Knock
 // AWS IP suggests *.knock.app instead of the bare IP — far more useful
 // as an FP pattern). Last resort: the raw IP.
+//
+// Generalisation is bbFpDstDefault() in base.html (mirrors fp_dst_default()
+// in app.py). The old inline rule here sliced off the first label whenever
+// there were >2, which turned bbc.co.uk into the far-too-broad '*.co.uk'.
 function domainSuggest(fqdn, rawDst, enrichName) {
   var name = (fqdn && fqdn.trim()) || (enrichName && enrichName.trim()) || '';
   if (!name) return rawDst || '';
-  var parts = name.split('.');
-  if (parts.length > 2) return '*.' + parts.slice(1).join('.');
-  return name;
+  return bbFpDstDefault(name);
 }
 
 // Render the external threat-intel badge (Shodan + AbuseIPDB + Spamhaus

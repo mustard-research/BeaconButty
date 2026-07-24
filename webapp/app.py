@@ -503,6 +503,38 @@ def fp_dst_default(host):
     return "*." + (h if len(labels) <= take else ".".join(labels[-take:]))
 
 
+def shorten_host(host, limit=42):
+    """Middle-elide an over-long hostname, keeping the registrable domain.
+
+    The identifying part of a hostname is at the END. Long names are long
+    precisely because something prepended a random or sharded label —
+    '69n8gfquoro0…rp9ho9e.wuchuyun.com'. Plain CSS `text-overflow: ellipsis`
+    clips the tail, so the operator is left staring at the random half and
+    cannot see who the destination actually is.
+
+    Eliding the middle keeps both signals: the leading gibberish (which is
+    itself evidence — DGA, CDN shard) and the domain that names the owner.
+    Callers should still expose the full value in a tooltip.
+    """
+    h = (host or "").strip()
+    if len(h) <= limit:
+        return h
+    tail = fp_dst_default(h).lstrip("*.")           # registrable domain
+    if tail and len(tail) < limit - 4 and h.lower().endswith(tail):
+        tail = h[-len(tail):]                       # preserve original case
+        head = h[: max(4, limit - len(tail) - 1)]
+        return head + "…" + tail
+    return h[: limit - 1] + "…"                     # no usable tail
+
+
+@app.context_processor
+def _inject_fp_suffixes():
+    """Feed the suffix set to base.html's bbFpDstDefault(), so the client-side
+    prefill on /beacons and /network shares this module's single source of
+    truth instead of keeping its own copy in two templates."""
+    return {"fp_multi_label_suffixes": sorted(_MULTI_LABEL_SUFFIXES)}
+
+
 def _fp_service_match(svc, fp_protocols):
     """Match a RITA service field against registered protocol FPs.
 
@@ -4013,6 +4045,10 @@ def beacons_slow():
         # Prefill for the FP-dst button. Derived here rather than in the
         # template so it stays next to the matcher whose semantics it mirrors.
         c["fp_dst_default"] = fp_dst_default(c.get("sni") or c.get("http_host") or "")
+        # Display-only elision; the full value stays in the tooltip and in the
+        # FP pattern, so nothing downstream sees the shortened form.
+        c["sni_short"]       = shorten_host(c.get("sni") or "")
+        c["http_host_short"] = shorten_host(c.get("http_host") or "")
 
     # Group by source. Sort groups so the ones with alert-eligible rows
     # come first (those are the "real" findings worth eyeballing); within
