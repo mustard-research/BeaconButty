@@ -460,6 +460,49 @@ def _fp_domain_match(q, patterns):
     return False
 
 
+# Multi-label public suffixes. Not the full PSL — just enough that a
+# second-level registry like "foo.co.uk" doesn't generalise to "*.co.uk".
+_MULTI_LABEL_SUFFIXES = {
+    "co.uk", "org.uk", "ac.uk", "gov.uk", "me.uk", "net.uk", "sch.uk", "ltd.uk",
+    "com.au", "net.au", "org.au", "edu.au", "gov.au",
+    "co.nz", "net.nz", "org.nz",
+    "co.za", "org.za",
+    "co.jp", "ne.jp", "or.jp", "ac.jp", "go.jp",
+    "com.cn", "net.cn", "org.cn", "gov.cn",
+    "com.br", "com.mx", "com.ar", "com.tr", "com.pl", "com.ua", "com.vn",
+    "com.sg", "com.hk", "com.tw", "com.my", "com.ph",
+    "co.kr", "co.in", "co.il", "co.id", "co.th", "co.ke",
+}
+
+
+def fp_dst_default(host):
+    """Prefill pattern for a destination FP button: '*.<registrable domain>'.
+
+    '*.x.y' also matches the bare apex 'x.y' (see _fp_domain_match), so a
+    single pattern covers the apex and every subdomain — which is what an
+    operator almost always means by "suppress this destination".
+
+    The rule this replaces was inline Jinja doing "everything after the first
+    dot". On a hostname that already *was* the apex it stripped the only
+    meaningful label: 'krebsonsecurity.com' prefilled as '*.com', one click
+    away from suppressing every .com destination on the network.
+
+    Bare IPs and single-label names are returned literally — a wildcard is
+    meaningless for them.
+    """
+    h = (host or "").strip().rstrip(".").lower()
+    if not h or "." not in h:
+        return h
+    # IPv4 literal (and IPv6 has no dots, so it exits above)
+    if re.fullmatch(r"[0-9.]+", h):
+        return h
+    if h in _MULTI_LABEL_SUFFIXES:      # pathological, but don't emit "*.co.uk"
+        return h
+    labels = h.split(".")
+    take = 3 if ".".join(labels[-2:]) in _MULTI_LABEL_SUFFIXES else 2
+    return "*." + (h if len(labels) <= take else ".".join(labels[-take:]))
+
+
 def _fp_service_match(svc, fp_protocols):
     """Match a RITA service field against registered protocol FPs.
 
@@ -3967,6 +4010,9 @@ def beacons_slow():
             c["dst_org"] = org or ""
             c["dst_cc"]  = cc  or ""
         c["intel"] = ip_intel(c["dst"]) or None
+        # Prefill for the FP-dst button. Derived here rather than in the
+        # template so it stays next to the matcher whose semantics it mirrors.
+        c["fp_dst_default"] = fp_dst_default(c.get("sni") or c.get("http_host") or "")
 
     # Group by source. Sort groups so the ones with alert-eligible rows
     # come first (those are the "real" findings worth eyeballing); within

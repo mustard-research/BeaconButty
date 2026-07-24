@@ -221,9 +221,8 @@
           </td>
           <td style="white-space:nowrap;">
             {% if c.sni %}
-              {% set dest_default = '*.' ~ (c.sni.split('.', 1)[1] if '.' in c.sni else c.sni) %}
               <button type="button" class="btn btn-sm" style="width:100%;"
-                      data-pattern="{{ dest_default }}"
+                      data-pattern="{{ c.fp_dst_default }}"
                       data-reason="{{ c.dst_org or '' }}"
                       data-fp-mode="dst"
                       onclick="slowFpOpen(this)"
@@ -231,9 +230,8 @@
                 FP&nbsp;dst
               </button>
             {% elif c.http_host %}
-              {% set dest_default = '*.' ~ (c.http_host.split('.', 1)[1] if '.' in c.http_host else c.http_host) %}
               <button type="button" class="btn btn-sm" style="width:100%;"
-                      data-pattern="{{ dest_default }}"
+                      data-pattern="{{ c.fp_dst_default }}"
                       data-reason="{{ c.dst_org or '' }}"
                       data-fp-mode="dst"
                       onclick="slowFpOpen(this)"
