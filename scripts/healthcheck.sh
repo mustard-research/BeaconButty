@@ -750,10 +750,27 @@ if [[ -f "$ANALYZE_LOG" ]]; then
         WARN "No '=== done:' marker found in $ANALYZE_LOG — rita-analyze.sh has not completed a run"
     fi
 
-    # Check if the service is sitting in a failed state and why
+    # Check if the service is sitting in a failed state and why.
+    #
+    # Scope the diagnosis to the LAST RUN only, and let a real error outrank the
+    # benign "already imported" message. One run walks every retained Zeek day,
+    # so a benign line for an early dataset sits in the same tail as a hard
+    # failure on a later one. A flat `tail -30 | grep benign` therefore reported
+    # "cause is benign" while new-day database creation was hard-failing
+    # (2026-07-24: ClickHouse 26.7's AggregatingMergeTree dimension guard).
     if systemctl is-failed --quiet rita-analyze.service 2>/dev/null; then
-        LAST_LOG=$(tail -30 "$ANALYZE_LOG" 2>/dev/null)
-        if echo "$LAST_LOG" | grep -q "all files were previously imported"; then
+        LAST_RUN=$(tac "$ANALYZE_LOG" 2>/dev/null | sed '/^=== rita-analyze started:/q' | tac)
+        if echo "$LAST_RUN" | grep -q 'ERR'; then
+            # Surface RITA's own "[!] ..." summary line; strip ANSI/CR and cap length
+            RITA_ERR=$(echo "$LAST_RUN" | grep '\[!\]' \
+                | grep -v 'all files were previously imported' | head -1 \
+                | tr -d '\r' | sed 's/\x1b\[[0-9;]*m//g; s/^[[:space:]]*//')
+            if [[ -n "$RITA_ERR" ]]; then
+                FAIL "rita-analyze.service: last run failed — ${RITA_ERR:0:160}"
+            else
+                FAIL "rita-analyze.service: last run failed — check $ANALYZE_LOG"
+            fi
+        elif echo "$LAST_RUN" | grep -q "all files were previously imported"; then
             WARN "rita-analyze.service: failed state — cause is benign (all files already imported); rita-analyze.sh has been fixed to exit 0 in this case"
         else
             FAIL "rita-analyze.service: last run failed — check $ANALYZE_LOG"

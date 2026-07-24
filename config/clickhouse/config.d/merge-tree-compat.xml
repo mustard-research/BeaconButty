@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<clickhouse>
+    <!-- ClickHouse 26.7 added a create-time guard rejecting AggregatingMergeTree
+         tables that carry "dimension" columns (neither in ORDER BY nor an
+         aggregate-state measure). RITA v5's schema does exactly that, e.g.
+
+           beaconbutty_YYYYMMDD.uconn
+             ORDER BY (hour, dst_nuid, src_nuid, src, dst, hash)
+             dimensions: import_hour, src_local, dst_local
+
+         src_local/dst_local are functionally dependent on src/dst, which are in
+         the sorting key. Same pattern in usni, exploded_dns, port_info,
+         rare_signatures, tls_proto, http_proto, mime_type_uris, dns_tmp.
+
+         This is long-standing RITA behaviour; the 26.7 check is new, not the
+         schema. Enabling the documented escape hatch restores pre-26.7
+         behaviour. Without it, RITA fails to create each new day's database —
+         which is precisely how imports broke at 01:05 on 2026-07-24, silently,
+         the morning after the 26.4.2 -> 26.7.1 upgrade. -->
+    <merge_tree>
+        <allow_dimensions_outside_sorting_key>1</allow_dimensions_outside_sorting_key>
+    </merge_tree>
+</clickhouse>

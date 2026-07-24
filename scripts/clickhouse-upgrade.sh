@@ -40,7 +40,7 @@ if [[ "$EUID" -ne 0 ]]; then
 fi
 
 CONFIG_DIR="/etc/clickhouse-server"
-EXPECTED_OVERRIDES=("logs.xml" "memory.xml" "system-log-ttl.xml")
+EXPECTED_OVERRIDES=("logs.xml" "memory.xml" "system-log-ttl.xml" "merge-tree-compat.xml")
 SNAPSHOT_ROOT="/var/lib/beaconbutty/ch-upgrade"
 TS=$(date -u +%Y%m%dT%H%M%SZ)
 SNAPSHOT_DIR="${SNAPSHOT_ROOT}/${TS}"
@@ -186,13 +186,25 @@ clickhouse-client --query "SELECT 1" >/dev/null 2>&1 \
     || die "VERIFY FAIL: SELECT 1 not responding"
 ok "SELECT 1 responsive"
 
-# (d) Memory setting matches snapshot (catches a maintainer config.xml taking precedence)
+# (d) Memory cap still bounded by our configured ceiling (catches a maintainer
+#     config.xml taking precedence over config.d/memory.xml).
+#
+#     NOT an equality check against the snapshot: since 26.7,
+#     memory_worker_dynamic_hard_limit=1 makes the *runtime*
+#     max_server_memory_usage float below the configured ceiling according to
+#     available RAM, so it legitimately differs run to run. Assert the invariant
+#     that actually matters — non-zero, and never above what memory.xml sets.
+CEILING=$(grep -oP '(?<=<max_server_memory_usage[^>]{0,40}>)\d+' \
+    "${CONFIG_DIR}/config.d/memory.xml" | head -1)
+[[ -n "$CEILING" ]] || die "VERIFY FAIL: could not parse the cap from config.d/memory.xml"
 NEW_MAX_MEM=$(clickhouse-client --query "SELECT value FROM system.server_settings WHERE name='max_server_memory_usage'")
-OLD_MAX_MEM=$(cat "${SNAPSHOT_DIR}/max_memory")
-if [[ "$NEW_MAX_MEM" != "$OLD_MAX_MEM" ]]; then
-    die "VERIFY FAIL: max_server_memory_usage changed: ${OLD_MAX_MEM} → ${NEW_MAX_MEM}"
+if [[ ! "$NEW_MAX_MEM" =~ ^[0-9]+$ ]] || (( NEW_MAX_MEM <= 0 )); then
+    die "VERIFY FAIL: max_server_memory_usage is unset or unreadable: '${NEW_MAX_MEM}'"
 fi
-ok "max_server_memory_usage unchanged: ${NEW_MAX_MEM}"
+if (( NEW_MAX_MEM > CEILING )); then
+    die "VERIFY FAIL: max_server_memory_usage ${NEW_MAX_MEM} exceeds the configured ceiling ${CEILING} — config.d/memory.xml is not being applied"
+fi
+ok "max_server_memory_usage: ${NEW_MAX_MEM} (within configured ceiling ${CEILING})"
 
 # (e) Dataset count matches snapshot
 NEW_DATASET_COUNT=$(clickhouse-client --query "SELECT count() FROM system.databases WHERE name LIKE 'beaconbutty_%'")
@@ -201,6 +213,49 @@ if [[ "$NEW_DATASET_COUNT" != "$OLD_DATASET_COUNT" ]]; then
     die "VERIFY FAIL: dataset count changed: ${OLD_DATASET_COUNT} → ${NEW_DATASET_COUNT}"
 fi
 ok "Dataset count unchanged: ${NEW_DATASET_COUNT}"
+
+# (f) Schema canary — can RITA still CREATE a new day's database?
+#
+#     The step-6 rita-analyze run below only re-imports into TODAY's dataset,
+#     which already exists. It therefore never exercises CREATE TABLE, and a
+#     server-side schema-validation change stays invisible until midnight.
+#     That is exactly what happened on 2026-07-23: this script reported all
+#     green, then every hourly import from 01:05 on 2026-07-24 failed because
+#     26.7 began rejecting AggregatingMergeTree tables whose dimension columns
+#     (import_hour, src_local, dst_local) sit outside the sorting key.
+#
+#     So: build a throwaway table with RITA's uconn shape and drop it again.
+log "Schema canary (fresh-database creation)"
+CANARY_DB="bb_upgrade_canary"
+clickhouse-client --query "DROP DATABASE IF EXISTS ${CANARY_DB}" >/dev/null 2>&1 || true
+CANARY_ERR=$(clickhouse-client --multiquery --query "
+CREATE DATABASE ${CANARY_DB};
+CREATE TABLE ${CANARY_DB}.uconn_shape
+(
+    \`import_hour\` DateTime,
+    \`hour\` DateTime,
+    \`hash\` FixedString(16),
+    \`src\` IPv6,
+    \`dst\` IPv6,
+    \`src_nuid\` UUID,
+    \`dst_nuid\` UUID,
+    \`src_local\` Bool,
+    \`dst_local\` Bool,
+    \`count\` AggregateFunction(count, Int64),
+    \`ts_list\` AggregateFunction(groupArray(86400), UInt32),
+    \`total_ip_bytes\` AggregateFunction(sum, UInt64),
+    \`first_seen\` AggregateFunction(min, DateTime)
+)
+ENGINE = AggregatingMergeTree
+ORDER BY (hour, dst_nuid, src_nuid, src, dst, hash);
+" 2>&1) || {
+    clickhouse-client --query "DROP DATABASE IF EXISTS ${CANARY_DB}" >/dev/null 2>&1 || true
+    die "VERIFY FAIL: cannot create a RITA-shaped database on ${NEW_VERSION}.
+RITA would fail at the next midnight rollover, not now. Error:
+$(echo "$CANARY_ERR" | head -5)"
+}
+clickhouse-client --query "DROP DATABASE IF EXISTS ${CANARY_DB}" >/dev/null 2>&1 || true
+ok "RITA-shaped AggregatingMergeTree still creatable"
 
 # ── 6. Resume — run one full rita-analyze cycle and wait for "=== done:" ─────
 log "Resume RITA + workload verify"
