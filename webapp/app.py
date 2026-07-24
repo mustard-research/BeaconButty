@@ -503,18 +503,23 @@ def fp_dst_default(host):
     return "*." + (h if len(labels) <= take else ".".join(labels[-take:]))
 
 
-def shorten_host(host, limit=42):
+def shorten_host(host, limit=32, head_max=10):
     """Middle-elide an over-long hostname, keeping the registrable domain.
 
     The identifying part of a hostname is at the END. Long names are long
-    precisely because something prepended a random or sharded label —
-    '69n8gfquoro0…rp9ho9e.wuchuyun.com'. Plain CSS `text-overflow: ellipsis`
-    clips the tail, so the operator is left staring at the random half and
-    cannot see who the destination actually is.
+    precisely because something prepended a random or sharded label. Plain CSS
+    `text-overflow: ellipsis` clips the tail, so the operator is left staring
+    at the random half and cannot see who the destination actually is.
 
-    Eliding the middle keeps both signals: the leading gibberish (which is
-    itself evidence — DGA, CDN shard) and the domain that names the owner.
-    Callers should still expose the full value in a tooltip.
+    Eliding the middle keeps both signals: enough of the leading gibberish to
+    read as gibberish (itself evidence — DGA, CDN shard) and the domain that
+    names the owner.
+
+    The head is capped at `head_max` rather than given whatever budget is
+    left, so the result is short enough to *fit* — an elided string that still
+    overflows its cell just gets clipped by CSS and loses the tail all over
+    again, which is the bug this function exists to prevent. Callers should
+    expose the full value in a tooltip.
     """
     h = (host or "").strip()
     if len(h) <= limit:
@@ -522,7 +527,7 @@ def shorten_host(host, limit=42):
     tail = fp_dst_default(h).lstrip("*.")           # registrable domain
     if tail and len(tail) < limit - 4 and h.lower().endswith(tail):
         tail = h[-len(tail):]                       # preserve original case
-        head = h[: max(4, limit - len(tail) - 1)]
+        head = h[: min(head_max, max(4, limit - len(tail) - 1))]
         return head + "…" + tail
     return h[: limit - 1] + "…"                     # no usable tail
 

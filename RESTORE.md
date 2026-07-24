@@ -17,7 +17,9 @@ Also download the matching `packages-YYYY-MM-DD.txt` file.
 - Full webapp source (`/home/dm/BeaconButty/`)
 - **Site config `/etc/beaconbutty/local.env`** — BB_HOST, LAN subnet/gateway MAC, alert Lambda URL + shared secret. Without this the alert pipeline and gateway-impersonation check are dead; restore it before enabling services.
 - Network config: NetworkManager profiles (eth0 WAN / eth1 LAN), the capture-offload dispatcher hook (`/etc/NetworkManager/dispatcher.d/99-bb-capture-offload`), dnsmasq, iptables rules, sysctl tweaks
-- App config: RITA (`/etc/rita/`), Suricata, ClickHouse `config.d/` overrides (memory cap, log path, TTLs), Zeek site policy
+- App config: RITA (`/etc/rita/`), Suricata, ClickHouse `config.d/` overrides (memory cap, log path, TTLs, **MergeTree schema compat**), Zeek site policy
+
+  > All four ClickHouse overrides must be restored: `logs.xml`, `memory.xml`, `system-log-ttl.xml`, `merge-tree-compat.xml`. Repo copies live in `config/clickhouse/config.d/`; own them `clickhouse:clickhouse` and restart. **Omitting `merge-tree-compat.xml` breaks RITA silently on ClickHouse 26.7+** — the current day's import keeps working and the failure only appears at the next midnight rollover, when RITA cannot create the new day's database. See *Troubleshooting → RITA fails to create a new day's database*.
 - False positive registry, asset cache, Slack config
 - SSH server config, fail2ban, all of `/etc/sudoers.d/`, log2ram config, unattended-upgrades origins (`52beaconbutty-autoupdate`)
 - root's crontab (now normally empty — Zeek supervision moved to `zeek-cron.timer` 2026-07-06)
@@ -249,6 +251,8 @@ After any of the restore options, verify these items:
 - [ ] `sudo systemctl status zeek` — active, capturing on eth1
 - [ ] `sudo systemctl status bb-graphs` — Flask webapp running
 - [ ] `sudo systemctl status clickhouse-server` — running
+- [ ] `ls /etc/clickhouse-server/config.d/{logs,memory,system-log-ttl,merge-tree-compat}.xml` — all four overrides present
+- [ ] `clickhouse-client --query "SELECT value FROM system.merge_tree_settings WHERE name='allow_dimensions_outside_sorting_key'"` — returns `1`, or RITA breaks at the next midnight rollover (not immediately)
 - [ ] `sudo beaconbutty-health.sh` — overall system health check
 
 ### TLS certificate (Options A & B — Option C clones the existing cert)

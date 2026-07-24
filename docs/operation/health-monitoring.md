@@ -107,6 +107,21 @@ Some units are expected to appear in `systemctl --failed`. Recognise them so you
 | Unit | Why it fails | Action |
 |------|-------------|--------|
 | `NetworkManager-wait-online.service` | Times out at boot waiting for NM `startup-complete` — race with tailscale0/wlan0 coming up async. Drop-in at `/etc/systemd/system/NetworkManager-wait-online.service.d/override.conf` caps it at 30s. At runtime `nm-online -s -q` returns in <100ms, so the failure is cosmetic for downstream units that gate on `network-online.target`. | `systemctl reset-failed NetworkManager-wait-online.service` if it's sticky |
+| `rita-analyze.service` | Only when the log shows `all files were previously imported` **and no error** — RITA exits non-zero when a run has nothing new to do. | `systemctl reset-failed rita-analyze.service` |
+
+> [!warning]
+> **"Benign" is a conclusion, not a default.** The rita-analyze row above is
+> conditional on the last run being error-free, and the health check enforces
+> that: it slices the log back to the most recent `=== rita-analyze started:`
+> marker and lets a real error outrank the benign message.
+>
+> This matters because **one run walks every retained Zeek day**. Early
+> datasets legitimately log "already imported" while a later one hard-fails, so
+> the two messages coexist in the same tail. The original check was a flat
+> `tail -30 | grep`, which matched the benign line and reported *"cause is
+> benign"* while new-day database creation was failing outright (2026-07-24).
+> The check now prints RITA's actual error text instead. Fixed in
+> `scripts/healthcheck.sh`; see *Upgrade Log*.
 
 ## Post-reboot ownership check
 

@@ -116,6 +116,38 @@ If you see `code: 241, message: (total) memory limit exceeded`, the explicit `ma
 
 Restart ClickHouse, re-run `sudo /usr/local/bin/rita-analyze.sh` to backfill. Root-cause history in *Upgrade Log*. Current cap is **4 GiB** (2026-07-12, down from 5 GiB — steady state is 2.5–2.9 GB resident); if the dataset outgrows it, bumping back to 5 GiB is still safe alongside Suricata (~1.4 GB).
 
+> **The runtime value reads lower than 4 GiB — that is normal since 26.7.**
+> `memory_worker_dynamic_hard_limit` defaults to `1`, so
+> `system.server_settings` reports an *effective* cap that floats below the
+> configured ceiling according to available RAM (typically 3.5–3.9 GiB here),
+> and it changes between queries. A value under 4 GiB is **not** evidence that
+> `memory.xml` was wiped — that historical failure mode looked like a *3 GiB*
+> reading, the compiled-in default. To check the config is genuinely applied,
+> read the ceiling, not the runtime value:
+> ```bash
+> sudo grep max_server_memory_usage /var/lib/clickhouse/preprocessed_configs/config.xml
+> ```
+
+### RITA fails to create a new day's database
+
+Symptom: imports work all evening, then **every hourly run fails from ~01:05**, and the health check reports `RITA last successful import: N min ago — hourly timer broken for ≥6h`. Confirm:
+
+```bash
+grep -A2 'failed to create tables for import database' /var/log/beaconbutty/analyze.log | tail -20
+```
+
+If the error is `code: 36 ... Column(s) import_hour, src_local, dst_local of the AggregatingMergeTree table are neither part of the sorting key nor aggregate measures`, this is the **ClickHouse 26.7 schema guard** (2026-07-24 incident). RITA v5 declares dimension columns outside `ORDER BY` in `uconn`, `usni`, `exploded_dns`, `port_info`, `rare_signatures`, `tls_proto`, `http_proto`, `mime_type_uris` and `dns_tmp`. The schema is long-standing; the *check* is what's new.
+
+The fix is `/etc/clickhouse-server/config.d/merge-tree-compat.xml`, which enables the documented escape hatch and restores pre-26.7 behaviour:
+
+```bash
+clickhouse-client --query "SELECT value FROM system.merge_tree_settings WHERE name='allow_dimensions_outside_sorting_key'"   # expect 1
+```
+
+If it reads `0`, the override is missing or ClickHouse wasn't restarted after it was added. Restore it from `config/clickhouse/config.d/merge-tree-compat.xml` in the repo, `chown clickhouse:clickhouse`, restart, then `sudo systemctl start rita-analyze.service` to backfill — RITA re-reads the retained Zeek logs, so a same-day outage loses nothing.
+
+**Why the upgrade passed green and broke hours later**: the day's database already existed at upgrade time, so nothing had to be *created*. `clickhouse-upgrade.sh` now includes a schema canary (see *Upgrading ClickHouse* below) that catches this class of change at upgrade time rather than at the next midnight rollover.
+
 ## ClickHouse
 
 ### ClickHouse won't start
@@ -154,15 +186,29 @@ sudo beaconbutty-clickhouse-upgrade.sh        # interactive
 sudo beaconbutty-clickhouse-upgrade.sh --yes  # skip confirmation
 ```
 
-It preflights (health check green, no in-flight RITA import, disk free), snapshots `/etc/clickhouse-server/` to `/var/lib/beaconbutty/ch-upgrade/<UTC-ts>/`, pauses the RITA timer, runs `apt-get install` with `--force-confold`, then verifies: config.d/ overrides untouched, SELECT 1 responds, `max_server_memory_usage` and dataset count unchanged, and one full rita-analyze cycle produces a fresh `=== done:` marker. **Stops on any verify failure** — no auto-rollback (ClickHouse storage formats may not downgrade cleanly). On stop, the snapshot dir is your recovery starting point.
+It preflights (health check green, no in-flight RITA import, disk free), snapshots `/etc/clickhouse-server/` to `/var/lib/beaconbutty/ch-upgrade/<UTC-ts>/`, pauses the RITA timer, runs `apt-get install` with `--force-confold`, then verifies:
+
+| Verify step | Checks |
+|---|---|
+| (a) config.d/ overrides | each of `logs.xml`, `memory.xml`, `system-log-ttl.xml`, `merge-tree-compat.xml` byte-identical to its pre-upgrade snapshot |
+| (b) service up | `clickhouse-server` active |
+| (c) query probe | `SELECT 1` responds |
+| (d) memory cap | effective cap is non-zero and **within** the ceiling parsed from `memory.xml` (a bound, not equality — see the dynamic-cap note above) |
+| (e) dataset count | unchanged from snapshot |
+| (f) **schema canary** | a RITA-shaped `AggregatingMergeTree` can still be created and dropped |
+| (g) workload | one full rita-analyze cycle produces a fresh `=== done:` marker |
+
+**Stops on any verify failure** — no auto-rollback (ClickHouse storage formats may not downgrade cleanly). On stop, the snapshot dir is your recovery starting point.
+
+Steps (d) and (f) were added 2026-07-24. The canary exists because step (g) only re-imports into *today's* dataset, which already exists — so it never exercises `CREATE TABLE`, and a server-side schema-validation change stays invisible until the next midnight rollover. That is exactly how 26.7 shipped green and broke imports 13 hours later.
 
 ### ClickHouse config.d overrides missing after package upgrade
 
 This shouldn't happen if you use the wrapper above — it verifies each override against its pre-upgrade snapshot. The 2026-05-13 upgrade (pre-wrapper) silently shipped without `config.d/logs.xml` (logs → log2ram) and a working `max_server_memory_usage` (3 GiB default cap, too low). Manual recovery if you somehow end up there:
 
 ```bash
-# After the upgrade, verify both overrides survive:
-ls /etc/clickhouse-server/config.d/{logs,memory,system-log-ttl}.xml
+# After the upgrade, verify every override survives:
+ls /etc/clickhouse-server/config.d/{logs,memory,system-log-ttl,merge-tree-compat}.xml
 
 # If logs.xml is gone, ClickHouse will write 200 MB/day to /var/log (log2ram) — re-create:
 sudo tee /etc/clickhouse-server/config.d/logs.xml >/dev/null <<'EOF'

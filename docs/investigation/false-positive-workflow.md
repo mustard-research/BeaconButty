@@ -148,7 +148,24 @@ The webapp exposes "Add to FP" affordances on several pages, but not every page 
 
 **Why source-FP isn't on `/network`:** silencing a device's MAC via the global FP registry hides it on every panel and dashboard count, which is rarely what the operator wants when they're investigating a single signal type (e.g. "this device is noisy on TLS Anomalies but I still want to see it on Night Activity").  For genuine global device suppression, `/assets` and `/fps` both make the consequence obvious.
 
-**Pattern is editable on every destination surface (2026-05-07).** All three domain-FP modals (`/beacons`, `/beacons/slow`, `/network`) now show the suggested pattern in an inline editable input — pre-filled with `*.parent.tld` from the FQDN (or Zeek-recovered enrichment name on bare-IP rows, or the literal IP as last resort), and the operator can broaden it before submit (e.g. `*.foo.knock.app` → `*.knock.app`, or down to `dnanudge.com` apex).  The previous `window.prompt`-based flow on `/beacons/slow` and `/network` has been retired.  Source-FP on `/beacons/slow` still uses `window.prompt` — there's no domain pattern to generalise on a MAC/IP entry.
+**Pattern is editable on every destination surface (2026-05-07).** All three domain-FP modals (`/beacons`, `/beacons/slow`, `/network`) now show the suggested pattern in an inline editable input — pre-filled with `*.<registrable domain>` from the FQDN (or Zeek-recovered enrichment name on bare-IP rows, or the literal IP as last resort), and the operator can broaden it before submit (e.g. `*.foo.knock.app` → `*.knock.app`, or down to `dnanudge.com` apex).  The previous `window.prompt`-based flow on `/beacons/slow` and `/network` has been retired.  Source-FP on `/beacons/slow` still uses `window.prompt` — there's no domain pattern to generalise on a MAC/IP entry.
+
+**The prefill rule is `*.<registrable domain>`, and it lives in one place (2026-07-24).** Because `*.x.y` also matches the bare apex (above), a single pattern covers the apex and every subdomain — that is what an operator almost always means by "suppress this destination".
+
+Getting there is not "strip the first label". Two ways that goes wrong, both found live:
+
+| Host | Naive rule | Result | Blast radius |
+|---|---|---|---|
+| `krebsonsecurity.com` | everything after the first dot | `*.com` | every `.com` destination |
+| `bbc.co.uk` | strip first label when >2 labels | `*.co.uk` | every `.co.uk` destination |
+
+The first was the `/beacons/slow` rule as shipped; it mis-fired on **every apex row on the page** (`hnrss.org` → `*.org`, `risky.biz` → `*.biz`, `komoot.de` → `*.de`). The second was the `/beacons` and `/network` rule.
+
+The generalisation now lives in **`fp_dst_default(host)` in `webapp/app.py`**, deliberately adjacent to the `_fp_domain_match()` whose semantics it mirrors. It walks back from the end, consults a multi-label public-suffix set (`co.uk`, `com.au`, `co.jp`, …) so second-level registries keep their own label, and returns bare IPs and single-label names literally. `/beacons/slow` is server-rendered so it calls the function directly; `/beacons` and `/network` render rows client-side, so `base.html` exposes `bbFpDstDefault()` — the same algorithm, with **the suffix list injected from `app.py` via a context processor** so the two sides cannot drift.
+
+> If you add a fourth destination surface, call one of those two. Do not re-derive the pattern inline — that is how both variants above got shipped.
+
+**Long hostnames are middle-elided, not end-truncated (2026-07-24).** The identifying part of a hostname is at the end, so `text-overflow: ellipsis` clips precisely the part the operator needs. `shorten_host()` keeps both ends — `69n8gfquor…wuchuyun.com` — preserving the leading gibberish (itself a DGA / CDN-shard signal) alongside the domain that names the owner. The full value stays in the `.bb-pop` popover and in the FP pattern; only the visible text is shortened.
 
 **Reason pre-fill convention:** the destination's GeoIP ASN org (`Amazon.com Inc.`, `Cloudflare Inc.`, etc.).  FP entries are about the destination, not the source — the org documents who owns the FP'd thing.  If GeoIP can't attribute the IP, the field is left empty rather than nudging toward a misleading default.
 

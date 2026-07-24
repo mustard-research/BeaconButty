@@ -81,7 +81,9 @@ The dataset name conventionally matches the date of the logs. RITA parses the Ze
 RITA writes its results into ClickHouse (local socket connection). Key characteristics:
 
 - Column-store database — very fast for analytical queries over millions of rows
+- **One database per day**, `beaconbutty_YYYYMMDD` — so RITA issues a fresh round of `CREATE TABLE` at every midnight rollover, not just on first install. Anything that changes how ClickHouse validates schemas therefore surfaces at 00:0x, hours after the change that caused it (see *Troubleshooting*)
 - System log tables have a **14-day TTL** configured via `/etc/clickhouse-server/config.d/system-log-ttl.xml`
+- RITA's aggregating tables (`uconn`, `usni`, `exploded_dns`, `port_info`, `rare_signatures`, `tls_proto`, `http_proto`, `mime_type_uris`, `dns_tmp`) carry dimension columns outside their sorting key, which ClickHouse 26.7+ rejects by default. `/etc/clickhouse-server/config.d/merge-tree-compat.xml` enables `allow_dimensions_outside_sorting_key` to permit it
 - ClickHouse **must be stopped cleanly before OS reboot** — if the kernel reboot fires while ClickHouse is running, the hardware watchdog can loop and the system hangs indefinitely
 
 See [Reboot Procedure](../operation/reboot-procedure.md) for how this is handled.

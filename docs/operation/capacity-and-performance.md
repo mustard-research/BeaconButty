@@ -28,7 +28,7 @@ free -h && df -h / /var/log && du -sh /var/lib/clickhouse /var/lib/beaconbutty
 
 | Consumer | Typical RSS |
 |----------|------------|
-| ClickHouse | ~2.5–2.9 GB steady (14-day peak 2.86 GB); **4 GiB hard cap** from `config.d/memory.xml` — dropped from 5 GiB on 2026-07-12 since steady state never approached it. Was 3 GiB pre-2026-06-16, which proved too tight as the cumulative dataset grew (see *Upgrade Log*); if `code: 241` returns, raise it again (see *Troubleshooting*) |
+| ClickHouse | ~2.5–2.9 GB steady (14-day peak 2.86 GB); **4 GiB ceiling** from `config.d/memory.xml` — dropped from 5 GiB on 2026-07-12 since steady state never approached it. Was 3 GiB pre-2026-06-16, which proved too tight as the cumulative dataset grew (see *Upgrade Log*); if `code: 241` returns, raise it again (see *Troubleshooting*). Since 26.7 the *effective* cap floats below this ceiling — see note below |
 | Zeek workers | ~300–500 MB |
 | Suricata | ~1.3–1.5 GB (full ET ruleset + af-packet buffers) |
 | `bb-graphs` (Flask) | ~150–300 MB |
@@ -38,6 +38,25 @@ free -h && df -h / /var/log && du -sh /var/lib/clickhouse /var/lib/beaconbutty
 | Kernel / OS / everything else | ~500 MB |
 
 Steady state is ~65 % used: ≈2 GB genuinely available plus ~2.5 GB of reclaimable cache, and ~800 MB of cold pages parked in swap with no churn (normal). The 8 GB Pi model was chosen specifically for ClickHouse + Zeek co-residence. The 4 GB bb1 node showed OOM pressure under RITA import bursts — why bb0 exists.
+
+> [!note]
+> **The ClickHouse memory cap is a ceiling, not a fixed number (26.7+).**
+> `memory_worker_dynamic_hard_limit` defaults to `1`, so
+> `system.server_settings` reports an *effective* cap that ClickHouse moves
+> below the configured 4 GiB according to available RAM — typically 3.5–3.9 GiB
+> here, and it changes between queries. That is working as intended: it backs
+> off when Suricata and Zeek are busy.
+>
+> A reading under 4 GiB therefore proves nothing about `memory.xml`. The
+> historical "config.d got wiped" failure mode looked like a **3 GiB** reading
+> (the compiled-in default). To check the configured value is applied, read the
+> ceiling rather than the runtime setting:
+> ```bash
+> sudo grep max_server_memory_usage /var/lib/clickhouse/preprocessed_configs/config.xml
+> ```
+> Anything asserting on this value must check the *bound*, never equality —
+> `clickhouse-upgrade.sh` verify step (d) was corrected on 2026-07-24 for
+> exactly this.
 
 Live view: the **/system page** charts memory history (since 2026-07-12) alongside CPU and lists current per-service consumers with OK/HIGH badges against expected ceilings.
 
