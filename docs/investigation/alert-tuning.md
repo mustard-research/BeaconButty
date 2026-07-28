@@ -50,6 +50,19 @@ Both must be true to page. Failing either keeps the candidate on its dashboard (
 
 The /health page surfaces gate stats (last run, fired, gated breakdown) so the operator can see the gate doing useful work even on quiet days.
 
+> **`slow_cadence_beacon` no longer pages (2026-07-28).** The gate turned out
+> not to be the binding filter for slow-cadence: of 140 candidates clearing the
+> cadence test, 114 died on **domain-FP** and only 2 on org-FP, with the gate
+> contributing almost nothing to the final count. Every alert the type ever
+> fired was a false alarm. It is now disabled and its findings ride the daily
+> digest, which was extended to carry gate-eligible rows pinned at the top and
+> marked `!`. `high_score_beacon` and `persistent_beacon` are unaffected.
+>
+> **The generalisable rule:** before tuning a noisy detector, count how many
+> candidates each filter stage actually removes. The stage you designed and the
+> stage doing the work are often not the same one. Full analysis:
+> [Slow-Cadence Beacons](slow-cadence-beacons.md#why-the-real-time-pager-was-retired-2026-07-28).
+
 ### Slow-cadence threshold tweaks (same date)
 
 - `MIN_HOUR_CONSISTENCY` raised 0.7 → 0.8 — benign SaaS clustered at 70-83%; real sleep-cycle C2 should cluster tighter.

@@ -49,7 +49,8 @@
         ("health_check_fail",   "Any health check failure not covered above",            "High",   "Health timer — 09:30"),
         ("new_device",          "New device MAC seen in ARP / DHCP <small style='color:var(--text-muted,#888);'>(LAA-randomised MACs gated)</small>", "Medium", "Asset scan"),
         ("sustained_high_cpu",  "CPU mean &ge; 60% over a rolling 60-min window",        "Medium", "bb-watchdog — per minute"),
-        ("slow_cadence_digest", "Daily roll-up of slow-cadence hunt candidates",         "Low",    "Daily digest — 08:00 UTC"),
+        ("slow_cadence_beacon", "Slow-cadence beacon pages in real time <small style='color:var(--text-muted,#888);'>(off by default — findings ride the daily digest instead)</small>", "Medium", "Slow-cadence detector — hourly"),
+        ("slow_cadence_digest", "Daily roll-up of slow-cadence candidates, flagged ones first", "Low",    "Daily digest — 08:00 UTC"),
         ("teams_relay_anomaly", "Teams TURN flow with new-JA4, long-duration, or low-bandwidth (DragonForce / Backdoor.Turn pattern)", "High", "Teams-relay check — 15 min"),
       ] %}
       {# Render in severity order (High → Medium → Low) regardless of the

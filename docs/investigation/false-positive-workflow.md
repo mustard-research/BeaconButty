@@ -84,11 +84,31 @@ The webapp uses a branded confirmation modal (not browser `confirm()`) for all d
 
 ## FP registry format
 
-`/var/lib/beaconbutty/false-positives.conf` — one entry per line:
+`/var/lib/beaconbutty/false-positives.conf` — **JSON** (v2), four maps:
 
+```json
+{
+  "version": 2,
+  "devices":   {"00:17:88:25:eb:67": "Hue Bridge"},
+  "domains":   {"*.example-cdn.com": "App CDN"},
+  "protocols": {"3478:udp": "STUN keepalives are universally noisy"},
+  "orgs":      {"*ExampleCloud*": {"reason": "Regional app cloud",
+                                   "devices": ["aa:bb:cc:dd:ee:ff"]}}
+}
 ```
-192.168.50.160    Air quality monitor — ICMP telemetry
-```
+
+`devices`, `domains` and `protocols` are always `pattern → reason` strings.
+**`orgs` takes two shapes** (2026-07-28): a bare reason string means the ASN is
+suppressed LAN-wide, while `{"reason": str, "devices": [mac, ...]}` scopes the
+suppression to those source MACs. Both coexist in the same file — any consumer
+must handle each. See [Device-scoped org-FPs](#device-scoped-org-fps).
+
+The original one-line-per-entry text format is long gone, and assuming it
+lingers has cost real bugs: one consumer still parsed it as whitespace-split
+text long after the migration, silently returning an empty set — so its FP
+device filter had never worked. Any new consumer must `json.load` and take the
+right map. Writes go through `fp.sh` (`save_conf`, atomic tmp+rename) or the
+webapp's `_run_fp_script()`.
 
 ## Currently registered FPs
 
@@ -218,3 +238,117 @@ Symptom: bare-IP rows on a port from the table above, high count, low payload, o
 Action: `beaconbutty-fp.sh add-protocol '<port>:<proto>' '<≤50-char reason>'` and restart `bb-graphs.service`. One entry suppresses the entire class on every device, every destination, forever — which is the right scope for these protocols. The whack-a-mole alternative (FP'ing each STUN/NTP server IP individually) doesn't scale because the provider IPs rotate.
 
 For anything not in the table above, the protocol-FP modal will warn you with a confirmation dialog. Trust the warning — protocol-FP'ing `:ssl` or `:tcp` would effectively disable beacon detection.
+
+## Organisation-FP for no-host destinations
+
+A fourth FP dimension exists alongside device, domain, and protocol: **`orgs`**
+— fnmatch patterns against the GeoIP ASN owner string (`dst_org`). Surfaced on
+`/beacons/slow`.
+
+### Why it exists
+
+The other three dimensions are useless when a row has **no domain handle at
+all**: no SNI, no HTTP Host header, no DNS resolution on the LAN's resolver.
+That is the real fingerprint of regional-app cloud traffic — a phone talking
+directly to a provider's IPs on proprietary ports. None of the alternatives fit:
+
+- A domain pattern can't suppress a literal IP — `fnmatch('1.13.112.169',
+  '*.example.com')` is False, and there's no DNS to bridge them.
+- A device-FP is too coarse; it silences the device everywhere.
+- A protocol-FP doesn't apply; the ports are proprietary, not standard
+  signalling.
+- CIDRs don't scale — large providers span thousands of netblocks across
+  multiple ASNs.
+
+One org entry, fnmatched against the GeoIP owner, covers all of it.
+
+### Symptom and action
+
+Rows render as dim *"no host · `<org name>`"*. The cell shows two stacked
+buttons: **FP ip** (raw dst IP → `/fps/add-domain`, silences just that address)
+and **FP org** (`*<first-token>*` → `/fps/add-org`, silences the provider).
+
+The new entry takes effect on the next page load — the slow filter re-applies at
+render time — and org-FPs also gate the **detector** at scan time and are
+re-checked by the **daily digest** at post time, so an org-FP'd destination can
+neither page nor resurface in the morning.
+
+### When NOT to use
+
+- If a row has SNI, HTTP Host, or any DNS resolution, use `FP dst` (domain-FP)
+  instead. `FP ip` / `FP org` only appear when the row has no domain handle.
+- Don't blanket-FP a major cloud provider — that's what the hyperscaler gate
+  covers, and an org-FP would also wipe future no-host investigative signal on
+  that provider.
+- Don't auto-add an org-FP just because `is_hyperscaler=true` — the operator
+  picking the org name consciously is the whole point.
+
+## Device-scoped org-FPs
+
+*Added 2026-07-28.* An org entry may name the source devices it applies to. A
+bare reason string still means LAN-wide; `{"reason": ..., "devices": [mac, ...]}`
+suppresses the ASN **only** for traffic from those MACs.
+
+### Why
+
+Every org entry on this system was originally LAN-wide, added out of alert
+fatigue. LAN-wide is a silent detection hole: a compromised IoT device beaconing
+to a given CDN would be suppressed simply because a phone in the house runs an
+app that uses the same provider.
+
+It also blocked the fix the noise actually needed. The slow-cadence pager fired
+25 times, all false alarms, mostly consumer-CDN edges from a few devices — but
+the ASNs involved are large consumer carriers. Suppressing those LAN-wide would
+have blinded the detector across the whole network. Scoped to the handful of
+devices that legitimately talk to them, they are safe and precise. See
+[Slow-Cadence Beacons](slow-cadence-beacons.md#why-the-real-time-pager-was-retired-2026-07-28).
+
+**The rule:** an FP that means *"this is normal for this device"* must carry the
+device in the key. Only once suppression is scoped is it safe to be generous
+with it.
+
+### Using it
+
+```bash
+# Scope to one or more devices (IP or MAC; IPs resolve via leases/ARP)
+beaconbutty-fp.sh add-org '*ExampleCloud*' 'Regional app CDN' \
+    --device 192.168.50.20,192.168.50.21
+
+# Repeat --device UNIONS the MAC set — it does not replace it
+beaconbutty-fp.sh add-org '*ExampleCloud*' 'Regional app CDN' --device 192.168.50.22
+
+# Widen an existing scoped entry back to the whole LAN
+beaconbutty-fp.sh add-org '*ExampleCloud*' 'Regional app CDN' --global
+```
+
+Both narrowing and widening print a `Note:` line, so the transition is never
+silent. In the webapp the **FP org** button opens the modal with a ticked *"Only
+for &lt;device&gt;"* checkbox — **scoped is the default**; untick for LAN-wide.
+
+`beaconbutty-fp.sh list` shows an indented scope line per org entry (each scoped
+MAC and its current IP, or `LAN-wide`), and the `/fps` Organisations card has a
+**Scope** column.
+
+### Matching is case-sensitive, deliberately
+
+MaxMind's ASN owner strings are inconsistently capitalised — one carrier appears
+as `Chinanet` and another as `CHINA UNICOM China169 Backbone`. Add both patterns
+rather than making the match case-insensitive: case-insensitivity would
+retroactively re-interpret every pattern already written, and in particular
+would widen a pattern like `*ACE*` to match `Rackspace`.
+
+### Three-way mirror
+
+Org matching is implemented in three places and they must agree:
+
+| Where | Function |
+|---|---|
+| `scripts/slow-cadence.py` | `fp_orgs()` + `fp_org_match()` — scan time |
+| `scripts/slow-cadence-digest.py` | inline matcher in `fp_filter()` — post time |
+| `webapp/app.py` | `_fp_org_entries()` + `_fp_org_match()` — render time |
+
+Change all three together, and verify by running the same cases through each
+rather than eyeballing that the rewrites look alike. When testing, make sure the
+source device in the fixture is **not** caught by any *other* filter — a device
+that is itself a device-FP gets dropped a stage earlier and reads as a false
+disagreement.

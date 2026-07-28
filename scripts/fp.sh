@@ -13,14 +13,20 @@ set -euo pipefail
 #   beaconbutty-fp.sh remove-domain <pattern>
 #   beaconbutty-fp.sh add-protocol <svc> "<reason>"    (e.g. "123:udp:ntp")
 #   beaconbutty-fp.sh remove-protocol <svc>
-#   beaconbutty-fp.sh add-org <pattern> "<reason>"     (e.g. "*Tencent*" — fnmatch on GeoIP ASN owner)
+#   beaconbutty-fp.sh add-org <pattern> "<reason>" [--device <ip|mac>[,<ip|mac>]]
 #   beaconbutty-fp.sh remove-org <pattern>
 #   beaconbutty-fp.sh migrate                          (convert old IP-keyed conf to MAC-keyed)
 #
 # Config is stored in /var/lib/beaconbutty/false-positives.conf as JSON v2:
 #   { "version": 2, "devices": {mac: reason}, "domains": {pattern: reason},
-#                   "protocols": {svc: reason}, "orgs": {pattern: reason} }
+#                   "protocols": {svc: reason}, "orgs": {pattern: <org-value>} }
 # v1 files (flat MAC dict) are auto-detected and treated as devices-only.
+#
+# An org value is either a bare reason string (suppressed LAN-wide, the
+# original v2 shape) or {"reason": str, "devices": [mac, ...]} to suppress the
+# ASN only for those devices. Device scoping is what keeps "Chinese CDN traffic
+# from Xin's phone is baseline" from also blinding us to the same ASN reaching
+# a server or an IoT device that has no business talking to it.
 
 FP_FILE="/var/lib/beaconbutty/false-positives.conf"
 LEASES_FILE="/var/lib/misc/dnsmasq.leases"
@@ -35,6 +41,7 @@ usage() {
     echo "  beaconbutty-fp.sh add-protocol <svc> \"<reason>\"    (e.g. '123:udp:ntp')"
     echo "  beaconbutty-fp.sh remove-protocol <svc>"
     echo "  beaconbutty-fp.sh add-org <pattern> \"<reason>\"     (e.g. '*Tencent*' — GeoIP ASN owner)"
+    echo "      [--device <ip|mac>[,<ip|mac>]]                 (scope to devices; omit for LAN-wide)"
     echo "  beaconbutty-fp.sh remove-org <pattern>"
     echo "  beaconbutty-fp.sh migrate                          (convert old IP-keyed conf)"
     exit 1
@@ -114,8 +121,22 @@ else:
         print(f"ORGANISATIONS  ({len(orgs)} registered — suppresses beacons whose GeoIP ASN owner matches)")
         print(f"  {'Pattern':<30}  Reason")
         print('  ' + '─' * 68)
-        for pat, reason in sorted(orgs.items()):
+        for pat, val in sorted(orgs.items()):
+            # v2 org values are either a bare reason (LAN-wide) or
+            # {"reason", "devices"} scoped to specific MACs. Scope goes on its
+            # own indented line — a device list does not fit in a column.
+            if isinstance(val, dict):
+                reason = val.get("reason", "")
+                macs   = sorted(m.lower() for m in (val.get("devices") or []))
+            else:
+                reason, macs = val, []
             print(f"  {pat:<30}  {reason}")
+            if macs:
+                for m in macs:
+                    ip = mac_to_ip.get(m)
+                    print(f"  {'':<30}    ↳ {m}{'  ' + ip if ip else ''}")
+            else:
+                print(f"  {'':<30}    ↳ LAN-wide")
         print()
 
     print(f"{total} total. Remove with: beaconbutty-fp.sh remove / remove-domain / remove-protocol / remove-org")
@@ -490,16 +511,42 @@ PYEOF
         fi
         PATTERN="$2"
         REASON="$3"
+        DEVICES=""
+        shift 3
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                --device)
+                    if [[ $# -lt 2 ]]; then
+                        echo "Error: '--device' requires <ip|mac>[,<ip|mac>]"
+                        exit 1
+                    fi
+                    DEVICES="$2"
+                    shift 2
+                    ;;
+                --global)
+                    DEVICES=""
+                    shift
+                    ;;
+                *)
+                    echo "Error: unknown option '$1' for add-org"
+                    exit 1
+                    ;;
+            esac
+        done
         if [[ ${#REASON} -gt 50 ]]; then
             echo "Error: reason must be 50 characters or fewer (got ${#REASON})."
             exit 1
         fi
-        python3 - "$FP_FILE" "$PATTERN" "$REASON" <<'PYEOF'
-import json, sys, os
+        python3 - "$FP_FILE" "$LEASES_FILE" "$PATTERN" "$REASON" "$DEVICES" <<'PYEOF'
+import json, sys, os, re
 
-fp_file = sys.argv[1]
-pattern = sys.argv[2]
-reason  = sys.argv[3]
+fp_file     = sys.argv[1]
+leases_file = sys.argv[2]
+pattern     = sys.argv[3]
+reason      = sys.argv[4]
+device_arg  = sys.argv[5]
+
+MAC_RE = re.compile(r'^([0-9a-f]{2}:){5}[0-9a-f]{2}$')
 
 def load_conf(fp_file):
     try:
@@ -521,13 +568,70 @@ def save_conf(fp_file, conf):
         json.dump(conf, f, indent=2, sort_keys=True)
     os.replace(tmp, fp_file)
 
+def leases_lookup_mac(ip):
+    try:
+        with open(leases_file) as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) >= 3 and parts[2] == ip:
+                    return parts[1].lower()
+    except FileNotFoundError:
+        pass
+    return None
+
+def arp_mac_for_ip(ip):
+    try:
+        with open('/proc/net/arp') as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) >= 4 and parts[0] == ip:
+                    mac = parts[3].lower()
+                    if MAC_RE.match(mac) and mac != '00:00:00:00:00:00':
+                        return mac
+    except Exception:
+        pass
+    return None
+
+new_macs = []
+for token in (t.strip().lower() for t in device_arg.split(',') if t.strip()):
+    if MAC_RE.match(token):
+        new_macs.append(token)
+        continue
+    mac = leases_lookup_mac(token) or arp_mac_for_ip(token)
+    if not mac:
+        print(f"Error: could not resolve {token} to a MAC address.")
+        print("  Check dnsmasq leases or ARP table, or specify the MAC directly.")
+        sys.exit(1)
+    print(f"Resolved {token} → {mac}")
+    new_macs.append(mac)
+
 conf = load_conf(fp_file)
+prev = conf["orgs"].get(pattern)
 already = pattern in conf["orgs"]
-conf["orgs"][pattern] = reason
+
+# Union with any existing scope so repeat adds accumulate devices rather than
+# silently narrowing the entry to whichever device was named last.
+prev_macs = []
+if isinstance(prev, dict):
+    prev_macs = [m.lower() for m in (prev.get("devices") or [])]
+
+if new_macs:
+    if already and not prev_macs:
+        print(f"Note: {pattern} was LAN-wide; narrowing it to the named device(s).")
+    macs = sorted(set(prev_macs) | set(new_macs))
+    conf["orgs"][pattern] = {"reason": reason, "devices": macs}
+    scope = ", ".join(macs)
+else:
+    if prev_macs:
+        print(f"Note: {pattern} was scoped to {len(prev_macs)} device(s); "
+              f"widening it to the whole LAN.")
+    conf["orgs"][pattern] = reason
+    scope = "LAN-wide"
+
 save_conf(fp_file, conf)
 
 verb = "Updated" if already else "Added  "
-print(f"{verb}: {pattern}  →  {reason}")
+print(f"{verb}: {pattern}  [{scope}]  →  {reason}")
 print(f"Refresh /beacons/slow to see the updated hunting surface.")
 PYEOF
         ;;
@@ -569,9 +673,14 @@ if pattern not in conf["orgs"]:
     print(f"Not found: {pattern}  (not registered as an organisation false positive)")
     sys.exit(1)
 
-reason = conf["orgs"].pop(pattern)
+val = conf["orgs"].pop(pattern)
 save_conf(fp_file, conf)
-print(f"Removed: {pattern}  (was: {reason})")
+if isinstance(val, dict):
+    macs = ", ".join(sorted(m.lower() for m in (val.get("devices") or []))) or "LAN-wide"
+    was  = f"{val.get('reason', '')}  [{macs}]"
+else:
+    was  = f"{val}  [LAN-wide]"
+print(f"Removed: {pattern}  (was: {was})")
 print(f"Refresh /beacons/slow to see the updated hunting surface.")
 PYEOF
         ;;

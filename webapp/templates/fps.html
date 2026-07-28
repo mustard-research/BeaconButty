@@ -165,6 +165,7 @@
       <thead>
         <tr>
           <th>Pattern</th>
+          <th>Scope</th>
           <th>Reason</th>
           <th></th>
         </tr>
@@ -173,6 +174,15 @@
         {% for row in org_rows %}
         <tr>
           <td class="mono">{{ row.pattern }}</td>
+          <td>
+            {% if row.devices %}
+              {% for d in row.devices %}
+              <div class="mono" style="font-size:12px;">{{ d.label or d.mac }}</div>
+              {% endfor %}
+            {% else %}
+              <span style="color:var(--text-dim);">LAN-wide</span>
+            {% endif %}
+          </td>
           <td>{{ row.reason }}</td>
           <td style="text-align:right;">
             <form method="post" action="{{ url_for('fps_remove_org') }}" class="bb-confirm-form">

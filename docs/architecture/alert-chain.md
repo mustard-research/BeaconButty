@@ -119,7 +119,7 @@ Anything that fails either check stays on its dashboard (the **hunt** surface) w
 
 | Alert type | Gated? | Why |
 |---|---|---|
-| `slow_cadence_beacon` | ✅ | Most periodic egress is benign SaaS; gate kept the hunt surface useful while quieting Slack |
+| `slow_cadence_beacon` | ❌ **disabled 2026-07-28** | 25 fired, 25 false alarms. Unbounded consumer-CDN destinations mean per-domain FP never converges; findings moved to the daily digest. Toggle row on `/health` to re-enable. See [Slow-Cadence Beacons](../investigation/slow-cadence-beacons.md#why-the-real-time-pager-was-retired-2026-07-28) |
 | `high_score_beacon` | ✅ | RITA score 1.0 alone catches long-running CDN flows |
 | `persistent_beacon` | ✅ | Strobes from streaming services / long polling are common |
 | `threat_intel_hit` | ❌ | Exact JA4 match is high-confidence on its own |
@@ -161,10 +161,10 @@ Daily roll-up of the slow-cadence dashboard's hunt-only candidates — the perio
 | Script | `scripts/slow-cadence-digest.py` (deployed `/usr/local/bin/beaconbutty-slow-cadence-digest.py`) |
 | Cadence | Daily 08:00 UTC (= 09:00 BST) — `beaconbutty-slow-cadence-digest.timer` |
 | Source data | `/var/lib/beaconbutty/reports/slow-cadence.json` (no extra ClickHouse work) |
-| Selection | Top 10 hunt-only candidates, ordered by persistence then hour-consistency |
+| Selection | Top 10, ordered by persistence then hour-consistency. **Since 2026-07-28 gate-eligible candidates are included too** — pinned above the hunt rows and marked `!` — because `slow_cadence_beacon` no longer pages and the digest is the only channel. Eligible rows can never be squeezed out of the top-10 by hunt volume. The digest re-checks the full FP registry (device/domain/**org**, including device scope, plus `http_hosts`) at post time |
 | Transport | **Direct `chat.postMessage`** with the xoxp- token in `slack-config.json`; bypasses the Lambda alert pipeline |
 | Channel | `digest_channel` in `slack-config.json` if set, else falls back to main `channel` |
-| Toggle | Honours `slow_cadence_digest` in `alert-config.json` (per-type toggle on `/health`) |
+| Toggle | Honours `slow_cadence_digest` in `alert-config.json` (per-type toggle on `/health`). **Bug fixed 2026-07-28:** `is_enabled()` read the top-level key instead of `cfg["enabled"][...]`, so the toggle had never actually worked |
 
 **Why direct Slack post (not Lambda):**
 
@@ -172,7 +172,7 @@ Daily roll-up of the slow-cadence dashboard's hunt-only candidates — the perio
 - Multi-line markdown body for the per-candidate breakdown
 - Natural place to add a separate channel without touching Lambda env vars
 
-**Silent-on-empty.** When there are zero hunt candidates demoted, the script exits before posting — no "all clear" message. Daily "nothing to see" notifications are themselves the kind of BAU noise the alert philosophy is meant to prevent. The digest only fires on days when there's something worth glancing at.
+**Silent-on-empty.** When there are zero candidates of either kind, the script exits before posting — no "all clear" message. Daily "nothing to see" notifications are themselves the kind of BAU noise the alert philosophy is meant to prevent. The digest only fires on days when there's something worth glancing at.
 
 To split the digest into its own Slack channel:
 

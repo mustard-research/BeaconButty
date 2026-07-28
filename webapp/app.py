@@ -447,6 +447,40 @@ def load_fps():
     return load_fp_all()["devices"]
 
 
+def _fp_org_entries(fp_all):
+    """Normalise the `orgs` FP block to [(pattern, macs_or_None)].
+
+    An org value is either a bare reason string (LAN-wide — the original v2
+    shape) or {"reason": str, "devices": [mac, ...]} scoping the suppression
+    to those source devices. None means LAN-wide.
+
+    MIRROR: same normalisation in scripts/slow-cadence.py `fp_orgs()` and
+    scripts/slow-cadence-digest.py `fp_filter()` — change all three together.
+    """
+    entries = []
+    for pat, val in (fp_all.get("orgs") or {}).items():
+        if isinstance(val, dict):
+            macs = {m.lower() for m in (val.get("devices") or [])}
+            entries.append((pat, macs or None))
+        else:
+            entries.append((pat, None))
+    return entries
+
+
+def _fp_org_match(org, src_mac, entries):
+    """True if this GeoIP ASN owner is FP'd — either LAN-wide, or specifically
+    for the device the traffic came from."""
+    if not org:
+        return False
+    src_mac = (src_mac or "").lower()
+    for pat, macs in entries:
+        if not fnmatch.fnmatch(org, pat):
+            continue
+        if macs is None or src_mac in macs:
+            return True
+    return False
+
+
 def _fp_domain_match(q, patterns):
     """True if q matches any FP domain pattern. A pattern like "*.foo.com"
     also matches the bare apex "foo.com" (fnmatch otherwise requires the dot)."""
@@ -3996,10 +4030,15 @@ def _load_slow_cadence_filtered():
         pass
 
     mac_to_ip, _ = load_leases()
-    ip_to_mac    = {ip: mac for mac, ip in mac_to_ip.items()}
+    # History first, live leases last: the 14-day window covers IPs a device
+    # no longer holds, but a reassigned IP must resolve to its current owner.
+    ip_to_mac    = {ip: mac
+                    for mac, ips in _history_mac_to_ips().items()
+                    for ip in ips}
+    ip_to_mac.update({ip: mac for mac, ip in mac_to_ip.items()})
     fp_all       = load_fp_all()
     fp_doms      = list(fp_all.get("domains", {}).keys())
-    fp_orgs      = list(fp_all.get("orgs", {}).keys())
+    fp_org_ents  = _fp_org_entries(fp_all)
     fp_macs      = {m.lower() for m in fp_all.get("devices", {}).keys()}
 
     filtered = []
@@ -4016,13 +4055,15 @@ def _load_slow_cadence_filtered():
         if any(_fp_domain_match(h, fp_doms)
                for h in c.get("http_hosts", []) or []):
             continue
-        # Org FP — fnmatch against GeoIP ASN owner; the only handle for
-        # rows with no SNI, no HTTP Host, no DNS resolution.
-        if _fp_domain_match(c.get("dst_org", ""), fp_orgs):
-            continue
         src_mac = ip_to_mac.get(c["src"], "").lower()
         if src_mac and src_mac in fp_macs:
             continue
+        # Org FP — fnmatch against GeoIP ASN owner; the only handle for
+        # rows with no SNI, no HTTP Host, no DNS resolution. Entries may be
+        # scoped to specific devices, so this needs the source MAC.
+        if _fp_org_match(c.get("dst_org", ""), src_mac, fp_org_ents):
+            continue
+        c["src_mac"] = src_mac
         filtered.append(c)
     return filtered, payload
 
@@ -4459,7 +4500,23 @@ def fps():
         })
     domain_rows   = [{"pattern": p, "reason": r} for p, r in sorted(fp_all["domains"].items())]
     protocol_rows = [{"svc": s, "reason": r} for s, r in sorted(fp_all["protocols"].items())]
-    org_rows      = [{"pattern": p, "reason": r} for p, r in sorted(fp_all["orgs"].items())]
+    # Org entries carry an optional device scope; label each scoped MAC with
+    # its current IP/hostname so the table reads as devices, not hex.
+    org_rows = []
+    for pat, val in sorted(fp_all["orgs"].items()):
+        if isinstance(val, dict):
+            reason = val.get("reason", "")
+            macs   = sorted(m.lower() for m in (val.get("devices") or []))
+        else:
+            reason, macs = val, []
+        org_rows.append({
+            "pattern": pat,
+            "reason":  reason,
+            "devices": [{"mac":   m,
+                         "label": ip_label(mac_to_ip[m], ip_to_host)
+                                  if m in mac_to_ip else ""}
+                        for m in macs],
+        })
     return render_template("fps.html",
                            rows=device_rows,
                            domain_rows=domain_rows,
@@ -4538,14 +4595,22 @@ def fps_remove_protocol():
 
 @app.route("/fps/add-org", methods=["POST"])
 def fps_add_org():
-    """Add an org-level FP — fnmatch against GeoIP ASN owner."""
+    """Add an org-level FP — fnmatch against GeoIP ASN owner.
+
+    An optional `device` (IP or MAC) scopes the suppression to that source
+    only. The slow-beacons page sends it by default: an ASN being expected
+    traffic for one phone says nothing about the same ASN reaching a server."""
     pattern = request.form.get("pattern", "").strip()
     reason  = request.form.get("reason", "").strip()
+    device  = request.form.get("device", "").strip()
     nxt     = request.form.get("next", "").strip()
     if pattern and reason:
         if len(reason) > 50:
             reason = reason[:50]
-        _run_fp_script("add-org", pattern, reason)
+        if device:
+            _run_fp_script("add-org", pattern, reason, "--device", device)
+        else:
+            _run_fp_script("add-org", pattern, reason)
     if nxt.startswith("/") and not nxt.startswith("//"):
         return redirect(nxt)
     return redirect(url_for("fps"))

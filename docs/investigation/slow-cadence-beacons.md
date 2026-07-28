@@ -81,10 +81,16 @@ page Slack on day one. After that, **only newly-crossing tuples fire
 alerts**.
 
 **Alerting:** new tuples → `beaconbutty-alert.sh slow_cadence_beacon
-medium <src> "<detail>"` → existing AWS Lambda → Slack
-`#beacon-butty`. New alert type registered in
-`/var/lib/beaconbutty/alert-config.json` so it can be toggled with the
-others.
+medium <src> "<detail>"` → existing AWS Lambda → Slack. Alert type
+registered in `/var/lib/beaconbutty/alert-config.json` so it can be
+toggled with the others.
+
+> **Real-time paging retired 2026-07-28.** `slow_cadence_beacon` is now
+> disabled (`enabled.slow_cadence_beacon: false`); every alert it ever
+> fired was a false alarm. Findings ride the daily digest instead — see
+> [Why the real-time pager was retired](#why-the-real-time-pager-was-retired-2026-07-28).
+> There is a toggle row on `/health` to re-enable it; `alert.sh` reads
+> the flag and exits before logging or posting.
 
 ## Coverage table — bb0 today
 
@@ -180,3 +186,80 @@ that landed during the 2026-05-04 build:
   each run and seeded once from Zeek `dhcp.log` archives via
   `scripts/seed-assets-history.py`. Stops the cross-page disconnect
   where slow-cadence pointed at a device assets had no record of.
+
+## Why the real-time pager was retired (2026-07-28)
+
+Over the detector's life `slow_cadence_beacon` fired 25 times, and **every one
+was a false alarm** — overwhelmingly consumer-app CDN edges from a handful of
+phones and tablets, plus two vendor ASNs reached by the devices that vendor
+made.
+
+### Measure before tuning
+
+The instinct was to tune the thresholds or the lonely+non-hyperscaler gate.
+Instrumenting the pipeline said otherwise — of 140 candidates clearing the
+cadence test:
+
+| Filter stage | Candidates removed |
+|---|---|
+| Domain-FP | **114** |
+| Device-FP | 23 |
+| Org-FP | 2 |
+| HTTP-Host FP | 1 |
+| **Surviving** | **0** |
+
+A hand-curated 317-entry domain list was the actual filter; the designed-in gate
+contributed almost nothing to the final count. Tuning the gate would have cost
+detection sensitivity without reducing noise.
+
+**Generalisable rule:** before tuning a detector that produces false positives,
+count how many candidates each filter stage actually removes. The stage you
+designed and the stage doing the work are often not the same one.
+
+### Why per-domain FP could never converge
+
+Every alert was a *brand-new registrable domain* — the CDNs involved mint one
+per property, so each alert paged once, got FP'd, and the list grew forever.
+
+The ASN was not stable either. Resolving one such hostname four times in a row
+returned four different owners across four provincial carriers, because these
+CDNs round-robin their edge. **Neither key is stable on its own** — the
+invariant is the *pair* (this device, this class of network), which needed a new
+FP dimension to express.
+
+This is the general shape to watch for: *if an FP list keeps growing but the
+alert rate does not fall, the suppression key is not stable across occurrences.*
+Stop adding entries and find the invariant.
+
+### The two-part fix
+
+1. **Demote to digest.** `slow_cadence_beacon` disabled; the daily digest is now
+   the only channel. It was extended to include gate-eligible candidates, pinned
+   above the hunt rows and marked `!`, so nothing is lost. *Before this change
+   the digest showed only demoted rows* — disabling the pager would otherwise
+   have silently dropped the eligible ones.
+2. **Device-scoped org-FPs** (see
+   [False Positive Workflow](false-positive-workflow.md#device-scoped-org-fps))
+   so the relevant carrier and vendor ASN patterns could be added without
+   opening a LAN-wide suppression hole.
+
+Replaying all 25 historical alerts against the resulting registry: **23 are
+suppressed structurally, with zero leakage** to unscoped devices — verified by
+replaying the same destinations from a source that is not in scope, which still
+alert.
+
+### Bugs found while doing it
+
+- `slow-cadence-digest.py` `is_enabled()` read `cfg["slow_cadence_digest"]`, but
+  the file is `{"enabled": {...}}` — the `/health` digest toggle had never
+  worked.
+- `slow_cadence_beacon` had **no row** in the `/health` Alert types table, so
+  its toggle existed in config but was unreachable from the UI.
+- The digest's `fp_filter()` had narrower FP coverage than the detector (no
+  `http_hosts` check; device IPs from current leases only, not the rolling asset
+  history) — so a candidate the detector suppressed could reappear in the
+  morning digest.
+
+Related: [Alert Tuning](alert-tuning.md),
+[Alert Chain](../architecture/alert-chain.md),
+[False Positive Workflow](false-positive-workflow.md).

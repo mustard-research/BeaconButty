@@ -111,7 +111,23 @@ beaconbutty-fp.sh add <ip> "<reason>"
 
 # Remove an FP
 beaconbutty-fp.sh remove <ip>
+
+# Domain / protocol FPs
+beaconbutty-fp.sh add-domain '*.example.com' "<reason>"
+beaconbutty-fp.sh add-protocol '123:udp:ntp'  "<reason>"
+
+# Organisation FP — fnmatch against the GeoIP ASN owner.
+# Scoped to devices by default; --global for LAN-wide (rarely what you want).
+beaconbutty-fp.sh add-org '*ExampleCloud*' "<reason>" --device <ip|mac>[,<ip|mac>]
+beaconbutty-fp.sh add-org '*ExampleCloud*' "<reason>" --global
+beaconbutty-fp.sh remove-org '*ExampleCloud*'
 ```
+
+Repeat `--device` **unions** the MAC set rather than replacing it; omitting
+`--device` on an existing scoped entry widens it back to LAN-wide. Both
+transitions print a `Note:` line. `list` shows an indented scope line per org
+entry. See
+[False Positive Workflow](../investigation/false-positive-workflow.md#device-scoped-org-fps).
 
 FPs are stored in `/var/lib/beaconbutty/false-positives.conf`.
 

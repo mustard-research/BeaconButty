@@ -130,7 +130,7 @@ Each morning you'll see a Slack digest with the top beacon candidates from the p
 - **Dashboard** — system tiles, today's beacon counts, fan state, log2ram fill, alert digest.
 - **Beacons** — RITA hotlist with a sortable table, inline FP workflow, and per-row enrichment (JA4, ASN, threat intel).
 - **Network** — top talkers, new beacons, exfil/night-activity panels, JA4 inventory.
-- **Slow Beacons** — multi-day low-rate destinations RITA's daily window misses.
+- **Slow Beacons** — multi-day low-rate destinations RITA's daily window misses. Delivered as a daily digest rather than real-time pages ([why](docs/investigation/slow-cadence-beacons.md#why-the-real-time-pager-was-retired-2026-07-28)).
 - **Health** — structured cards for every component, Slack "test alert" / "clear channel" buttons.
 
 ![Beacons hotlist](docs/img/bb-beacons.png)
@@ -143,6 +143,7 @@ A handful of operational scripts on the Pi cover everything else — they live a
 beaconbutty-summary.sh            # today's findings
 beaconbutty-fp.sh list            # current FP registry
 beaconbutty-fp.sh add <ip> "..."  # add an FP
+beaconbutty-fp.sh add-org '*Cloud*' "..." --device <ip>   # ASN FP, scoped to one device
 beaconbutty-health.sh             # full system check
 ```
 

@@ -40,6 +40,7 @@ SLACK_CONF   = "/var/lib/beaconbutty/slack-config.json"
 ALERT_CONFIG = "/var/lib/beaconbutty/alert-config.json"
 FP_PATH      = "/var/lib/beaconbutty/false-positives.conf"
 LEASES       = "/var/lib/misc/dnsmasq.leases"
+ASSETS_HISTORY = "/var/lib/beaconbutty/assets-history.json"
 TOP_N        = 10
 
 
@@ -47,22 +48,46 @@ def fp_filter(cands: list[dict]) -> list[dict]:
     """Drop candidates matching the current FP registry (device/domain/org).
     The detector filters at scan time, but an FP added since its last run —
     or one added from the slow-beacons page itself — must not resurface in
-    the morning digest."""
+    the morning digest.
+
+    MIRROR: FP coverage here must match slow-cadence.py's scan-time filter
+    (SNI, dst literal, every HTTP Host seen on the dst, device, org) or a
+    candidate the detector suppressed reappears in the digest."""
     try:
         with open(FP_PATH) as f:
             fp = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         return cands
     doms = list(fp.get("domains", {}))
-    orgs = list(fp.get("orgs", {}))
     macs = {m.lower() for m in fp.get("devices", {})}
-    fp_ips: set[str] = set()
+
+    # Org entries are either a bare reason (LAN-wide) or {"reason","devices"}
+    # scoped to specific MACs. Same normalisation as slow-cadence.py fp_orgs().
+    org_entries: list[tuple[str, set[str] | None]] = []
+    for pat, val in (fp.get("orgs") or {}).items():
+        if isinstance(val, dict):
+            scoped = {m.lower() for m in (val.get("devices") or [])}
+            org_entries.append((pat, scoped or None))
+        else:
+            org_entries.append((pat, None))
+
+    # IP → MAC from leases plus asset history; history matters because the
+    # 14-day window covers IPs a device no longer holds.
+    ip_mac: dict[str, str] = {}
+    try:
+        with open(ASSETS_HISTORY) as f:
+            for hist_ip, info in json.load(f).items():
+                mac = (info.get("mac") or "").lower()
+                if mac:
+                    ip_mac[hist_ip] = mac
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
     try:
         with open(LEASES) as f:
             for line in f:
                 p = line.split()
-                if len(p) >= 3 and p[1].lower() in macs:
-                    fp_ips.add(p[2])
+                if len(p) >= 3:
+                    ip_mac[p[2]] = p[1].lower()
     except FileNotFoundError:
         pass
 
@@ -72,11 +97,29 @@ def fp_filter(cands: list[dict]) -> list[dict]:
             or (pat.startswith("*.") and host == pat[2:])
             for pat in pats)
 
-    return [c for c in cands
-            if c.get("src") not in fp_ips
-            and not match(c.get("sni", ""), doms)
-            and not match(c.get("dst", ""), doms)
-            and not match(c.get("dst_org", ""), orgs)]
+    def org_match(org, src_mac):
+        if not org:
+            return False
+        for pat, scoped in org_entries:
+            if not fnmatch.fnmatch(org, pat):
+                continue
+            if scoped is None or src_mac in scoped:
+                return True
+        return False
+
+    kept = []
+    for c in cands:
+        src_mac = ip_mac.get(c.get("src", ""), "")
+        if src_mac and src_mac in macs:
+            continue
+        if match(c.get("sni", ""), doms) or match(c.get("dst", ""), doms):
+            continue
+        if any(match(h, doms) for h in (c.get("http_hosts") or [])):
+            continue
+        if org_match(c.get("dst_org", ""), src_mac):
+            continue
+        kept.append(c)
+    return kept
 
 
 def is_enabled() -> bool:
@@ -86,7 +129,8 @@ def is_enabled() -> bool:
     try:
         with open(ALERT_CONFIG) as f:
             cfg = json.load(f)
-        return bool(cfg.get("slow_cadence_digest", True))
+        # Toggles live under the "enabled" key — same shape alert.sh reads.
+        return bool(cfg.get("enabled", {}).get("slow_cadence_digest", True))
     except (FileNotFoundError, json.JSONDecodeError):
         return True   # default-on, same convention as Lambda alerts
 
@@ -126,45 +170,66 @@ def format_candidate(idx: int, c: dict) -> str:
     rate    = c.get("conns_per_active_day", 0)
     hour    = c.get("modal_hour_utc", 0)
     cons    = int((c.get("hour_consistency") or 0) * 100)
-    # Why was this demoted? — surfaces the gate's reasoning.
-    reason_bits = []
-    if hyper:
-        reason_bits.append("☁ hyperscaler")
-    if talkers and talkers > 1:
-        reason_bits.append(f"{talkers} LAN talkers")
-    reason = " · ".join(reason_bits) or "no demote reason"
-    line1 = (f"`{idx:>2}.` `{src_lbl}` → `{target}:{c.get('dst_port', '?')}` "
+    # Why is this row here? — either it cleared the alert gate (and would
+    # have paged, back when slow_cadence_beacon paged in real time), or it
+    # was demoted and we surface the gate's reasoning.
+    if c.get("alert_eligible"):
+        reason = "⚠ sole LAN talker · non-hyperscaler"
+        marker = "*!*"
+    else:
+        reason_bits = []
+        if hyper:
+            reason_bits.append("☁ hyperscaler")
+        if talkers and talkers > 1:
+            reason_bits.append(f"{talkers} LAN talkers")
+        reason = " · ".join(reason_bits) or "no demote reason"
+        marker = "   "
+    line1 = (f"`{idx:>2}.`{marker} `{src_lbl}` → "
+             f"`{target}:{c.get('dst_port', '?')}` "
              f"— {days}d, ~{rate}/d at {hour:02d}:00 UTC, {cons}% hour-cons")
     line2 = f"      _{org}{(' · ' + cc) if cc else ''} · {reason}_"
     return line1 + "\n" + line2
 
 
 def build_message(report: dict):
-    """Return (text, n_hunt) — text is None when there's nothing worth
-    posting, so the caller can skip the Slack hit entirely on empty days."""
+    """Return (text, n_total) — text is None when there's nothing worth
+    posting, so the caller can skip the Slack hit entirely on empty days.
+
+    `slow_cadence_beacon` no longer pages in real time (every one of the 25
+    it ever fired was a false alarm — the destinations are unbounded Chinese
+    CDN/P2P hostnames, so per-domain FPs never converge). The digest is now
+    the only channel for these findings, so gate-eligible candidates must
+    appear here too — pinned above the hunt rows and flagged, never squeezed
+    out of the top-N by hunt volume."""
     cands = fp_filter(report.get("candidates", []))
-    # Hunt-only: candidates the alert gate demoted (alert_eligible == False).
-    hunt = [c for c in cands if not c.get("alert_eligible")]
-    if not hunt:
+    by_persistence = lambda c: (-c.get("days_seen", 0),
+                                -(c.get("hour_consistency") or 0))
+    flagged = sorted((c for c in cands if c.get("alert_eligible")),
+                     key=by_persistence)
+    hunt    = sorted((c for c in cands if not c.get("alert_eligible")),
+                     key=by_persistence)
+    if not flagged and not hunt:
         return None, 0
-    hunt.sort(key=lambda c: (
-        -c.get("days_seen", 0),
-        -(c.get("hour_consistency") or 0),
-    ))
-    top    = hunt[:TOP_N]
+
+    top    = flagged[:TOP_N]
+    top   += hunt[:max(0, TOP_N - len(top))]
+    total  = len(flagged) + len(hunt)
     today  = date.today().isoformat()
+    lead   = (f"*{len(flagged)} flagged* (`!`) · {len(hunt)} hunt"
+              if flagged else f"{len(hunt)} hunt candidate"
+                              f"{'' if len(hunt) == 1 else 's'}")
     header = (
         f"*📋 Slow-cadence digest — {today}*  "
-        f"_({len(top)} of {len(hunt)} hunt candidate"
-        f"{'' if len(hunt) == 1 else 's'} shown)_\n\n"
-        f"_Periodic egress that didn't page in real time — typically "
-        f"hyperscaler-hosted SaaS or shared-LAN endpoints. Glance through; "
-        f"investigate anything unfamiliar._"
+        f"_({len(top)} of {total} shown — {lead})_\n\n"
+        f"_Periodic multi-day egress. Rows marked `!` cleared the alert gate "
+        f"(sole LAN talker, non-hyperscaler dst) — look at those first. The "
+        f"rest are hyperscaler-hosted or shared-LAN endpoints; glance through "
+        f"and investigate anything unfamiliar._"
     )
     body   = "\n\n" + "\n".join(format_candidate(i + 1, c)
                                 for i, c in enumerate(top))
     footer = "\n\n_Full hunt surface: https://bb0/beacons/slow_"
-    return header + body + footer, len(hunt)
+    return header + body + footer, total
 
 
 def post(token: str, channel: str, text: str) -> bool:
@@ -202,9 +267,9 @@ def main() -> int:
     report = load_report()
     if report is None:
         return 1
-    msg, n_hunt = build_message(report)
+    msg, n_total = build_message(report)
     if msg is None:
-        print("No hunt candidates — skipping Slack post.")
+        print("No slow-cadence candidates — skipping Slack post.")
         return 0
     token, channel, separate = load_slack()
     if not token:
@@ -212,7 +277,7 @@ def main() -> int:
     if post(token, channel, msg):
         ch_note = "dedicated digest channel" if separate else "main channel"
         print(f"Posted digest to {ch_note} #{channel}: "
-              f"{min(TOP_N, n_hunt)} of {n_hunt} hunt candidates.")
+              f"{min(TOP_N, n_total)} of {n_total} candidates.")
         return 0
     return 1
 

@@ -263,8 +263,10 @@
                       data-pattern="*{{ c.dst_org.split(' ')[0] }}*"
                       data-reason="{{ c.dst_org }}"
                       data-fp-mode="org"
+                      data-device="{{ c.src_mac or c.src }}"
+                      data-device-label="{{ c.src_label or c.src }}"
                       onclick="slowFpOpen(this)"
-                      title="Suppress all destinations attributed to this GeoIP org — pattern is editable">
+                      title="Suppress destinations attributed to this GeoIP org — scoped to this device by default">
                 FP&nbsp;org
               </button>
               {% endif %}
@@ -294,6 +296,16 @@
     <input id="sfp-reason" type="text" maxlength="50" placeholder="e.g. Amazon.com Inc."
            oninput="slowFpUpdateSubmitEnabled()"
            style="width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:13px;margin-bottom:16px;">
+    <div id="sfp-scope" style="display:none;margin-bottom:16px;">
+      <label style="display:flex;align-items:flex-start;gap:8px;font-size:13px;cursor:pointer;">
+        <input id="sfp-scope-device" type="checkbox" checked style="margin-top:2px;">
+        <span>Only for <span id="sfp-scope-label" class="mono"></span><br>
+          <span style="font-size:11px;color:var(--text-dim);">Untick to suppress this ASN for every device on the LAN.
+          Scoped is safer — an ASN being normal for one phone says nothing
+          about the same ASN reaching a server.</span>
+        </span>
+      </label>
+    </div>
     <div id="sfp-msg" style="display:none;font-size:12px;color:var(--text-dim);margin-bottom:10px;"></div>
     <div style="display:flex;gap:10px;justify-content:flex-end;">
       <button onclick="slowFpClose()" class="btn">Cancel</button>
@@ -308,8 +320,9 @@
 // "org" mode submits to /fps/add-org (fnmatch on GeoIP ASN owner — the
 // only handle when SNI/Host/DNS are all empty). Submission goes via fetch
 // so we can fade the originating row out for instant feedback.
-var _sfpBtn = null;
-var _sfpUrl = '{{ url_for("fps_add_domain") }}';   // default; overridden in slowFpOpen()
+var _sfpBtn    = null;
+var _sfpUrl    = '{{ url_for("fps_add_domain") }}';   // default; overridden in slowFpOpen()
+var _sfpDevice = '';   // org mode only — MAC/IP the scope checkbox applies to
 
 var _SFP_URLS = {
   dst: '{{ url_for("fps_add_domain") }}',
@@ -323,6 +336,20 @@ function slowFpOpen(btn) {
   document.getElementById('sfp-pattern').value = btn.dataset.pattern || '';
   document.getElementById('sfp-reason').value  = btn.dataset.reason  || '';
   document.getElementById('sfp-msg').style.display = 'none';
+
+  // Org FPs default to device-scoped: the whole point of the ASN handle is
+  // "this is normal for THIS device", and a LAN-wide entry would blind us to
+  // the same ASN reaching something that has no business talking to it.
+  _sfpDevice = btn.dataset.device || '';
+  var scopeBox = document.getElementById('sfp-scope');
+  if (mode === 'org' && _sfpDevice) {
+    document.getElementById('sfp-scope-label').textContent =
+      btn.dataset.deviceLabel || _sfpDevice;
+    document.getElementById('sfp-scope-device').checked = true;
+    scopeBox.style.display = 'block';
+  } else {
+    scopeBox.style.display = 'none';
+  }
 
   if (mode === 'org') {
     document.getElementById('sfp-title').textContent =
@@ -365,6 +392,11 @@ function slowFpSubmit() {
   var fd = new FormData();
   fd.append('pattern', pat);
   fd.append('reason', reason);
+  var scopeBox = document.getElementById('sfp-scope');
+  if (scopeBox.style.display !== 'none' && _sfpDevice &&
+      document.getElementById('sfp-scope-device').checked) {
+    fd.append('device', _sfpDevice);
+  }
 
   fetch(_sfpUrl, {method: 'POST', body: fd})
     .then(function(r) { return {ok: r.ok}; })

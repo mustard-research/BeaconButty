@@ -119,14 +119,68 @@ def fp_domains() -> list[str]:
         return []
 
 
-def fp_orgs() -> list[str]:
+def fp_orgs() -> list[tuple[str, set[str] | None]]:
     """Org FPs — fnmatch against the GeoIP ASN owner (mirrors the webapp's
-    render-time filter, which alone can't stop the Slack alert)."""
+    render-time filter, which alone can't stop the Slack alert).
+
+    Returns [(pattern, macs_or_None)]. A value of None means the entry applies
+    LAN-wide (the original bare-string shape); a set means it only suppresses
+    for those source devices.
+
+    MIRROR: the same normalisation lives in slow-cadence-digest.py and in
+    webapp/app.py `_fp_org_entries` — change all three together."""
     try:
         with open(FP_PATH) as f:
-            return list(json.load(f).get("orgs", {}).keys())
+            raw = json.load(f).get("orgs", {})
     except (FileNotFoundError, json.JSONDecodeError):
         return []
+    entries: list[tuple[str, set[str] | None]] = []
+    for pat, val in raw.items():
+        if isinstance(val, dict):
+            macs = {m.lower() for m in (val.get("devices") or [])}
+            entries.append((pat, macs or None))
+        else:
+            entries.append((pat, None))
+    return entries
+
+
+def fp_org_match(org: str, src_mac: str,
+                 entries: list[tuple[str, set[str] | None]]) -> bool:
+    """True if this ASN owner is FP'd, either LAN-wide or for this device."""
+    if not org:
+        return False
+    src_mac = (src_mac or "").lower()
+    for pat, macs in entries:
+        if not fnmatch.fnmatch(org, pat):
+            continue
+        if macs is None or src_mac in macs:
+            return True
+    return False
+
+
+def ip_to_mac_map() -> dict[str, str]:
+    """LAN IP → MAC, from current dnsmasq leases plus the rolling asset
+    history. History matters here for the same reason it does in
+    fp_source_ips(): the 14-day window covers IPs a device no longer holds."""
+    mapping: dict[str, str] = {}
+    try:
+        with open("/var/lib/beaconbutty/assets-history.json") as f:
+            for hist_ip, info in json.load(f).items():
+                mac = (info.get("mac") or "").lower()
+                if mac:
+                    mapping[hist_ip] = mac
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+    # Live leases win over history for an IP that has since been reassigned.
+    try:
+        with open("/var/lib/misc/dnsmasq.leases") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) >= 3:
+                    mapping[parts[2]] = parts[1].lower()
+    except FileNotFoundError:
+        pass
+    return mapping
 
 
 def fp_source_ips() -> set[str]:
@@ -405,6 +459,7 @@ def main() -> int:
     fp_pats = fp_domains()
     fp_srcs = fp_source_ips()
     org_pats = fp_orgs()
+    ip_mac = ip_to_mac_map()
 
     candidates = []
     for r in pairs:
@@ -426,7 +481,10 @@ def main() -> int:
             continue
 
         dst_org, dst_cc = geoip_lookup(dst_ip)
-        if dst_org and fp_match(dst_org, org_pats):
+        # Org FPs may be scoped to specific source devices — "Chinese CDN
+        # traffic from Xin's phone is baseline" must not also suppress the
+        # same ASN reaching a server or an IoT device.
+        if fp_org_match(dst_org, ip_mac.get(src_ip, ""), org_pats):
             continue
         hyper = is_hyperscaler(dst_org)
         talkers = talkers_map.get((r["dst"], r["dst_port"]), 1)
