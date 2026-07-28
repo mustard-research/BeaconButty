@@ -406,7 +406,11 @@ else
     FAIL "Tailscale: tailscaled not running"
 fi
 
-# TLS certificate expiry — matches the cert card on the Health page
+# TLS certificate expiry — thresholds must match the cert card in
+# webapp/templates/health.html. Certbot renews at <30 days remaining, so the
+# 21–30 band is the renewal window doing its job; warning there fired on every
+# renewal cycle for no reason. Amber only once certbot has had ~9 days of
+# twice-daily attempts and still not renewed.
 CERT_FILE="${BB_TLS_CERT_DIR}/${BB_HOST}/fullchain.pem"
 if [[ -f "$CERT_FILE" ]]; then
     CERT_END=$(openssl x509 -in "$CERT_FILE" -noout -enddate 2>/dev/null | cut -d= -f2)
@@ -414,12 +418,12 @@ if [[ -f "$CERT_FILE" ]]; then
     [[ -n "$CERT_END" ]] && CERT_END_EPOCH=$(date -d "$CERT_END" +%s 2>/dev/null)
     if [[ -n "$CERT_END_EPOCH" ]]; then
         DAYS_LEFT=$(( (CERT_END_EPOCH - $(date +%s)) / 86400 ))
-        if [[ "$DAYS_LEFT" -gt 30 ]]; then
+        if [[ "$DAYS_LEFT" -gt 21 ]]; then
             OK "TLS cert: ${DAYS_LEFT} days remaining"
-        elif [[ "$DAYS_LEFT" -gt 14 ]]; then
-            WARN "TLS cert: ${DAYS_LEFT} days remaining — renew soon"
+        elif [[ "$DAYS_LEFT" -gt 7 ]]; then
+            WARN "TLS cert: ${DAYS_LEFT} days remaining — renewal overdue (certbot should have renewed at 30d)"
         else
-            FAIL "TLS cert: ${DAYS_LEFT} days remaining — expires soon (check certbot)"
+            FAIL "TLS cert: ${DAYS_LEFT} days remaining — expires imminently (check certbot)"
         fi
     else
         WARN "TLS cert: could not parse expiry date from ${CERT_FILE}"

@@ -282,15 +282,19 @@
   {% if cert.error is defined %}
     <p style="color:var(--red,#f44336);font-size:13px;margin:0;">Error reading cert: {{ cert.error }}</p>
   {% else %}
-    {% if cert.days_remaining <= 14 %}
+    {# Certbot renews at <30 days remaining, so the 21–30 band is the renewal
+       window working normally — warning there fired every cycle for nothing.
+       Amber now means certbot has had ~9 days of twice-daily attempts and
+       still not renewed. Keep in step with scripts/healthcheck.sh. #}
+    {% if cert.days_remaining <= 7 %}
       {% set cert_color = '#f44336' %}
-      {% set cert_status = 'Expiring soon' %}
-    {% elif cert.days_remaining <= 30 %}
+      {% set cert_status = 'Expiring — check certbot' %}
+    {% elif cert.days_remaining <= 21 %}
       {% set cert_color = '#ff9800' %}
-      {% set cert_status = 'Renew soon' %}
+      {% set cert_status = 'Renewal overdue' %}
     {% else %}
       {% set cert_color = '#4caf50' %}
-      {% set cert_status = 'Valid' %}
+      {% set cert_status = 'Valid (certbot auto-renews)' %}
     {% endif %}
     <table style="font-size:13px;border-collapse:collapse;">
       <tr>
