@@ -45,14 +45,15 @@ TOP_N        = 10
 
 
 def fp_filter(cands: list[dict]) -> list[dict]:
-    """Drop candidates matching the current FP registry (device/domain/org).
+    """Drop candidates matching the current FP registry
+    (device/domain/protocol/org).
     The detector filters at scan time, but an FP added since its last run —
     or one added from the slow-beacons page itself — must not resurface in
     the morning digest.
 
     MIRROR: FP coverage here must match slow-cadence.py's scan-time filter
-    (SNI, dst literal, every HTTP Host seen on the dst, device, org) or a
-    candidate the detector suppressed reappears in the digest."""
+    (SNI, dst literal, every HTTP Host seen on the dst, device, protocol,
+    org) or a candidate the detector suppressed reappears in the digest."""
     try:
         with open(FP_PATH) as f:
             fp = json.load(f)
@@ -60,6 +61,7 @@ def fp_filter(cands: list[dict]) -> list[dict]:
         return cands
     doms = list(fp.get("domains", {}))
     macs = {m.lower() for m in fp.get("devices", {})}
+    protos = list(fp.get("protocols", {}))
 
     # Org entries are either a bare reason (LAN-wide) or {"reason","devices"}
     # scoped to specific MACs. Same normalisation as slow-cadence.py fp_orgs().
@@ -97,6 +99,19 @@ def fp_filter(cands: list[dict]) -> list[dict]:
             or (pat.startswith("*.") and host == pat[2:])
             for pat in pats)
 
+    def proto_match(services):
+        """Same component semantics as slow-cadence.py fp_service_match() and
+        webapp/app.py _fp_service_match(). A candidate written before the
+        detector emitted `services` has nothing to match, so it falls through
+        to the other filters rather than erroring — self-heals next run."""
+        for svc in services or []:
+            for comp in (svc or "").split(","):
+                comp = comp.strip()
+                if comp and any(comp == p or comp.startswith(p + ":")
+                                for p in protos):
+                    return True
+        return False
+
     def org_match(org, src_mac):
         if not org:
             return False
@@ -117,6 +132,8 @@ def fp_filter(cands: list[dict]) -> list[dict]:
         if any(match(h, doms) for h in (c.get("http_hosts") or [])):
             continue
         if org_match(c.get("dst_org", ""), src_mac):
+            continue
+        if proto_match(c.get("services")):
             continue
         kept.append(c)
     return kept

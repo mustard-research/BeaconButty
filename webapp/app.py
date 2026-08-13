@@ -4020,7 +4020,10 @@ def _load_slow_cadence_filtered():
 
     Re-applying the FP filter here (rather than relying on the detector's
     own pass) means a freshly-added FP pattern takes effect on the next
-    page load instead of waiting for the next detector run."""
+    page load instead of waiting for the next detector run.
+
+    MIRROR: coverage must match slow-cadence.py's scan-time filter and
+    slow-cadence-digest.py's fp_filter() — device, domain, protocol, org."""
     payload = {"candidates": [], "generated_at": "", "window_days": 0,
                "thresholds": {}}
     try:
@@ -4040,6 +4043,7 @@ def _load_slow_cadence_filtered():
     fp_doms      = list(fp_all.get("domains", {}).keys())
     fp_org_ents  = _fp_org_entries(fp_all)
     fp_macs      = {m.lower() for m in fp_all.get("devices", {}).keys()}
+    fp_protos    = fp_all.get("protocols", {})
 
     filtered = []
     for c in payload["candidates"]:
@@ -4062,6 +4066,12 @@ def _load_slow_cadence_filtered():
         # rows with no SNI, no HTTP Host, no DNS resolution. Entries may be
         # scoped to specific devices, so this needs the source MAC.
         if _fp_org_match(c.get("dst_org", ""), src_mac, fp_org_ents):
+            continue
+        # Protocol FP — reuses the /beacons matcher, so "3478:udp" means the
+        # same thing on both pages. `services` is absent from reports written
+        # before the detector emitted it; those simply skip this check.
+        if any(_fp_service_match(s, fp_protos)[0]
+               for s in (c.get("services") or [])):
             continue
         c["src_mac"] = src_mac
         filtered.append(c)

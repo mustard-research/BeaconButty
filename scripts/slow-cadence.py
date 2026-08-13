@@ -119,6 +119,44 @@ def fp_domains() -> list[str]:
         return []
 
 
+def fp_protocols() -> list[str]:
+    """Protocol FPs — registered per service component, e.g. "3478:udp".
+
+    Without this the registry's protocol entries had no effect on slow-cadence
+    at all: STUN/NTP-style keepalives have no SNI and their HTTP Host (when
+    there is one) is the bare dst IP, so neither the domain nor the org path
+    can reach them.
+
+    MIRROR: matching lives in fp_service_match() here, in
+    slow-cadence-digest.py, and in webapp/app.py `_fp_service_match` —
+    change all three together."""
+    try:
+        with open(FP_PATH) as f:
+            return list(json.load(f).get("protocols", {}).keys())
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+
+
+def fp_service_match(services: list[str], pats: list[str]) -> bool:
+    """True if any observed service component matches a protocol FP.
+
+    Components look like "3478:udp:" or "443:udp:quic,ssl" — Zeek's own
+    service subfield can itself be comma-separated, so split on commas the
+    same way the webapp does. A pattern matches a component exactly, or as a
+    prefix at a ':' boundary, so "3478:udp" covers "3478:udp:stun"."""
+    if not services or not pats:
+        return False
+    for svc in services:
+        for comp in (svc or "").split(","):
+            comp = comp.strip()
+            if not comp:
+                continue
+            for pat in pats:
+                if comp == pat or comp.startswith(pat + ":"):
+                    return True
+    return False
+
+
 def fp_orgs() -> list[tuple[str, set[str] | None]]:
     """Org FPs — fnmatch against the GeoIP ASN owner (mirrors the webapp's
     render-time filter, which alone can't stop the Slack alert).
@@ -231,12 +269,15 @@ def fetch_pairs(dbs: list[str]) -> list[dict]:
     low-rate prefilter to keep groupArray sizes bounded; cap at MAX_TS_PER_PAIR
     as belt-and-braces."""
     inner = " UNION ALL ".join(
-        f"""SELECT src, dst, dst_port, ts FROM {db}.conn
+        f"""SELECT src, dst, dst_port, ts, proto, service FROM {db}.conn
             WHERE dst_local = false AND src_local = true
               AND proto IN ('tcp', 'udp')
               AND service NOT IN ('dns', 'ntp')"""
         for db in dbs
     )
+    # `services` is the RITA-style "port:proto:service" component set for the
+    # group, carried through onto each candidate so the digest and the webapp
+    # can re-apply protocol FPs without going back to ClickHouse.
     sql = f"""
     SELECT
         IPv6NumToString(src)        AS src,
@@ -244,6 +285,9 @@ def fetch_pairs(dbs: list[str]) -> list[dict]:
         dst_port                    AS dst_port,
         count()                     AS total_conns,
         uniqExact(toDate(ts))       AS days_seen,
+        groupUniqArray(concat(toString(dst_port), ':',
+                              toString(proto), ':',
+                              toString(service)))      AS services,
         groupArray({MAX_TS_PER_PAIR})(toUInt32(ts))    AS ts_list,
         groupArray({MAX_TS_PER_PAIR})(toUInt8(toHour(ts))) AS hr_list
     FROM ({inner})
@@ -459,6 +503,7 @@ def main() -> int:
     fp_pats = fp_domains()
     fp_srcs = fp_source_ips()
     org_pats = fp_orgs()
+    proto_pats = fp_protocols()
     ip_mac = ip_to_mac_map()
 
     candidates = []
@@ -479,6 +524,12 @@ def main() -> int:
             continue
         if src_ip in fp_srcs:
             continue
+        # Protocol FP — the only handle on NAT-traversal keepalives (STUN on
+        # 3478, etc), which carry no SNI and whose HTTP Host is the dst IP.
+        # Deliberately port+proto scoped rather than host scoped: a relay's
+        # bulk traffic on 443 stays visible.
+        if fp_service_match(r.get("services", []), proto_pats):
+            continue
 
         dst_org, dst_cc = geoip_lookup(dst_ip)
         # Org FPs may be scoped to specific source devices — "Chinese CDN
@@ -496,6 +547,7 @@ def main() -> int:
             "src": src_ip,
             "dst": dst_ip,
             "dst_port": r["dst_port"],
+            "services": r.get("services", []),
             "sni": sni,
             "http_host":       http_info.get("host", ""),
             "http_hosts":      http_info.get("hosts", []),
