@@ -587,23 +587,52 @@ def _inject_fp_suffixes():
     return {"fp_multi_label_suffixes": sorted(_MULTI_LABEL_SUFFIXES)}
 
 
+_SVC_COMPONENT_RE = re.compile(r'^(?:\d+:(?:tcp|udp)|icmp):')
+
+
+def _split_service_components(svc):
+    """Split a RITA service field into its "port:proto:service" components.
+
+    Splitting on commas alone is wrong: Zeek's own service subfield can
+    contain commas, so "443:udp:quic,ssl,443:tcp:ssl" is TWO components, not
+    three. A fragment that doesn't open with "<port>:<tcp|udp>:" or "icmp:"
+    is a continuation of the service list of the component before it."""
+    comps = []
+    for frag in (svc or "").strip().split(","):
+        frag = frag.strip()
+        if not frag:
+            continue
+        if _SVC_COMPONENT_RE.match(frag) or not comps:
+            comps.append(frag)
+        else:
+            comps[-1] += "," + frag
+    return comps
+
+
 def _fp_service_match(svc, fp_protocols):
     """Match a RITA service field against registered protocol FPs.
 
-    RITA can bundle several services into one field, e.g.
-    "80:tcp:http,3478:udp:". Protocol FPs are registered per single
-    component ("3478:udp"), so each comma-separated component is tested
-    independently — a whole-string prefix match misses STUN whenever it is
-    not the first service listed. Returns (pattern, reason) on the first
-    hit, else (None, None)."""
-    for comp in (svc or "").strip().split(","):
-        comp = comp.strip()
-        if not comp:
-            continue
-        for pat, reason in fp_protocols.items():
-            if comp == pat or comp.startswith(pat + ":"):
-                return pat, reason
-    return None, None
+    RITA bundles every service seen between a pair into one field, e.g.
+    "443:tcp:ssl,3478:udp:". A protocol FP asserts that a *protocol* is
+    boring, not that a destination is — so it may only suppress a row when
+    EVERY component is FP'd. Matching any single component would let one
+    STUN keepalive hide the bulk TLS payload sharing that row, which is
+    exactly how Tailscale DERP relay traffic stayed invisible: the "3478:udp"
+    keepalive FP was swallowing the 443 relay traffic bundled beside it.
+
+    Returns (pattern, reason) of the first component's match when all
+    components match, else (None, None)."""
+    comps = _split_service_components(svc)
+    if not comps:
+        return None, None
+    first = None
+    for comp in comps:
+        hit = next(((p, r) for p, r in fp_protocols.items()
+                    if comp == p or comp.startswith(p + ":")), None)
+        if hit is None:
+            return None, None
+        first = first or hit
+    return first
 
 
 def get_wan_ip():

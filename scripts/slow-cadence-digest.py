@@ -101,16 +101,20 @@ def fp_filter(cands: list[dict]) -> list[dict]:
 
     def proto_match(services):
         """Same component semantics as slow-cadence.py fp_service_match() and
-        webapp/app.py _fp_service_match(). A candidate written before the
-        detector emitted `services` has nothing to match, so it falls through
-        to the other filters rather than erroring — self-heals next run."""
-        for svc in services or []:
-            for comp in (svc or "").split(","):
-                comp = comp.strip()
-                if comp and any(comp == p or comp.startswith(p + ":")
-                                for p in protos):
-                    return True
-        return False
+        webapp/app.py _fp_service_match(): EVERY component must be FP'd, so a
+        keepalive FP can't hide un-FP'd traffic sharing the row. Each element
+        is already one component, so commas inside it are Zeek's own service
+        list and must not be split.
+
+        A candidate written before the detector emitted `services` has nothing
+        to match, so it falls through to the other filters rather than
+        erroring — self-heals next run."""
+        comps = [(s or "").strip() for s in (services or [])]
+        comps = [c for c in comps if c]
+        if not comps:
+            return False
+        return all(any(c == p or c.startswith(p + ":") for p in protos)
+                   for c in comps)
 
     def org_match(org, src_mac):
         if not org:

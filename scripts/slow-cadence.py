@@ -138,23 +138,27 @@ def fp_protocols() -> list[str]:
 
 
 def fp_service_match(services: list[str], pats: list[str]) -> bool:
-    """True if any observed service component matches a protocol FP.
+    """True when EVERY observed service component is covered by a protocol FP.
 
-    Components look like "3478:udp:" or "443:udp:quic,ssl" — Zeek's own
-    service subfield can itself be comma-separated, so split on commas the
-    same way the webapp does. A pattern matches a component exactly, or as a
+    A protocol FP asserts a protocol is boring, not that a destination is, so
+    one FP'd component must not suppress a row that also carries un-FP'd
+    traffic — see webapp/app.py `_fp_service_match` for the Tailscale DERP
+    case that motivated this.
+
+    Each element of `services` is already one "port:proto:service" component
+    (groupUniqArray builds them individually), so unlike the webapp there is
+    nothing to split here: a comma inside an element belongs to Zeek's own
+    service list, e.g. "443:udp:quic,ssl". A pattern matches exactly or as a
     prefix at a ':' boundary, so "3478:udp" covers "3478:udp:stun"."""
     if not services or not pats:
         return False
-    for svc in services:
-        for comp in (svc or "").split(","):
-            comp = comp.strip()
-            if not comp:
-                continue
-            for pat in pats:
-                if comp == pat or comp.startswith(pat + ":"):
-                    return True
-    return False
+    for comp in services:
+        comp = (comp or "").strip()
+        if not comp:
+            continue
+        if not any(comp == pat or comp.startswith(pat + ":") for pat in pats):
+            return False
+    return True
 
 
 def fp_orgs() -> list[tuple[str, set[str] | None]]:
