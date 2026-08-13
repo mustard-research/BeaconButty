@@ -177,8 +177,70 @@ that landed during the 2026-05-04 build:
   Kejizhongyi Avenue" — actionable without a manual whois.
 - **Render-time FP filter.** The route re-applies the FP list on
   every render, so a freshly-added FP drops the row on the redirect
-  rather than waiting for the next detector tick. Three paths: SNI
-  domain pattern, dst IP literal, source MAC.
+  rather than waiting for the next detector tick. Five paths: SNI
+  domain pattern, dst IP literal, any HTTP Host seen on the dst,
+  source MAC, ASN org (device-scoped), and protocol.
+
+## Protocol false positives (added 2026-08-13)
+
+The pipeline honoured device, domain and org FPs but never loaded the
+registry's `protocols` map, so a protocol FP had no effect here at all.
+That was invisible in the worst way: `beaconbutty-fp.sh list` showed
+`3478:udp` registered, so a STUN row on `/beacons/slow` read as "STUN that
+somehow isn't FP'd" rather than "this pipeline can't see protocol FPs".
+
+Signalling keepalives are exactly the traffic that needs this dimension —
+they carry no SNI, and their HTTP Host (when there is one) is the bare
+destination IP, so neither the domain nor the org path can reach them.
+
+**How the service data gets here.** `fetch_pairs()` emits a `services` list
+per `(src, dst, dst_port)` group — `groupUniqArray` of
+`port:proto:service` — and each candidate carries it into
+`slow-cadence.json`. The digest and the webapp therefore re-apply protocol
+FPs without going back to ClickHouse. Reports written before this change
+have no `services` key; all three filters treat that as "no protocol data"
+and fall through, so they self-heal on the next detector run.
+
+Each element of `services` is **already one component**, so unlike the
+`/beacons` matcher it must not be comma-split — a comma inside an element
+belongs to Zeek's own service list (`443:udp:quic,ssl`). Matching requires
+**every** component to be FP'd; see
+[False Positive Workflow → Protocol-FP](false-positive-workflow.md#protocol-fp--global-dangerous-gated).
+
+> [!warning]
+> This is one of five implementations of the protocol-FP contract. The
+> mirror table in the FP workflow doc lists them all — change them together.
+
+### Worked example: Tailscale DERP relays
+
+`103.6.84.152` (`derp20b.tailscale.com`, NetActuate, Hong Kong) sat on the
+page with 7 days seen: UDP 3478 STUN plus `GET /generate_204?t=<epoch>`,
+`Go-http-client/1.1`, 291 connections and ~38 KB across four LAN devices.
+That is Tailscale `netcheck` measuring every DERP region to pick the best
+relay — not a beacon.
+
+The tempting fix was to suppress Tailscale destinations wholesale. That
+would be a real detection hole: DERP relays carry end-to-end-encrypted
+WireGuard that neither Tailscale nor we can inspect, so a compromised
+tailnet node exfiltrating over DERP is indistinguishable from legitimate
+relay use.
+
+Probe traffic and payload traffic are separable, so only the probe is
+suppressed:
+
+| | netcheck probing | actual relaying |
+|---|---|---|
+| Port | UDP 3478 + `/generate_204` | TLS 443 |
+| Volume | ~38 KB / 7 days | ~100–170 conns/day |
+| Scope | *every* DERP region | only the chosen one |
+
+`103.6.84.152` has never carried a byte on 443, so the `3478:udp` protocol
+FP costs nothing. The `*.tailscale.com` domain FP was replaced the same day
+with `controlplane.`, `log.`, `pkgs.` and `login.tailscale.com` so that
+`derp*` — the relay actually in use — is no longer blanket-hidden.
+
+**Generalisable rule:** for any VPN, relay or NAT-traversal service, FP the
+keepalive component (`port:proto`), never the destination host.
 - **Coherent ghost view on `/assets`.** A device that disappeared
   mid-window (e.g. someone's laptop went home for the weekend) still
   shows on `/assets` as a dimmed "ghost · Nd" row, populated from

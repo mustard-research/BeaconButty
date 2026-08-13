@@ -191,9 +191,31 @@ The generalisation now lives in **`fp_dst_default(host)` in `webapp/app.py`**, d
 
 ## Protocol-FP — global, dangerous, gated
 
-Protocol matching is done by `_fp_service_match(svc, fp_protocols)` (module-level in `webapp/app.py`, mirrored in `scripts/summarize.sh`), which every consumer calls. It has no source binding — an entry like `443:tcp:ssl` would silence every HTTPS beacon on every device forever, effectively turning beacon detection off.
+Protocol matching is done by `_fp_service_match(svc, fp_protocols)` (module-level in `webapp/app.py`). It has **five** implementations, which must be changed together — see [Mirrors](#protocol-fp-mirrors) below. It has no source binding — an entry like `443:tcp:ssl` would silence every HTTPS beacon on every device forever, effectively turning beacon detection off.
 
-**Compound services.** RITA bundles several services into one field, e.g. `80:tcp:http,3478:udp:` (STUN with a TURN 80/tcp fallback). The matcher splits on commas and tests **each component independently**, so a single-component FP entry (`3478:udp`) suppresses the compound row too. A registered FP entry must therefore be **one component** (`port:proto` or `port:proto:name`) — never the whole compound blob. The `/beacons` dialog's Service field is an editable input pre-filled by `_protoDefault()`: a single-service row auto-normalises `3478:udp:` → `3478:udp`; a compound row is shown whole so you trim it to the one component you mean to suppress.
+**Compound services — every component must match (changed 2026-08-13).** RITA bundles several services into one field, e.g. `80:tcp:http,3478:udp:` (STUN with a TURN 80/tcp fallback). A protocol FP asserts that a *protocol* is boring, not that a *destination* is, so it suppresses a row only when **every** component is FP'd.
+
+Previously any single matching component suppressed the whole row, which meant one keepalive could hide everything else that destination did — `123:udp:ntp,4444:tcp:` would have been silenced outright. That is how Tailscale DERP relay traffic stayed invisible: the rows bundle `443:tcp:ssl,443:tcp:,3478:udp:`, and the `3478:udp` STUN FP swallowed the 443 relay traffic beside it.
+
+Practical consequence: **an FP entry is still one component**, but it now suppresses only rows made entirely of FP'd components. If a destination mixes a signalling protocol with real traffic, protocol-FP is the wrong handle — reach for a domain or device FP instead.
+
+**Parsing the service field — never just `split(",")`.** Zeek's own service subfield contains commas, so `443:udp:quic,ssl,443:tcp:ssl` is **two** components, not three, and ICMP components carry no port (`icmp:8/0`). `_split_service_components()` treats a fragment that doesn't open with `<port>:<tcp|udp>:` or `icmp:` as a continuation of the component before it. Under the old any-match rule these stray fragments were harmless; under all-match a junk `ssl` fragment would permanently block suppression of every QUIC row — 10 of 36 distinct service strings in a 7-day sample contain one.
+
+The `/beacons` dialog's Service field is an editable input pre-filled by `_protoDefault()`: a single-service row auto-normalises `3478:udp:` → `3478:udp`; a compound row is shown whole so you trim it to the one component you mean to suppress.
+
+### Protocol-FP mirrors
+
+The same matching contract is implemented in five places. Changing one without the others causes silent divergence between pages — the drift is invisible until a row appears on one surface and not another.
+
+| Implementation | Covers | Input shape |
+|---|---|---|
+| `webapp/app.py` `_fp_service_match` | `/beacons`, `/network`, dashboard tiles | RITA compound string, needs splitting |
+| `webapp/app.py` `_load_slow_cadence_filtered` | `/beacons/slow` render time | `services` list, already split |
+| `scripts/slow-cadence.py` `fp_service_match` | detector scan time | `services` list, already split |
+| `scripts/slow-cadence-digest.py` `proto_match` | morning Slack digest | `services` list, already split |
+| `scripts/summarize.sh` `_proto_suppressed` | terminal summary / daily report | RITA compound string, needs splitting |
+
+The list-shaped ones must **not** comma-split: each element is already one component (built individually by `groupUniqArray`), so a comma inside an element belongs to Zeek's service list.
 
 The FP modal on `/beacons` dims the **Protocol** option and shows a prominent red warning unless the row's service is on a narrow safe list. `_isSafeProto()` inspects **every** component (so STUN paired with an incidental HTTP flow is still recognised) and matches either a Zeek service name or a known-safe `port:proto`:
 

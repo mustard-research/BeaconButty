@@ -56,6 +56,21 @@ bb0 is enrolled in Tailscale under `<your tailscale user>`. Provides secure remo
 | bb1 | `<tailscale-ip>` | Pi 5 4GB — still active |
 | (other tailnet nodes) | `<tailscale-ip>` | Desktops, laptops, lab boxes |
 
+### Tailscale traffic in beacon detection
+
+Tailscale clients constantly latency-probe **every** DERP region — UDP 3478
+STUN plus `GET /generate_204?t=<epoch>` with a `Go-http-client/1.1` UA — so
+far-flung relays show up as beacon-shaped destinations even though a tailnet
+only ever relays through the one region it picks.
+
+Probe traffic is suppressed by the **`3478:udp` protocol FP**, deliberately
+*not* by a host or domain FP: DERP relays carry end-to-end-encrypted
+WireGuard that neither Tailscale nor the sensor can inspect, so
+blanket-suppressing the destination would hide exfiltration over the tailnet.
+A `*.tailscale.com` wildcard should be narrowed to the control-plane
+endpoints (`controlplane.`, `log.`, `pkgs.`, `login.`) so `derp*` stays
+visible. See [Slow-Cadence Beacons](../investigation/slow-cadence-beacons.md#worked-example-tailscale-derp-relays).
+
 ## Known LAN devices
 
 The format below shows the kind of inventory the appliance maintains; substitute your own devices. Examples:

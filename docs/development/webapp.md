@@ -73,6 +73,8 @@ This applies to dashboard tile counters as well as page builders. `count_beacon_
 
 Domain matching uses an apex-aware helper (`_fp_domain_match(q, patterns)`) so that `*.foo.com` also suppresses the bare `foo.com`. See [False Positive Workflow](../investigation/false-positive-workflow.md).
 
+Protocol matching uses `_fp_service_match(svc, fp_protocols)`, which suppresses a row only when **every** service component is FP'd (2026-08-13) — a protocol FP asserts that a protocol is boring, not that a destination is. Split components with `_split_service_components()`, never `svc.split(",")`: Zeek's own service subfield contains commas, so `443:udp:quic,ssl` is one component. There are five implementations of this contract across the webapp and scripts — the [mirror table](../investigation/false-positive-workflow.md#protocol-fp-mirrors) lists them, and they must change together.
+
 After any webapp write to `false-positives.conf`, call `_invalidate_network_cache()` (all 7 FP routes do). It does **not** null the cache — it signals the warmer to rebuild in the background (see [Network Intel cache warmer (2026-05-15)](#network-intel-cache-warmer-2026-05-15)). The cache is not automatically invalidated by external CLI writes to the FP file.
 
 ### Data attributes (not onclick)
