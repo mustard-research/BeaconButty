@@ -192,8 +192,16 @@ def _is_safe_dest(dst, fqdn):
     return False
 
 
-def _annotate_dest(dest):
-    """Append geo/org info if dest is a bare IP address."""
+def _annotate_dest(dest, name=""):
+    """Append geo/org info if dest is a bare IP address.
+
+    `name` is an enrichment-recovered hostname. Showing it matters most on
+    suppressed rows: the same name is what matched the FP and hid the row, so
+    omitting it left the operator looking at a bare IP with no way to see why
+    it went away — or what it was.
+    """
+    if name and dest and _IP_RE.match(dest.strip()):
+        return f"{name} ({dest})"
     if dest and _IP_RE.match(dest.strip()):
         cc, city, org = _geoip_info(dest.strip())
         parts = []
@@ -898,7 +906,10 @@ def get_beacon_data(report_file, mac_to_ip, ip_to_host, assets=None):
         dst = row[COL["Destination IP"]]
         fqdn = row[COL["FQDN"]]
         svc  = row[COL["Port:Proto:Service"]] if len(row) > COL["Port:Proto:Service"] else ""
-        dest = _annotate_dest(fqdn if fqdn else dst)
+        # Resolve the enriched name up front — it labels the row as well as
+        # deciding whether an FP matches it further down.
+        e_name = (emap.get((src.strip(), dst.strip())) or {}).get("name", "")
+        dest = _annotate_dest(fqdn if fqdn else dst, "" if fqdn else e_name)
 
         # Skip non-IPv4 source IPs
         if not _IP_RE.match(src.strip()):
@@ -924,7 +935,6 @@ def get_beacon_data(report_file, mac_to_ip, ip_to_host, assets=None):
         # Suppress FP domains and protocols (enrichment-aware so an FP like
         # "*.knock.app" suppresses bare AWS IPs whose Zeek-recovered FQDN
         # matches).
-        e_name = (emap.get((src.strip(), dst.strip())) or {}).get("name", "")
         dom_pat, dom_reason = _fp_domain_hit(fqdn, dst, e_name)
         if dom_pat:
             suppressed += 1
