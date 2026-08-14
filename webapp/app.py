@@ -1772,7 +1772,9 @@ def enrich_ips_batch(pairs, days: int = 7) -> dict:
     `pairs` is a collection of (src_ip, dst_ip) tuples — the src component is
     preserved in the return key for caller convenience but not used in the
     lookup itself (see module comment above). Returns
-    `{(src, dst): {'name', 'source', 'when_days', 'weak', 'intel'}}`.
+    `{(src, dst): {'name', 'source', 'when_days', 'org_hint', 'intel'}}`.
+    `name` is always a hostname or "" — see bb_enrich.org_hint_for for why the
+    ASN owner's domain is a separate field rather than a flagged `name`.
 
     The ladder itself lives in lib/bb_enrich.py so that summarize.sh and
     slow-cadence.py resolve names exactly the same way this does; it used to be
@@ -1793,7 +1795,7 @@ def enrich_ips_batch(pairs, days: int = 7) -> dict:
         c = _IP_ENRICH_CACHE.get(dst)
         if c and now - c["ts"] < _IP_ENRICH_TTL:
             by_dst[dst] = {k: c[k] for k in
-                           ("name", "source", "when_days", "weak", "intel")
+                           ("name", "source", "when_days", "org_hint", "intel")
                            if k in c}
         else:
             todo.add(dst)
@@ -4042,7 +4044,7 @@ def beacons_slow():
                                   with_intel=False)
         for c in filtered:
             info = _names.get(c["dst"]) or {}
-            if info.get("name") and not info.get("weak") and not c.get("sni"):
+            if info.get("name") and not c.get("sni"):
                 c["sni"] = info["name"]
                 c["dst_name_source"] = info.get("source", "")
 

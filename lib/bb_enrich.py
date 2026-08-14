@@ -33,7 +33,6 @@ The ladder, strongest evidence first:
     6     SAN       Zeek ssl.log + x509.log           file scan
     7     shodan    ip-intel-cache.json               file
     8     PTR       live reverse DNS                  network
-    9     whois     ip-intel-cache.json (abuseipdb)   file
 
 Tiers 1-4 are cheap SQL and run first as a batch. Tiers 5-6 are equally
 authoritative but are the only ones that scan files, so they run lazily - for
@@ -42,9 +41,13 @@ TLS flow already resolved at tier 1, so the scan set is small. If QUIC-only
 destinations ever become common enough to matter, promote tier 5 above tier 2
 and scan eagerly; that is a measurement, not a guess.
 
-Tier 9 is an org-level hint ("canonical.com", "facebook.com"), not a hostname.
-It is reported with source "whois" and listed in WEAK_SOURCES so callers can
-render it differently and decline to build FP patterns from it.
+Every tier names a HOST. The ASN owner's domain ("linode.com") is NOT a tier:
+it is returned separately as `org_hint`, never in `name`. It briefly was a
+ninth tier flagged `weak: True` in the shared `name` field, and two of the
+three consumers remembered to check the flag - the webapp did not, and started
+both displaying "linode.com" as though it were a hostname and feeding it to FP
+matching, where 19 org domains match a registered "*.<domain>" pattern. A
+separate field cannot be misused by omission. See org_hint_for.
 
 Neither `quic` nor `x509` is imported into ClickHouse by RITA (verified: no
 such tables, and `ip_to_hostname` exists but is empty in every daily DB), hence
@@ -79,7 +82,7 @@ NAME_CACHE_TTL = 6 * 3600
 # Bump whenever a change to the ladder could produce a different name for the
 # same IP. Entries stamped with an older version are ignored, so a fix takes
 # effect on the next run instead of being masked by cached answers for a TTL.
-CACHE_VERSION = 2
+CACHE_VERSION = 3
 
 # Wall-clock ceiling for the whole PTR tier, and per-lookup. Reverse DNS is the
 # only tier that touches the network, and it runs inside a page render.
@@ -89,12 +92,10 @@ PTR_LOOKUP_TIMEOUT = 1.0
 _IP_RE = re.compile(r"^(\d{1,3}\.){3}\d{1,3}$")
 
 #: Sources that name a host. Ordered by authority - index doubles as rank.
-SOURCE_RANK = ("SNI", "DNS", "cert", "HTTP", "QUIC", "SAN", "shodan", "PTR",
-               "whois")
+SOURCE_RANK = ("SNI", "DNS", "cert", "HTTP", "QUIC", "SAN", "shodan", "PTR")
 
-#: Sources that identify an *organisation* rather than the specific host.
-#: Callers should not build "*.<domain>" FP patterns from these unattended.
-WEAK_SOURCES = frozenset({"whois"})
+#: Every source in SOURCE_RANK names a HOST. Organisation-level identifiers
+#: (the ASN owner's domain) are deliberately not a tier — see org_hint_for.
 
 
 # ── normalisation ────────────────────────────────────────────────────────────
@@ -446,22 +447,35 @@ def _pick_shodan_hostname(hostnames, ip: str = "") -> str:
     return sorted(cands, key=lambda h: (len(h), h))[0]
 
 
-def _tier_intel(todo: set, intel: dict, consider, weak: bool) -> None:
-    """Tier 7 (shodan hostname) or tier 9 (abuseipdb domain)."""
+def _tier_shodan(todo: set, intel: dict, consider) -> None:
+    """Tier 7 - the cached Shodan hostname."""
     for dst in list(todo):
         if dst in consider.resolved:
             continue
         rec = intel.get(dst)
         if not rec:
             continue
-        if weak:
-            consider(dst, (rec.get("abuseipdb") or {}).get("domain", ""),
-                     "whois", None)
-        else:
-            consider(dst,
-                     _pick_shodan_hostname(
-                         (rec.get("shodan") or {}).get("hostnames"), dst),
-                     "shodan", None)
+        consider(dst,
+                 _pick_shodan_hostname(
+                     (rec.get("shodan") or {}).get("hostnames"), dst),
+                 "shodan", None)
+
+
+def org_hint_for(dst: str, intel: dict) -> str:
+    """AbuseIPDB's domain for the address owner - "linode.com", "google.com".
+
+    Deliberately NOT part of the ladder. It names whoever *owns* the address,
+    not what is running on it, so it is never a hostname and must never reach
+    anything that matches or generates FP patterns: 19 of these org domains
+    already match a registered "*.<domain>" FP, so letting one through would
+    suppress a finding on ASN ownership alone.
+
+    It is returned in its own `org_hint` field rather than in `name` so a
+    consumer cannot use it by accident - an earlier design flagged it with
+    `weak: True` in the shared `name` field, and two of three consumers
+    remembered to check the flag.
+    """
+    return ((intel.get(dst) or {}).get("abuseipdb") or {}).get("domain", "")
 
 
 def _tier_ptr(todo: set, consider) -> None:
@@ -535,10 +549,15 @@ def enrich(dsts, days: int = 7, ch_bin: str = CH_BIN, intel: dict = None,
            with_intel: bool = True) -> dict:
     """Resolve destination IPs to hostnames.
 
-    Returns `{dst: {'name', 'source', 'when_days', 'weak'[, 'intel']}}` for
+    Returns `{dst: {'name', 'source', 'when_days', 'org_hint'[, 'intel']}}` for
     every dst asked about; unresolved entries carry name "" and source "".
+
+    `name` is always a hostname or "" — never an organisation. `org_hint` is
+    the ASN owner's domain, set only when nothing named the host, and is safe
+    to display but must never reach FP matching or FP-pattern prefill.
+
     `when_days` is approximate days since the most recent observation, and is
-    None for tiers that carry no timestamp (QUIC/SAN/shodan/PTR/whois).
+    None for tiers that carry no timestamp (QUIC/SAN/shodan/PTR).
     """
     dsts = {d for d in dsts if d}
     if not dsts:
@@ -553,8 +572,8 @@ def enrich(dsts, days: int = 7, ch_bin: str = CH_BIN, intel: dict = None,
         c = cache.get(d)
         if (c and isinstance(c, dict) and c.get("v") == CACHE_VERSION
                 and now - c.get("ts", 0) < NAME_CACHE_TTL):
-            out[d] = {k: c.get(k) for k in ("name", "source", "when_days")}
-            out[d]["weak"] = c.get("source") in WEAK_SOURCES
+            out[d] = {k: c.get(k) for k in
+                      ("name", "source", "when_days", "org_hint")}
         else:
             todo.add(d)
 
@@ -580,9 +599,8 @@ def enrich(dsts, days: int = 7, ch_bin: str = CH_BIN, intel: dict = None,
 
         if intel is None:
             intel = load_ip_intel()
-        _tier_intel(todo, intel, consider, weak=False)     # tier 7 shodan
+        _tier_shodan(todo, intel, consider)                # tier 7 shodan
         _tier_ptr(todo, consider)                          # tier 8 PTR
-        _tier_intel(todo, intel, consider, weak=True)      # tier 9 whois
 
         today_dt = date.today()
         for d in todo:
@@ -600,7 +618,8 @@ def enrich(dsts, days: int = 7, ch_bin: str = CH_BIN, intel: dict = None,
                          "when_days": when_days}
             else:
                 entry = {"name": "", "source": "", "when_days": None}
-            entry["weak"] = entry["source"] in WEAK_SOURCES
+            # Separate field, never merged into `name` — see org_hint_for.
+            entry["org_hint"] = org_hint_for(d, intel) if not entry["name"] else ""
             out[d] = entry
             cache[d] = {**entry, "ts": now, "v": CACHE_VERSION}
 

@@ -68,10 +68,12 @@ _IP_RE = re.compile(r'^\d{1,3}(\.\d{1,3}){3}$')
 _NAME_MAP = {}
 
 def dest_name(dst):
-    """Enriched hostname for a bare dst IP, or '' — weak (org-level) names
-    excluded, since they are not hostnames and must not drive FP matching."""
-    info = _NAME_MAP.get(dst) or {}
-    return '' if info.get('weak') else (info.get('name') or '')
+    """Enriched hostname for a bare dst IP, or ''.
+
+    bb_enrich guarantees `name` is a hostname or empty — the ASN owner's domain
+    comes back separately as `org_hint` and is never merged in — so this is
+    safe to feed to both display and FP matching."""
+    return (_NAME_MAP.get(dst) or {}).get('name') or ''
 
 def annotate_dest(d):
     """Label a bare IP destination.

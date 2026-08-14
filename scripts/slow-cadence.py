@@ -517,10 +517,9 @@ def main() -> int:
         src_ip = r["src"].replace("::ffff:", "")
         http_info = http_map.get(r["dst"], {})
         name_info = name_map.get(dst_ip, {})
-        # A "weak" name (tier 9) is the ASN owner's domain, not a hostname the
-        # destination claims. Keep it out of `sni` so it can never drive FP
-        # matching or prefill a "*.<domain>" FP pattern — it is display-only.
-        sni = "" if name_info.get("weak") else name_info.get("name", "")
+        # bb_enrich never returns an organisation in `name`, so this is a
+        # hostname or empty; the ASN owner arrives separately as `org_hint`.
+        sni = name_info.get("name", "")
         # FP exclusion paths: SNI matches, ANY HTTP Host header for this dst
         # matches (shared CDN IPs serve many hosts — one FP'd is enough),
         # the dst IP literal matches, or the source LAN device is FP'd.
@@ -559,8 +558,9 @@ def main() -> int:
             # or "PTR" is inference. Worth showing — an operator FP'ing a
             # destination should know how confident the name is.
             "dst_name_source": name_info.get("source", ""),
-            # Tier-9 org hint, kept separate from `sni` (see above).
-            "dst_name_weak":   name_info.get("name", "") if name_info.get("weak") else "",
+            # ASN owner's domain — display only, never FP-matched. Set only
+            # when nothing actually named the host.
+            "dst_name_weak":   name_info.get("org_hint", ""),
             "http_host":       http_info.get("host", ""),
             "http_hosts":      http_info.get("hosts", []),
             "http_useragent":  http_info.get("useragent", ""),
