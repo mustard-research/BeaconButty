@@ -153,7 +153,7 @@
             {{ c.dst }}{{ intel_badge(c.intel) }}
             {% if c.dst_org %}
               <div class="text-dim" style="font-size:10px;margin-top:2px;font-family:inherit;">
-                {% if c.is_hyperscaler %}<span title="Recognised hyperscaler / major CDN">☁️ </span>{% endif %}{{ c.dst_org }}{% if c.dst_cc %} <span style="opacity:0.7;">· {{ c.dst_cc }}</span>{% endif %}
+                {% if c.is_hyperscaler %}<span title="Recognised hyperscaler / major CDN">☁️ </span>{% endif %}{{ c.dst_org_label or c.dst_org }}{% if c.dst_cc %} <span style="opacity:0.7;">· {{ c.dst_cc }}</span>{% endif %}
               </div>
             {% endif %}
           </td>
@@ -195,7 +195,7 @@
                 {% endif %}
               </div>
             {% elif c.dst_org %}
-              <span class="text-dim" style="font-style:italic;" title="No SNI or HTTP Host — showing ASN owner from GeoIP">no host · {{ c.dst_org }}</span>
+              <span class="text-dim" style="font-style:italic;" title="No SNI or HTTP Host — showing ASN owner from GeoIP">no host · {{ c.dst_org_label or c.dst_org }}</span>
             {% else %}
               <span class="text-dim">—</span>
             {% endif %}

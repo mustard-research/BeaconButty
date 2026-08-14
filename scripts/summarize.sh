@@ -62,9 +62,25 @@ def _is_safe_org_ip(ip):
 
 _IP_RE = re.compile(r'^\d{1,3}(\.\d{1,3}){3}$')
 
+# Shared enrichment module. Imported here rather than at the point of use so
+# annotate_dest below has no forward reference to trip over. BB_LIB_DIR is the
+# repo checkout's lib/ (exported by the bash wrapper); there is no __file__ to
+# derive it from inside a heredoc.
+bb_enrich = None
+try:
+    for _p in (os.environ.get('BB_LIB_DIR', ''), '/usr/local/lib/beaconbutty'):
+        if _p and _p not in sys.path:
+            sys.path.append(_p)
+    import bb_enrich
+except Exception:
+    bb_enrich = None
+
+def org_display(org):
+    """Friendly ASN owner for DISPLAY. Matching keeps the raw string."""
+    return bb_enrich.org_label(org) if bb_enrich else org
+
 # Populated further down, once `rows` exists and device FPs have been applied
-# (no point resolving names for findings that are about to be dropped). Defined
-# here so annotate_dest below has no forward reference to trip over.
+# (no point resolving names for findings that are about to be dropped).
 _NAME_MAP = {}
 
 def dest_name(dst):
@@ -93,7 +109,9 @@ def annotate_dest(d):
         if _asn_reader:
             org = _asn_reader.asn(d).autonomous_system_organization
             if org:
-                parts.append(org)
+                # Display only — org FPs, _SAFE_ORGS and is_hyperscaler all
+                # still key on the raw MaxMind string.
+                parts.append(org_display(org))
     except Exception:
         pass
     try:
@@ -281,12 +299,8 @@ rows = [r for r in rows if r[COL['Source IP']].strip() not in false_positives]
 # Best-effort by design: if the module is missing or ClickHouse is down the
 # summary degrades to the old GeoIP-only labelling rather than failing.
 try:
-    # BB_LIB_DIR is the repo checkout's lib/ (exported by the bash wrapper);
-    # there is no __file__ to derive it from inside a heredoc.
-    for _p in (os.environ.get('BB_LIB_DIR', ''), '/usr/local/lib/beaconbutty'):
-        if _p and _p not in sys.path:
-            sys.path.append(_p)
-    import bb_enrich
+    if bb_enrich is None:
+        raise ImportError('bb_enrich unavailable')
     _bare = {r[COL['Destination IP']].strip() for r in rows
              if not r[COL['FQDN']].strip()
              and _IP_RE.match(r[COL['Destination IP']].strip() or '')}

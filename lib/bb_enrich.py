@@ -398,6 +398,50 @@ def _tier_quic_and_san(days: int, todo: set, consider) -> None:
 
 # ── tiers 7-9: cached intel and reverse DNS ──────────────────────────────────
 
+ORG_ALIAS_FILE = Path("/var/lib/beaconbutty/org-aliases.json")
+_ORG_ALIAS_CACHE: dict = {"mtime": 0.0, "map": {}}
+
+
+def org_aliases(path: Path = ORG_ALIAS_FILE) -> dict:
+    """`{maxmind_org: friendly_label}`, reloaded on mtime change."""
+    try:
+        st = path.stat()
+    except OSError:
+        if _ORG_ALIAS_CACHE["mtime"]:
+            _ORG_ALIAS_CACHE.update(mtime=0.0, map={})
+        return _ORG_ALIAS_CACHE["map"]
+    if st.st_mtime != _ORG_ALIAS_CACHE["mtime"]:
+        try:
+            data = json.loads(path.read_text())
+            data = {k: v for k, v in data.items()
+                    if isinstance(v, str) and not k.startswith("_")}
+        except (OSError, ValueError, AttributeError):
+            data = {}
+        _ORG_ALIAS_CACHE.update(mtime=st.st_mtime, map=data)
+    return _ORG_ALIAS_CACHE["map"]
+
+
+def org_label(org: str) -> str:
+    """Human-readable form of a MaxMind ASN owner, for DISPLAY ONLY.
+
+    "31173 Services AB" is Mullvad; "Akamai Connected Cloud" is Linode. Neither
+    is guessable, and both turn up as the only identity we have for a
+    destination that no naming tier can reach (VPN and DERP relays are
+    connected to by IP from a downloaded server list, so there is never a DNS
+    lookup or an SNI to recover).
+
+    Never feed the result to org-FP matching, is_hyperscaler(), the safe-org
+    set, or the "*<first word>*" FP-pattern prefill. Those key on the raw
+    MaxMind string; substituting a friendly label would retroactively
+    reinterpret every org FP already written against it — and the prefill would
+    generate "*Mullvad*", which matches nothing MaxMind ever returns. Keep the
+    raw value in `dst_org` and put this in `dst_org_label`.
+    """
+    if not org:
+        return ""
+    return org_aliases().get(org, org)
+
+
 _DERP_CACHE: dict = {"ts": 0.0, "map": {}}
 _DERP_TTL = 24 * 3600
 

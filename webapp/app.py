@@ -206,7 +206,8 @@ def _annotate_dest(dest, name=""):
         cc, city, org = _geoip_info(dest.strip())
         parts = []
         if org:
-            parts.append(org)
+            # Display only — org FP matching still uses the raw MaxMind string.
+            parts.append(bb_enrich.org_label(org))
         if city:
             parts.append(city)
         if cc:

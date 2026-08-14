@@ -577,7 +577,11 @@ def main() -> int:
                 round(c, 3) if (c := interval_cv(r["ts_list"])) is not None
                 else None
             ),
+            # Raw MaxMind string — org FPs, is_hyperscaler() and the
+            # "*<first word>*" FP prefill all key on this. Never alias it.
             "dst_org":        dst_org,
+            # Friendly form for rendering only ("31173 Services AB" is Mullvad).
+            "dst_org_label":  bb_enrich.org_label(dst_org),
             "dst_cc":         dst_cc,
             "is_hyperscaler": hyper,
             "lan_talkers":    talkers,

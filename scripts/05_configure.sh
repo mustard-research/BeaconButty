@@ -85,6 +85,12 @@ echo "Installing shared library..."
 install -d -m 755 /usr/local/lib/beaconbutty
 install -m 644 "$SCRIPT_DIR/lib/bb_enrich.py"          /usr/local/lib/beaconbutty/bb_enrich.py
 
+# Display-only ASN owner aliases. Seeded once and never overwritten — this file
+# is hand-edited on the box, so a reinstall must not discard local entries.
+if [[ ! -f /var/lib/beaconbutty/org-aliases.json ]]; then
+    install -m 664 "$SCRIPT_DIR/config/org-aliases.json" /var/lib/beaconbutty/org-aliases.json
+fi
+
 # ── Analysis and report scripts ───────────────────────────────────────────────
 echo "Installing helper scripts..."
 install -m 755 "$SCRIPT_DIR/scripts/analyze.sh"        /usr/local/bin/rita-analyze.sh

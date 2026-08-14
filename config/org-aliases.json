@@ -1,0 +1,26 @@
+{
+  "_comment": [
+    "Display-only aliases for opaque MaxMind ASN owner strings.",
+    "",
+    "Purely cosmetic: '31173 Services AB' means nothing to a human, 'Mullvad VPN'",
+    "means everything. Applied ONLY where an org is rendered. It is deliberately",
+    "NOT applied to the value used for org-FP matching, is_hyperscaler(), the",
+    "safe-org set, or the '*<first word>*' FP-pattern prefill — those all key on",
+    "the raw MaxMind string, and rewriting it would retroactively reinterpret",
+    "every org FP already written against it.",
+    "",
+    "Keys must match the MaxMind org string exactly. Check one with:",
+    "  python3 -c \"import geoip2.database as g; print(g.Reader('/var/lib/GeoIP/GeoLite2-ASN.mmdb').asn('1.2.3.4').autonomous_system_organization)\"",
+    "",
+    "Edited in place; reloaded on mtime change, no restart needed.",
+    "Site-local edits live in /var/lib/beaconbutty/org-aliases.json — this repo",
+    "copy is only the shipped default and is not overwritten on reinstall."
+  ],
+
+  "31173 Services AB": "Mullvad VPN",
+  "Amagicom AB": "Mullvad VPN",
+  "Akamai Connected Cloud": "Linode (Akamai)",
+  "NetActuate, Inc": "NetActuate (Tailscale DERP host)",
+  "Hyperoptic Ltd": "Hyperoptic (your ISP)",
+  "31173 Services AB infrastructure in London, GB.": "Mullvad VPN"
+}
