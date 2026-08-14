@@ -65,9 +65,27 @@ correlator that targets the blind zone directly.
    - cluster **≥70% of timestamps within ±1h of a modal hour**
      (`MIN_HOUR_CONSISTENCY` — distinguishes scheduled check-ins from
      bursty session traffic).
-5. Resolve `dst → SNI` from `ssl.server_name` (latest-day argMax) for
-   FP matching and human review.
-6. Match SNI against the existing `false-positives.conf` domain list.
+5. Resolve `dst → hostname` via `resolve_names()`, which calls the shared
+   ladder in `lib/bb_enrich.py`, for FP matching and human review.
+6. Match that hostname against the existing `false-positives.conf` domain list.
+
+**Naming changed 2026-08-14.** This step used to be a local `resolve_sni()`
+that read `ssl.server_name` and nothing else, so every SNI-less destination —
+STUN relays, bare-IP HTTP, QUIC-only services — stayed permanently anonymous on
+`/beacons/slow` and was therefore impossible to match a domain FP against. It
+now goes through the shared 9-tier ladder (SNI → DNS → cert CN → HTTP Host →
+QUIC SNI → cert SAN → Tailscale DERP map → Shodan hostname → PTR), so Tailscale
+relays resolve as `derp3g.tailscale.com` rather than as an Akamai IP.
+
+`resolve_http()` is unchanged and still local — it returns HTTP forensics
+(user-agent, URI sample, method mix, every Host seen on the dst), not just a
+name, so it is not part of the ladder.
+
+Payload fields: `sni` carries the resolved hostname (always a hostname or
+empty), `dst_name_source` its provenance for the UI badge, `dst_org` the **raw**
+MaxMind ASN owner used for org-FP matching and `is_hyperscaler()`, and
+`dst_org_label` the friendly display form. Never match on the label — see
+[False Positive Workflow](false-positive-workflow.md#patterns-match-the-raw-maxmind-string).
 
 **Output:** `/var/lib/beaconbutty/reports/slow-cadence.json`, rendered
 at `/beacons/slow` in the webapp.

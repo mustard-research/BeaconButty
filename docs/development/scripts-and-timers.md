@@ -5,11 +5,36 @@ created: 2026-04-16
 
 # Scripts & Timers
 
-All operational scripts are deployed to `/usr/local/bin/`. Source lives in `scripts/` in the repository.
+All operational scripts are deployed to `/usr/local/bin/`. Source lives in `scripts/` in the repository. Shared Python modules live in `lib/` and deploy to `/usr/local/lib/beaconbutty/`.
+
+## Shared library — `lib/` (2026-08-14)
+
+Two modules are imported by the webapp *and* by the one-shot scripts, so behaviour cannot drift between the dashboard and the CLI:
+
+| Module | Deployed path | Purpose |
+|---|---|---|
+| `lib/bb_enrich.py` | `/usr/local/lib/beaconbutty/bb_enrich.py` | 9-tier IP→hostname ladder, `org_label()` display aliases |
+| `lib/bb_fp.py` | `/usr/local/lib/beaconbutty/bb_fp.py` | FP-registry `orgs` normalisation and matching |
+
+Consumers resolve them **repo checkout first, then the deployed copy**, so a dev run picks up local edits:
+
+```python
+for _p in (str(Path(__file__).resolve().parent.parent / "lib"),
+           "/usr/local/lib/beaconbutty"):
+    if _p not in sys.path:
+        sys.path.append(_p)
+import bb_enrich
+```
+
+`summarize.sh` is bash wrapping a `python3 - <<'PYEOF'` heredoc, so it has no `__file__` to derive a repo path from; the wrapper exports **`BB_LIB_DIR`** and the heredoc reads that instead.
+
+**Why they exist.** Both replaced logic that had been copied into three or more places. The enrichment ladder existed as a 4-tier version in the webapp, a 2-tier re-implementation in `slow-cadence.py`, and not at all in `summarize.sh`. The org-FP matcher existed in three hand-synchronised copies, each carrying a "change all three together" comment — and two further consumers (`/beacons`, `summarize.sh`) never got a copy at all, so org FPs silently did nothing there. If a contract lives in more than one file it will drift; put it in `lib/`.
 
 ## Deployed scripts
 
-Deployment happens via `scripts/05_configure.sh` (lines 89–104) using `install -m 755`. Repo source is the authoritative copy — always edit the repo and re-deploy, never hand-patch `/usr/local/bin/` (see [Data-path alignment](#data-path-alignment)).
+Deployment happens via `scripts/05_configure.sh` using `install -m 755`. Repo source is the authoritative copy — always edit the repo and re-deploy, never hand-patch `/usr/local/bin/` (see [Data-path alignment](#data-path-alignment)).
+
+**Three scripts had no install line until 2026-08-14** and were being deployed by hand, so a repo change could sit unshipped indefinitely: `slow-cadence.py`, `slow-cadence-digest.py` and `ip-intel.py`. All three are now installed by `05_configure.sh`. `config/org-aliases.json` is seeded to `/var/lib/beaconbutty/` **only if absent**, since it is hand-edited on the box.
 
 | Repo file | Deployed path | Triggered by | Purpose |
 |-----------|---------------|--------------|---------|

@@ -25,6 +25,8 @@ All three are triggered from the webapp Backup page. Config snapshot and full ar
 
 Daily `tar.gz` of everything in the "config surface" — all `/usr/local/bin/beaconbutty-*.sh` scripts, systemd units, `/etc/rita/`, Suricata config, NetworkManager profiles, iptables rules, `/home/dm/BeaconButty/`, Let's Encrypt renewal config, false-positive registry, Slack config, etc. See `scripts/backup.sh` for the full file list.
 
+**Added 2026-08-14:** `/usr/local/lib/beaconbutty/` (shared `bb_enrich.py` / `bb_fp.py`), `org-aliases.json` and `device-names.json`. All three are hand-edited or hand-installed, so none regenerate on their own. `ip-names-cache.json` and `ip-intel-cache.json` are deliberately **excluded** — both rebuild on first run, and the intel cache is refetched by its daily timer.
+
 - Runs from `beaconbutty-backup.timer` at 02:00 daily
 - Retention: last 14 kept (~2 weeks)
 - Restore: RESTORE.md Option A

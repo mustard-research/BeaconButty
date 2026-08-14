@@ -295,6 +295,74 @@ render time — and org-FPs also gate the **detector** at scan time and are
 re-checked by the **daily digest** at post time, so an org-FP'd destination can
 neither page nor resurface in the morning.
 
+### Org-FP coverage (corrected 2026-08-14)
+
+Org FPs used to apply on the slow-beacon path **only**. `summarize.sh` never read
+the `orgs` block at all, and the `/beacons` builder had no org check — so an org
+FP added through the UI suppressed on `/beacons/slow` and silently did nothing on
+either of the two surfaces an operator looks at most. This was found by adding
+`*31173*` for Mullvad and watching the CLI summary not change.
+
+All five consumers now share one implementation, `lib/bb_fp.py`:
+
+| Consumer | Applies org FPs |
+|---|---|
+| `slow-cadence.py` (detector, gates the Slack alert) | yes |
+| `slow-cadence-digest.py` (re-check at post time) | yes |
+| `webapp/app.py` `_load_slow_cadence_filtered` (`/beacons/slow`) | yes |
+| `webapp/app.py` `get_beacon_data` (`/beacons`) | **added 2026-08-14** |
+| `scripts/summarize.sh` (CLI + daily report) | **added 2026-08-14** |
+
+The normalisation previously existed in three hand-synchronised copies, each
+carrying a "change all three together" comment — which is exactly how the two
+missing consumers stayed missing. Adding a fourth copy was the wrong fix.
+
+On `/beacons` an org-suppressed row is **recorded into an `org` suppression
+group rather than dropped**, so it stays inspectable with its reason and its
+resolved hostname.
+
+The CLI header's rule count also omitted org FPs entirely, so it disagreed with
+the webapp (375 vs 387). Both now count all four dimensions.
+
+### Patterns match the RAW MaxMind string
+
+Since 2026-08-14 the UI renders friendly org labels (`Mullvad VPN` instead of
+`31173 Services AB`) via `bb_enrich.org_label()`. **Org FP patterns still match
+the raw MaxMind value.** Write `*31173*`, not `*Mullvad*` — the latter matches
+nothing and looks like a silent failure. The `FP org` button prefills from the
+raw string for exactly this reason.
+
+Check what MaxMind actually returns before writing a pattern:
+
+```bash
+python3 -c "import geoip2.database as g; \
+  print(g.Reader('/var/lib/GeoIP/GeoLite2-ASN.mmdb').asn('185.195.232.66').autonomous_system_organization)"
+# 31173 Services AB
+```
+
+### Worked example: VPN endpoints (2026-08-14)
+
+A phone running Mullvad produced beacons to bare IPs on scattered UDP ports.
+Neither a domain FP (no hostname exists — Mullvad clients connect by IP from a
+downloaded server list, so Zeek never sees a DNS lookup or SNI) nor a protocol
+FP (ports were 28222, 41234, 51914, 28212, 4374, 5800 — effectively random)
+could cover it, and IP FPs would have been endless.
+
+Mullvad spans more than one ASN, so it took two device-scoped entries:
+
+```bash
+sudo beaconbutty-fp.sh add-org '*31173*' 'Mullvad VPN - phone' \
+     --device <phone-mac>     # AS39351, Mullvad's own infrastructure
+sudo beaconbutty-fp.sh add-org '*M247*'  'Mullvad VPN relay host - phone' \
+     --device <phone-mac>     # AS9009, a provider Mullvad rents from
+```
+
+Two entries replaced six IP FPs and cover future servers in those ranges. Note
+this reduces whack-a-mole rather than ending it — Mullvad rents from several
+providers, so a new server location can surface a third ASN. `*M247*` is the
+looser of the two (M247 is a general host, not Mullvad-only), which is precisely
+why device scoping matters here.
+
 ### When NOT to use
 
 - If a row has SNI, HTTP Host, or any DNS resolution, use `FP dst` (domain-FP)

@@ -28,6 +28,7 @@ It is **not** a replacement for enterprise NDR. It's the thing you put on the sm
 - **Slow-cadence detector** — a second-pass detector for low-rate beacons (≤6 connections/day for ≥5 days) that RITA's same-day analysis can miss.
 - **JA4 TLS fingerprinting** — every TLS Client Hello fingerprinted on the wire, indexed per device, cross-referenced against [FoxIO's ja4db](https://github.com/FoxIO-LLC/ja4) for known-bad fingerprints.
 - **Threat-intel enrichment** — bare external IPs cross-referenced against Shodan InternetDB, AbuseIPDB, Spamhaus DROP, and the Tor exit list (daily refresh).
+- **Destination naming** — RITA reports a bare IP whenever the destination was last resolved on an earlier day. A nine-tier ladder recovers the hostname from data already on the box (TLS SNI, DNS history, certificate CN and SAN, HTTP Host, QUIC SNI, the Tailscale DERP map, cached Shodan hostnames, reverse DNS), naming ~95% of them.
 - **Teams-relay anomaly detection** — spots the [DragonForce / Backdoor.Turn](docs/investigation/teams-relay-detection.md) C2-over-Teams-TURN pattern by combining JA4 anomaly, flow-duration outlier, and bandwidth-too-low signals against the live Microsoft Teams endpoint list.
 - **L2 anomaly detection** — ARP-level gateway-impersonation alerts via a custom Zeek logger.
 - **False-positive workflow** — point-and-click registry that suppresses by device MAC, destination domain/IP, or protocol, with apex-aware fnmatch and ASN-derived reason pre-fill.

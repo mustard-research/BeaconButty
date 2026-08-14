@@ -85,7 +85,10 @@ tar -czf "$OUT" \
     /var/lib/beaconbutty/false-positives.conf \
     /var/lib/beaconbutty/assets.json \
     /var/lib/beaconbutty/slack-config.json \
+    /var/lib/beaconbutty/org-aliases.json \
+    /var/lib/beaconbutty/device-names.json \
     /home/dm/BeaconButty/ \
+    /usr/local/lib/beaconbutty/ \
     /opt/zeek/share/zeek/site/local.zeek \
     2>/dev/null || log "WARNING: tar exited non-zero — some files may be missing from the archive (check paths above)"
 

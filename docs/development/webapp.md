@@ -146,22 +146,55 @@ To add a new entry to both simultaneously: just say "add X to the safe list".
 
 MaxMind GeoLite2 databases at `/var/lib/GeoIP/` (ASN + City DBs). Used to annotate bare IP destinations with `(organisation, city, country)`. Updated every Wednesday and Saturday by `geoipupdate.timer` (account 1317713).
 
-## Zeek-side IP enrichment (2026-05-06)
+## IP enrichment — `lib/bb_enrich.py` (2026-05-06, shared 2026-08-14)
 
 GeoIP only tells you "Amazon, Columbus, US" — not *which* AWS tenant. RITA's daily report joins against same-day `dns_history` only, so any beacon whose dst was last resolved on a prior day surfaces as a bare AWS/Azure IP even though Zeek captured the FQDN earlier.
 
-`enrich_ips_batch(pairs, days=7)` in `webapp/app.py` recovers identity by querying four Zeek log sources across the recent daily ClickHouse DBs, in priority order:
+**The ladder lives in `lib/bb_enrich.py`**, installed to `/usr/local/lib/beaconbutty/bb_enrich.py`. `enrich_ips_batch(pairs, days=7)` in `webapp/app.py` is now a thin wrapper over `bb_enrich.enrich()`.
 
-| # | Source | Field | Why this order |
+Until 2026-08-14 it existed in three partial copies — this 4-tier version, a 2-tier re-implementation in `slow-cadence.py`, and nothing at all in `summarize.sh`, which is why the daily report showed `185.125.190.100` as "Canonical Group Limited" when both Zeek and the Shodan cache knew it was `connectivity-check.ubuntu.com`.
+
+| # | Source | Where | Why this order |
 |---|---|---|---|
-| 1 | `<db>.ssl` | `argMax(server_name, ts)` | TLS SNI — the client literally said the FQDN. Most authoritative. |
-| 2 | `<db>.dns` | `arrayJoin(answers)` matching dst | Historical DNS query that resolved here. Catches stale IPs RITA missed. |
-| 3 | `<db>.ssl` | `argMax(server_subject, ts)` (CN extracted) | Cert Subject CN. Works for SNI-less / ESNI flows. |
-| 4 | `<db>.http` | `argMax(host, ts)` | HTTP Host header. Plain-HTTP fallback (e.g. OCSP). |
+| 1 | TLS SNI | `<db>.ssl.server_name` | The client literally said the FQDN. Most authoritative. |
+| 2 | DNS answers | `<db>.dns` `arrayJoin(answers)` | A LAN query that resolved here. Catches stale IPs RITA missed. |
+| 3 | Cert Subject CN | `<db>.ssl.server_subject` | SNI-less / ECH flows. |
+| 4 | HTTP Host | `<db>.http.host` | Plain-HTTP fallback (e.g. OCSP). |
+| 5 | QUIC SNI | Zeek `quic.log` **files** | HTTP/3 has no TCP TLS flow to read. |
+| 6 | Cert SAN | Zeek `ssl.log` + `x509.log` **files** | Modern certs put real names in SANs, not CN. |
+| 7 | DERP map | `tailscale debug derp-map` | Tailscale relays are never resolved, so tiers 1–6 can't see them. |
+| 8 | Shodan hostname | `ip-intel-cache.json` | Already fetched daily; free. |
+| 9 | PTR | live reverse DNS | Last resort, public IPs only, wall-clock bounded. |
 
-Per-source query is **one** ClickHouse `UNION ALL` across the daily DBs with the candidate dst-IN list pushed down — fast even for hundreds of pairs. Results cached per-process with a 10-min TTL keyed on **dst only** (the IP's identity is the same regardless of which LAN device is asking — refactored 2026-05-06 after a case where one device's STUN dst stayed unenriched because the SNI had been recorded from a different LAN host). Empty results are also cached so unidentifiable IPs don't re-query.
+Tiers 1–4 are cheap SQL and run first as one `UNION ALL` per tier across the daily DBs, with the dst IN-list **chunked at 150** (a 400-IP list over a 14-day window overruns ClickHouse's `max_query_size`). Tiers 5–6 are equally authoritative but the only ones that scan files, so they run lazily — only for dsts still unresolved. Neither `quic` nor `x509` is imported into ClickHouse by RITA, hence the file tiers; `ip_to_hostname` exists in every daily DB but is always empty, so don't build on it.
 
-Safety: results that are themselves IP literals (some clients send the IP as TLS SNI) are filtered out — an IP isn't enrichment.
+Coverage on a representative daily report: **79/101 bare IPs named before, 95/101 after**. The remainder are NTP pool members, the WAN address, a Mullvad exit and a Tencent CDN node — correctly left to their ASN owner.
+
+### `name` is never an organisation
+
+`enrich()` returns `{'name', 'source', 'when_days', 'org_hint'}`. **`name` is always a hostname or `""`.** The ASN owner's domain (`linode.com`) comes back separately in `org_hint`.
+
+This was briefly a ninth tier returning the org in `name` behind a `weak: True` flag. Two of the three consumers checked the flag; `webapp/app.py` did not, and started both rendering "linode.com" as a hostname *and* passing it to `_fp_domain_hit` — where **19 org domains in the intel cache match a registered `*.<domain>` FP** (`google.com`, `apple.com`, `microsoft.com`, `cloudflare.com`…), so a finding could be suppressed on ASN ownership alone. A separate field cannot be misused by omission; a flag on a shared field demonstrably can.
+
+### Other safety rules
+
+- **IP literals are rejected** — some clients send the IP as TLS SNI, and an IP isn't enrichment.
+- **IP-derived pseudo-names are rejected from the inferred tiers only.** `is_ip_derived()` flattens runs of non-digits and looks for the octets in order, forwards or reversed, plain or zero-padded — catching `172-237-72-79.ip.linodeusercontent.com`, `ec2-3-8-1-2.compute.amazonaws.com`, `1.2.3.4.static.isp.net` and `4.3.2.1.in-addr.arpa` without hard-coding suffixes. A name *observed on the wire* is kept even if it embeds the IP: if a client really sent it as SNI, that's a fact about the client.
+- **Trailing dots are stripped once, in `normalise_host()`.** `http.log` carries both `connectivity-check.ubuntu.com` and the root-anchored form for the same host; left alone that splits every group-by and makes domain-FP matching miss half the rows.
+
+### Caching
+
+Two layers. `_IP_ENRICH_CACHE` in `app.py` is per-process, 10-min TTL, so repeated page renders don't re-read from disk. Beneath it, `/var/lib/beaconbutty/ip-names-cache.json` (6h TTL, mode 0664) is shared with the one-shot consumers — `summarize.sh` and `slow-cadence.py` would otherwise redo the expensive tiers on every run. Both root timers and the `dm`-run webapp maintain it; `os.replace` needs write permission on the **directory**, which `/var/lib/beaconbutty` (`drwxrwsr-x root:dm`) grants.
+
+`CACHE_VERSION` invalidates entries whenever a ladder change could produce a different name — without it a fix stays masked by cached answers for up to the TTL.
+
+Both are keyed on **dst only**: an IP's identity is the same regardless of which LAN device is asking (refactored 2026-05-06 after a case where one device's STUN dst stayed unenriched because the SNI had been recorded from a different LAN host). Empty results are cached too.
+
+### Org display aliases
+
+`bb_enrich.org_label()` maps opaque MaxMind strings to readable ones via `/var/lib/beaconbutty/org-aliases.json` — `31173 Services AB` → `Mullvad VPN`, `Akamai Connected Cloud` → `Linode (Akamai)`. Seeded from `config/org-aliases.json`, hand-editable, reloaded on mtime change, never overwritten on reinstall.
+
+**Display only.** The raw MaxMind string is what org FPs match, what `is_hyperscaler()` gates the Slack alert with, what `_SAFE_ORGS` tests membership against, and what the `*<first word>*` FP prefill is built from. Rewriting it would retroactively reinterpret every org FP already written, and the prefill would emit `*Mullvad*` — which matches nothing MaxMind returns. Templates use `dst_org_label` for rendering and `dst_org` for every `data-pattern` / `data-reason` attribute.
 
 **Wired in:**
 

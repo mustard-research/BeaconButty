@@ -55,6 +55,30 @@ A `TI` badge renders next to bare external IPs everywhere they appear:
 
 Hover/focus shows the bb-pop tooltip with usage type, ISP, domain, Shodan tags, CVEs, port count, rDNS.
 
+**The badge means "we have intel", not "this is bad".** Colour is the signal — a
+grey `TI` is the *no adverse findings* state. See the colour rationale below.
+
+## Second consumer: name enrichment (2026-08-14)
+
+The cache now also feeds two tiers of the shared enrichment ladder in
+`lib/bb_enrich.py` (see [Webapp](../development/webapp.md#ip-enrichment--libbb_enrichpy-2026-05-06-shared-2026-08-14)). These are pure reads of data the daily timer already
+fetched — no extra API calls:
+
+- **Tier 8 — `shodan.hostnames`** used as a hostname when Zeek has nothing.
+  This had been sitting in the cache unused: `185.125.190.100` carried
+  `connectivity-check-ubuntu-com-1.ps5.canonical.com` while the report showed a
+  bare IP.
+- **`abuseipdb.domain`** used as `org_hint`, the ASN owner's domain. It is
+  returned in its **own field, never in `name`** — 19 of the org domains in this
+  cache match a registered `*.<domain>` FP, so treating one as a hostname would
+  suppress findings on address ownership alone.
+
+Shodan's hostnames are frequently just the IP re-encoded
+(`172-237-72-79.ip.linodeusercontent.com`). Those are rejected by
+`is_ip_derived()` rather than displayed, because they carry no more information
+than the IP beside them and crowd out the ASN owner, which at least names the
+provider.
+
 ### Badge colour rationale
 
 - **red** (`badge-high`): AbuseIPDB score ≥ **75** OR Shodan vulns non-empty OR Shodan tags ∩ `{tor, vpn, proxy, honeypot, compromised, malware, ics, nuclear}` OR **Spamhaus DROP hit** OR **Tor exit-list hit**
@@ -130,6 +154,7 @@ This is the canonical case the feature was built to handle.
 | `webapp/templates/_intel_badge.html` | Jinja macro `intel_badge(intel)` |
 | `webapp/templates/beacons.html` | JS twin `intelBadgeHtml()` for dynamic modal rows |
 | `webapp/app.py` | `load_ip_intel()` + `ip_intel(ip)` helpers; `enrich_ips_batch()` attaches `intel` sub-dict |
+| `lib/bb_enrich.py` | reads the cache for the shodan-hostname tier and `org_hint`; deployed to `/usr/local/lib/beaconbutty/` |
 | `/var/lib/beaconbutty/threat-intel.json` | AbuseIPDB API key (root:0600, NOT in repo) |
 | `/var/lib/beaconbutty/ip-intel-cache.json` | the per-IP cache (root:0644) |
 | `/var/lib/beaconbutty/spamhaus-drop.json` | DROP CIDR sidecar (debug + fetch-failure fallback) |
