@@ -25,6 +25,16 @@ from cryptography import x509
 from cryptography.hazmat.backends import default_backend
 from flask import Flask, render_template, request, redirect, url_for, jsonify, send_file
 
+# Shared IP→hostname enrichment ladder, also used by summarize.sh and
+# slow-cadence.py. Repo checkout first so a dev run picks up local edits, then
+# the deployed copy installed by scripts/05_configure.sh.
+import sys
+for _p in (str(Path(__file__).resolve().parent.parent / "lib"),
+           "/usr/local/lib/beaconbutty"):
+    if _p not in sys.path:
+        sys.path.append(_p)
+import bb_enrich
+
 app = Flask(__name__)
 
 # Simple TTL cache for the Suricata page (heavy I/O: eve.json + fast.log + Zeek gz)
@@ -1746,146 +1756,43 @@ _IP_ENRICH_CACHE: dict = {}     # dst → {'name', 'source', 'when_days', 'ts'}
 _IP_ENRICH_TTL   = 600          # 10 min — IP→FQDN doesn't change often
 
 
-def _x509_cn(subject: str) -> str:
-    """Extract CN= from an X509 Subject DN; fall back to full string."""
-    if not subject:
-        return ""
-    for part in subject.split(","):
-        p = part.strip()
-        if p.upper().startswith("CN="):
-            return p[3:].strip()
-    return subject
-
-
 def enrich_ips_batch(pairs, days: int = 7) -> dict:
-    """Identify dst IPs from Zeek logs across the last `days` daily DBs.
+    """Identify dst IPs via the shared enrichment ladder.
 
-    `pairs` is a collection of (src_ip, dst_ip) tuples — the src component
-    is preserved in the return key for caller convenience but not used in
-    the lookup itself (see module comment). Returns
-    `{(src, dst): {'name', 'source', 'when_days'}}` where `source` is one
-    of "SNI", "DNS", "cert", "HTTP", "" (unknown), and `when_days` is
-    approximate days since the most recent observation."""
+    `pairs` is a collection of (src_ip, dst_ip) tuples — the src component is
+    preserved in the return key for caller convenience but not used in the
+    lookup itself (see module comment above). Returns
+    `{(src, dst): {'name', 'source', 'when_days', 'weak', 'intel'}}`.
+
+    The ladder itself lives in lib/bb_enrich.py so that summarize.sh and
+    slow-cadence.py resolve names exactly the same way this does; it used to be
+    three separate partial implementations. `_IP_ENRICH_CACHE` is kept as a
+    short in-process layer above the module's on-disk cache, so repeated page
+    renders don't re-read the cache file.
+    """
     pairs = {p for p in pairs if p[0] and p[1]}
     if not pairs:
         return {}
 
     now = time.time()
-    dst_set: set = set()
-    by_dst: dict = {}        # dst → entry (resolved here or from cache)
-    for src, dst in pairs:
-        if dst in by_dst:
+    by_dst: dict = {}
+    todo: set = set()
+    for _src, dst in pairs:
+        if dst in by_dst or dst in todo:
             continue
         c = _IP_ENRICH_CACHE.get(dst)
         if c and now - c["ts"] < _IP_ENRICH_TTL:
-            by_dst[dst] = {k: c[k] for k in ("name", "source", "when_days")}
+            by_dst[dst] = {k: c[k] for k in
+                           ("name", "source", "when_days", "weak", "intel")
+                           if k in c}
         else:
-            dst_set.add(dst)
+            todo.add(dst)
 
-    if dst_set:
-        dbs = _bw_ch_dbs_for_window(days)
-        if not dbs:
-            for d in dst_set:
-                by_dst[d] = {"name": "", "source": "", "when_days": None}
-        else:
-            in_dst_v6  = ",".join(f"'::ffff:{d}'" for d in dst_set)
-            in_dst_str = ",".join(f"'{d}'" for d in dst_set)
-            best: dict = {d: None for d in dst_set}
-
-            def _consider(dst, name, source, ts):
-                if dst not in dst_set or not name:
-                    return
-                # IP-literal "names" aren't enrichment (some clients send
-                # the IP as SNI; PTR-style queries can return numerics).
-                if _IP_RE.match(name) or name == dst:
-                    return
-                if best.get(dst) is None:
-                    best[dst] = {"name": name, "source": source, "ts": ts}
-
-            # 1. TLS SNI from ssl.log — most authoritative.
-            union = " UNION ALL ".join(
-                f"""SELECT IPv6NumToString(dst) AS d, server_name AS name, ts
-                    FROM {db}.ssl
-                    WHERE server_name != ''
-                      AND IPv6NumToString(dst) IN ({in_dst_v6})"""
-                for db in dbs
-            )
-            sql = (f"SELECT d, argMax(name, ts) AS name, max(ts) AS ts_max "
-                   f"FROM ({union}) GROUP BY d")
-            for r in _bw_run(sql):
-                _consider(_bw_strip_v4(r["d"]),
-                          r.get("name", ""), "SNI", r.get("ts_max"))
-
-            # 2. DNS history — any LAN-side query that resolved to dst.
-            todo_left = {d for d in dst_set if best[d] is None}
-            if todo_left:
-                in_left = ",".join(f"'{d}'" for d in todo_left)
-                union = " UNION ALL ".join(
-                    f"""SELECT query AS name, ts, answers
-                        FROM {db}.dns
-                        WHERE length(answers) > 0
-                          AND arrayExists(a -> a IN ({in_left}), answers)"""
-                    for db in dbs
-                )
-                sql = (f"SELECT d, argMax(name, ts) AS name, max(ts) AS ts_max "
-                       f"FROM (SELECT name, ts, arrayJoin(answers) AS d "
-                       f"      FROM ({union})) "
-                       f"WHERE d IN ({in_left}) GROUP BY d")
-                for r in _bw_run(sql):
-                    _consider(r["d"], r.get("name", ""), "DNS",
-                              r.get("ts_max"))
-
-            # 3. TLS server cert Subject (CN) — for SNI-less / ESNI flows.
-            todo_left = {d for d in dst_set if best[d] is None}
-            if todo_left:
-                in_left_v6 = ",".join(f"'::ffff:{d}'" for d in todo_left)
-                union = " UNION ALL ".join(
-                    f"""SELECT IPv6NumToString(dst) AS d,
-                               server_subject AS name, ts FROM {db}.ssl
-                        WHERE server_subject != ''
-                          AND IPv6NumToString(dst) IN ({in_left_v6})"""
-                    for db in dbs
-                )
-                sql = (f"SELECT d, argMax(name, ts) AS name, max(ts) AS ts_max "
-                       f"FROM ({union}) GROUP BY d")
-                for r in _bw_run(sql):
-                    _consider(_bw_strip_v4(r["d"]),
-                              _x509_cn(r.get("name", "")), "cert",
-                              r.get("ts_max"))
-
-            # 4. HTTP Host header — for plain HTTP flows.
-            todo_left = {d for d in dst_set if best[d] is None}
-            if todo_left:
-                in_left_v6 = ",".join(f"'::ffff:{d}'" for d in todo_left)
-                union = " UNION ALL ".join(
-                    f"""SELECT IPv6NumToString(dst) AS d, host AS name, ts
-                        FROM {db}.http
-                        WHERE host != ''
-                          AND IPv6NumToString(dst) IN ({in_left_v6})"""
-                    for db in dbs
-                )
-                sql = (f"SELECT d, argMax(name, ts) AS name, max(ts) AS ts_max "
-                       f"FROM ({union}) GROUP BY d")
-                for r in _bw_run(sql):
-                    _consider(_bw_strip_v4(r["d"]),
-                              r.get("name", ""), "HTTP", r.get("ts_max"))
-
-            today_dt = date.today()
-            for d in dst_set:
-                b = best[d]
-                if b:
-                    try:
-                        seen = datetime.strptime(b["ts"][:10],
-                                                 "%Y-%m-%d").date()
-                        when_days = (today_dt - seen).days
-                    except Exception:
-                        when_days = None
-                    entry = {"name": b["name"], "source": b["source"],
-                             "when_days": when_days}
-                else:
-                    entry = {"name": "", "source": "", "when_days": None}
-                by_dst[d] = entry
-                _IP_ENRICH_CACHE[d] = {**entry, "ts": now}
+    if todo:
+        resolved = bb_enrich.enrich(todo, days=days, ch_bin=BW_CH_BIN)
+        for dst, entry in resolved.items():
+            by_dst[dst] = entry
+            _IP_ENRICH_CACHE[dst] = {**entry, "ts": now}
 
     # Evict expired entries occasionally — TTL is otherwise only checked on
     # read, so every external IP ever seen accumulates for the process
@@ -1896,23 +1803,7 @@ def enrich_ips_batch(pairs, days: int = 7) -> dict:
                   if v.get("ts", 0) < cutoff]:
             del _IP_ENRICH_CACHE[k]
 
-    # Attach external threat-intel from the local cache (refreshed daily by
-    # beaconbutty-ip-intel.service). Adds an `intel` sub-dict on each entry;
-    # callers that don't care can ignore it.
-    intel = load_ip_intel()
-    for dst, entry in by_dst.items():
-        e = intel.get(dst)
-        if e:
-            entry["intel"] = {
-                "shodan":    e.get("shodan", {}),
-                "abuseipdb": e.get("abuseipdb", {}),
-                "spamhaus":  e.get("spamhaus", {}),
-                "tor":       e.get("tor", {}),
-                "ts":        e.get("ts"),
-            }
-
-    # Fan out the per-dst result to every (src, dst) pair the caller asked
-    # for. This is also where we satisfy any cache hits collected up top.
+    # Fan out the per-dst result to every (src, dst) pair the caller asked for.
     return {(src, dst): by_dst[dst] for src, dst in pairs if dst in by_dst}
 
 
@@ -4129,6 +4020,21 @@ def beacons_slow():
         pass
 
     filtered, payload = _load_slow_cadence_filtered()
+
+    # The detector already resolves names via bb_enrich, but top up anything
+    # still unnamed: a payload written before that change (or by a run where
+    # ClickHouse was down) would otherwise show bare IPs until the next
+    # detector pass. Cheap — the module's disk cache usually answers outright.
+    _missing = {c["dst"] for c in filtered
+                if not c.get("sni") and not c.get("http_host")}
+    if _missing:
+        _names = bb_enrich.enrich(_missing, days=14, ch_bin=BW_CH_BIN,
+                                  with_intel=False)
+        for c in filtered:
+            info = _names.get(c["dst"]) or {}
+            if info.get("name") and not info.get("weak") and not c.get("sni"):
+                c["sni"] = info["name"]
+                c["dst_name_source"] = info.get("source", "")
 
     for c in filtered:
         c["src_label"] = ip_label(c["src"], ip_to_host, assets)

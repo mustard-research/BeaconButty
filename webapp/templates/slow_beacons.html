@@ -165,6 +165,25 @@
               <div class="mono{% if c.sni_short != c.sni %} bb-pop{% endif %}"
                    style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
                    {% if c.sni_short != c.sni %}tabindex="0" data-pop="{{ c.sni }}" title="{{ c.sni }}"{% endif %}>{{ c.sni_short }}</div>
+              {# Provenance. This column is no longer SNI-only: bb_enrich falls
+                 back through DNS, certificates, QUIC and reverse lookups, and
+                 an operator about to FP a destination should be able to see
+                 whether the name was observed on the wire or inferred. SNI is
+                 the assumed default and stays unlabelled. #}
+              {% if c.dst_name_source and c.dst_name_source != 'SNI' %}
+                {% set _src_pop = {
+                     'DNS':    'From DNS history — a LAN device looked up this name and got this IP',
+                     'cert':   'From the TLS certificate Subject (CN) — the flow carried no SNI',
+                     'SAN':    'From the TLS certificate Subject Alternative Name — the flow carried no SNI',
+                     'HTTP':   'From the HTTP Host header — plain HTTP traffic',
+                     'QUIC':   'From the QUIC/HTTP-3 handshake server name',
+                     'shodan': 'Inferred: Shodan InternetDB reverse lookup (cached, not observed on this network)',
+                     'PTR':    'Inferred: reverse DNS (PTR) — not observed on this network',
+                   }.get(c.dst_name_source, c.dst_name_source) %}
+                <span class="text-dim bb-pop" tabindex="0"
+                      style="font-size:10px;font-family:inherit;{% if c.dst_name_source in ('shodan','PTR') %}opacity:0.65;font-style:italic;{% endif %}"
+                      data-pop="{{ _src_pop }}" title="{{ _src_pop }}">{{ c.dst_name_source }}</span>
+              {% endif %}
             {% elif c.http_host %}
               {% set _hh_pop = 'HTTP Host header (no SNI — this is plain HTTP traffic)' ~ ('\n\n' ~ c.http_host if c.http_host_short != c.http_host else '') ~ ('\n\nOther hosts on this dst: ' ~ (c.http_hosts | reject('equalto', c.http_host) | join(', ')) if c.http_hosts and c.http_hosts|length > 1 else '') %}
               <div class="mono bb-pop" tabindex="0"

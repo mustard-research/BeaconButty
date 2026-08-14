@@ -29,6 +29,12 @@ fi
 
 SEND_ALERTS="${SEND_ALERTS:-0}"
 
+# Repo checkout's lib/ for the shared enrichment module, so a dev run picks up
+# local edits. Harmless when running the deployed copy — the path just won't
+# exist, and the module resolves from /usr/local/lib/beaconbutty instead.
+BB_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd)/lib"
+export BB_LIB_DIR
+
 python3 - "$REPORT_FILE" "$THRESHOLD" "$LEASES_FILE" "$SEND_ALERTS" <<'PYEOF'
 import csv, json, re, sys, os, ipaddress, fnmatch
 from collections import defaultdict
@@ -56,10 +62,30 @@ def _is_safe_org_ip(ip):
 
 _IP_RE = re.compile(r'^\d{1,3}(\.\d{1,3}){3}$')
 
+# Populated further down, once `rows` exists and device FPs have been applied
+# (no point resolving names for findings that are about to be dropped). Defined
+# here so annotate_dest below has no forward reference to trip over.
+_NAME_MAP = {}
+
+def dest_name(dst):
+    """Enriched hostname for a bare dst IP, or '' — weak (org-level) names
+    excluded, since they are not hostnames and must not drive FP matching."""
+    info = _NAME_MAP.get(dst) or {}
+    return '' if info.get('weak') else (info.get('name') or '')
+
 def annotate_dest(d):
-    """Append (org, city, country) for bare IP destinations."""
+    """Label a bare IP destination.
+
+    A resolved hostname wins outright — "connectivity-check.ubuntu.com" tells
+    an operator far more than "Canonical Group Limited", and these columns are
+    truncated to ~36-50 chars, so there is no room for both. Falls back to
+    (org, city, country) when nothing resolved.
+    """
     if not _IP_RE.match(d):
         return d
+    name = dest_name(d)
+    if name:
+        return f"{name} ({d})"
     parts = []
     try:
         if _asn_reader:
@@ -244,16 +270,43 @@ for r in rows:
         fp_suppressed[r[COL['Source IP']].strip()] += 1
 rows = [r for r in rows if r[COL['Source IP']].strip() not in false_positives]
 
+# ── Destination name enrichment ──────────────────────────────────────────────
+# RITA reports a bare IP whenever the dst was last resolved on an earlier day,
+# so the report is full of anonymous addresses whose identity is sitting in
+# Zeek, the Shodan cache or reverse DNS. Resolve them all in one batch here,
+# before FP filtering, so a name can both label a row and match a domain FP.
+#
+# Best-effort by design: if the module is missing or ClickHouse is down the
+# summary degrades to the old GeoIP-only labelling rather than failing.
+try:
+    # BB_LIB_DIR is the repo checkout's lib/ (exported by the bash wrapper);
+    # there is no __file__ to derive it from inside a heredoc.
+    for _p in (os.environ.get('BB_LIB_DIR', ''), '/usr/local/lib/beaconbutty'):
+        if _p and _p not in sys.path:
+            sys.path.append(_p)
+    import bb_enrich
+    _bare = {r[COL['Destination IP']].strip() for r in rows
+             if not r[COL['FQDN']].strip()
+             and _IP_RE.match(r[COL['Destination IP']].strip() or '')}
+    if _bare:
+        _NAME_MAP = bb_enrich.enrich(_bare, days=7, with_intel=False)
+except Exception:
+    _NAME_MAP = {}
+
 # Domain and protocol suppression (row-level, independent of source device)
 def _domain_suppressed(fqdn, dst):
     if not fp_domains:
         return False
-    target = fqdn if fqdn else dst
+    # An enriched name is checked as well as the IP literal, never instead of
+    # it: '*.tailscale.com' should suppress a DERP relay that only ever
+    # appeared as an address, while a literal-IP FP keeps working regardless.
+    targets = [t for t in (fqdn if fqdn else dest_name(dst), dst) if t]
     for pat in fp_domains:
-        if fnmatch.fnmatch(target, pat):
-            return True
-        if pat.startswith("*.") and target == pat[2:]:
-            return True
+        for target in targets:
+            if fnmatch.fnmatch(target, pat):
+                return True
+            if pat.startswith("*.") and target == pat[2:]:
+                return True
     return False
 
 _SVC_COMPONENT_RE = re.compile(r'^(?:\d+:(?:tcp|udp)|icmp):')

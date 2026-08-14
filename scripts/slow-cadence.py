@@ -29,6 +29,16 @@ import statistics
 import subprocess
 import sys
 from collections import Counter
+from pathlib import Path
+
+# Shared IP→hostname enrichment ladder (also used by webapp/app.py and
+# summarize.sh). Repo checkout first so a dev run picks up local edits, then
+# the deployed copy installed by scripts/05_configure.sh.
+for _p in (str(Path(__file__).resolve().parent.parent / "lib"),
+           "/usr/local/lib/beaconbutty"):
+    if _p not in sys.path:
+        sys.path.append(_p)
+import bb_enrich
 
 CH_BIN = "/usr/bin/clickhouse-client"
 WINDOW_DAYS = 14
@@ -304,42 +314,30 @@ def fetch_pairs(dbs: list[str]) -> list[dict]:
     return [json.loads(line) for line in out.splitlines() if line.strip()]
 
 
-def resolve_sni(dbs: list[str], dst_ips: set[str]) -> dict[str, str]:
-    """Best-effort dst IP → SNI. The ssl table is small enough to scan in
-    full — much cheaper than building a 400-IP IN-list 14 times over (which
-    blows past max_query_size). Filter to the candidate set in Python."""
+def resolve_names(dst_ips: set[str]) -> dict[str, dict]:
+    """Best-effort dst IP → hostname, via the shared enrichment ladder.
+
+    This used to be a local SNI-only lookup, which left every SNI-less
+    destination (STUN relays, bare-IP HTTP, QUIC-only services) permanently
+    anonymous on /beacons/slow — and therefore impossible to match a domain FP
+    against. bb_enrich adds DNS history, cert Subject/SAN, QUIC SNI, the cached
+    Shodan hostname and reverse DNS behind the same call.
+
+    Keys are the v4-stripped form the caller uses, not RITA's ::ffff: form.
+    """
     if not dst_ips:
         return {}
-    union = " UNION ALL ".join(
-        f"""SELECT IPv6NumToString(dst) AS dst_str, server_name AS sni, ts
-            FROM {db}.ssl
-            WHERE server_name != ''"""
-        for db in dbs
-    )
-    sql = f"""
-    SELECT dst_str AS dst, argMax(sni, ts) AS sni
-    FROM ({union})
-    GROUP BY dst_str
-    FORMAT JSONEachRow
-    """
+    stripped = {ip.replace("::ffff:", "") for ip in dst_ips}
     try:
-        out = ch(sql)
-    except subprocess.CalledProcessError as e:
-        print(f"SNI resolution failed: {e.stderr[:500]}", file=sys.stderr)
+        return bb_enrich.enrich(stripped, days=WINDOW_DAYS, with_intel=False)
+    except Exception as e:                       # never fail the whole run
+        print(f"name resolution failed: {e}", file=sys.stderr)
         return {}
-    sni_map: dict[str, str] = {}
-    for line in out.splitlines():
-        if not line.strip():
-            continue
-        row = json.loads(line)
-        if row["dst"] in dst_ips:
-            sni_map[row["dst"]] = row["sni"]
-    return sni_map
 
 
 def resolve_http(dbs: list[str], dst_ips: set[str]) -> dict[str, dict]:
     """Best-effort dst IP → HTTP metadata. Same scan-then-filter pattern as
-    resolve_sni; the http table is small enough to scan once across the
+    the old resolve_sni; the http table is small enough to scan once across the
     window. Per dst we surface:
 
       - host:        most-recent Host header (argMax by ts) — for display
@@ -501,7 +499,7 @@ def main() -> int:
 
     pairs = fetch_pairs(dbs)
     dst_ips = {p["dst"] for p in pairs}
-    sni_map = resolve_sni(dbs, dst_ips)
+    name_map = resolve_names(dst_ips)
     http_map = resolve_http(dbs, dst_ips)
     talkers_map = count_lan_talkers(dbs, dst_ips)
     fp_pats = fp_domains()
@@ -515,13 +513,17 @@ def main() -> int:
         cons, modal_hr = hour_consistency(r["hr_list"])
         if cons < MIN_HOUR_CONSISTENCY:
             continue
-        sni = sni_map.get(r["dst"], "")
+        dst_ip = r["dst"].replace("::ffff:", "")
+        src_ip = r["src"].replace("::ffff:", "")
         http_info = http_map.get(r["dst"], {})
+        name_info = name_map.get(dst_ip, {})
+        # A "weak" name (tier 9) is the ASN owner's domain, not a hostname the
+        # destination claims. Keep it out of `sni` so it can never drive FP
+        # matching or prefill a "*.<domain>" FP pattern — it is display-only.
+        sni = "" if name_info.get("weak") else name_info.get("name", "")
         # FP exclusion paths: SNI matches, ANY HTTP Host header for this dst
         # matches (shared CDN IPs serve many hosts — one FP'd is enough),
         # the dst IP literal matches, or the source LAN device is FP'd.
-        dst_ip = r["dst"].replace("::ffff:", "")
-        src_ip = r["src"].replace("::ffff:", "")
         if fp_match(sni, fp_pats) or fp_match(dst_ip, fp_pats):
             continue
         if any(fp_match(h, fp_pats) for h in http_info.get("hosts", [])):
@@ -553,6 +555,12 @@ def main() -> int:
             "dst_port": r["dst_port"],
             "services": r.get("services", []),
             "sni": sni,
+            # Provenance for the UI: "SNI" is an observed handshake, "shodan"
+            # or "PTR" is inference. Worth showing — an operator FP'ing a
+            # destination should know how confident the name is.
+            "dst_name_source": name_info.get("source", ""),
+            # Tier-9 org hint, kept separate from `sni` (see above).
+            "dst_name_weak":   name_info.get("name", "") if name_info.get("weak") else "",
             "http_host":       http_info.get("host", ""),
             "http_hosts":      http_info.get("hosts", []),
             "http_useragent":  http_info.get("useragent", ""),

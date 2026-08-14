@@ -78,6 +78,13 @@ chmod 640 /etc/rita/env
 cp /etc/rita/env /etc/rita/.env
 chmod 640 /etc/rita/.env
 
+# ── Shared Python library ─────────────────────────────────────────────────────
+# bb_enrich is imported by summarize.sh, slow-cadence.py and the webapp, which
+# each resolve it from here after trying their own repo checkout.
+echo "Installing shared library..."
+install -d -m 755 /usr/local/lib/beaconbutty
+install -m 644 "$SCRIPT_DIR/lib/bb_enrich.py"          /usr/local/lib/beaconbutty/bb_enrich.py
+
 # ── Analysis and report scripts ───────────────────────────────────────────────
 echo "Installing helper scripts..."
 install -m 755 "$SCRIPT_DIR/scripts/analyze.sh"        /usr/local/bin/rita-analyze.sh
@@ -94,6 +101,12 @@ install -m 755 "$SCRIPT_DIR/scripts/alert.sh"         /usr/local/bin/beaconbutty
 install -m 755 "$SCRIPT_DIR/scripts/suricata-alert-check.sh" /usr/local/bin/beaconbutty-suricata-alert-check.sh
 install -m 755 "$SCRIPT_DIR/scripts/bb-watchdog"      /usr/local/bin/bb-watchdog
 install -m 755 "$SCRIPT_DIR/scripts/bb0-display.py"   /usr/local/bin/bb0-display.py
+# These three had no install line and were being deployed by hand, so a repo
+# change could sit unshipped indefinitely. They share the bb_enrich ladder
+# above (ip-intel.py writes the cache that its shodan/whois tiers read).
+install -m 755 "$SCRIPT_DIR/scripts/slow-cadence.py"  /usr/local/bin/beaconbutty-slow-cadence.py
+install -m 755 "$SCRIPT_DIR/scripts/slow-cadence-digest.py" /usr/local/bin/beaconbutty-slow-cadence-digest.py
+install -m 755 "$SCRIPT_DIR/scripts/ip-intel.py"      /usr/local/bin/beaconbutty-ip-intel.py
 install -m 755 "$SCRIPT_DIR/scripts/bb0-led"          /usr/local/bin/bb0-led
 install -m 755 "$SCRIPT_DIR/scripts/bb0-fan"          /usr/local/bin/bb0-fan
 
