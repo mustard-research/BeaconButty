@@ -31,8 +31,9 @@ The ladder, strongest evidence first:
     4     HTTP      {db}.http.host                    SQL
     5     QUIC      Zeek quic.log                     file scan
     6     SAN       Zeek ssl.log + x509.log           file scan
-    7     shodan    ip-intel-cache.json               file
-    8     PTR       live reverse DNS                  network
+    7     derp      tailscale debug derp-map          subprocess
+    8     shodan    ip-intel-cache.json               file
+    9     PTR       live reverse DNS                  network
 
 Tiers 1-4 are cheap SQL and run first as a batch. Tiers 5-6 are equally
 authoritative but are the only ones that scan files, so they run lazily - for
@@ -82,7 +83,7 @@ NAME_CACHE_TTL = 6 * 3600
 # Bump whenever a change to the ladder could produce a different name for the
 # same IP. Entries stamped with an older version are ignored, so a fix takes
 # effect on the next run instead of being masked by cached answers for a TTL.
-CACHE_VERSION = 3
+CACHE_VERSION = 4
 
 # Wall-clock ceiling for the whole PTR tier, and per-lookup. Reverse DNS is the
 # only tier that touches the network, and it runs inside a page render.
@@ -92,7 +93,8 @@ PTR_LOOKUP_TIMEOUT = 1.0
 _IP_RE = re.compile(r"^(\d{1,3}\.){3}\d{1,3}$")
 
 #: Sources that name a host. Ordered by authority - index doubles as rank.
-SOURCE_RANK = ("SNI", "DNS", "cert", "HTTP", "QUIC", "SAN", "shodan", "PTR")
+SOURCE_RANK = ("SNI", "DNS", "cert", "HTTP", "QUIC", "SAN", "derp",
+               "shodan", "PTR")
 
 #: Every source in SOURCE_RANK names a HOST. Organisation-level identifiers
 #: (the ASN owner's domain) are deliberately not a tier — see org_hint_for.
@@ -396,6 +398,63 @@ def _tier_quic_and_san(days: int, todo: set, consider) -> None:
 
 # ── tiers 7-9: cached intel and reverse DNS ──────────────────────────────────
 
+_DERP_CACHE: dict = {"ts": 0.0, "map": {}}
+_DERP_TTL = 24 * 3600
+
+
+def derp_map() -> dict:
+    """`{ip: hostname}` for every Tailscale DERP relay, from the local client.
+
+    DERP relays are a standing source of unnameable beacons here: several LAN
+    devices run Tailscale, netcheck probes every relay in the map (STUN on
+    3478 plus HTTPS), and none of it is nameable by the tiers above. Tailscale
+    ships the relay list in its control-plane map rather than resolving it, so
+    Zeek never sees a DNS lookup or an SNI, and Shodan's only name for most of
+    them is the hosting provider's IP-derived PTR.
+
+    `tailscale debug derp-map` is the authoritative answer and is already on
+    this box. Cheap enough to call once a day and cache.
+    """
+    now = time.time()
+    if _DERP_CACHE["map"] and now - _DERP_CACHE["ts"] < _DERP_TTL:
+        return _DERP_CACHE["map"]
+    out = {}
+    try:
+        p = subprocess.run(["tailscale", "debug", "derp-map"],
+                           capture_output=True, text=True, timeout=10)
+        if p.returncode == 0:
+            data = json.loads(p.stdout)
+            for region in (data.get("Regions") or {}).values():
+                for node in (region.get("Nodes") or []):
+                    host = node.get("HostName") or ""
+                    if not host:
+                        continue
+                    for key in ("IPv4", "IPv6"):
+                        addr = node.get(key) or ""
+                        if addr:
+                            out[addr] = host
+    except (subprocess.TimeoutExpired, OSError, ValueError):
+        out = {}
+    # Cache even an empty result, so a box without Tailscale does not shell out
+    # once per enrich() call.
+    _DERP_CACHE.update(ts=now, map=out)
+    return out
+
+
+def _tier_derp(todo: set, consider) -> None:
+    """Tier 7 - Tailscale DERP relay names."""
+    if not any(d not in consider.resolved for d in todo):
+        return
+    dmap = derp_map()
+    if not dmap:
+        return
+    for dst in todo:
+        if dst in consider.resolved:
+            continue
+        if dmap.get(dst):
+            consider(dst, dmap[dst], "derp", None)
+
+
 def load_ip_intel(path: Path = IP_INTEL_FILE) -> dict:
     """Shodan InternetDB + AbuseIPDB cache, refreshed daily by
     beaconbutty-ip-intel.service. Read-only from here."""
@@ -557,7 +616,7 @@ def enrich(dsts, days: int = 7, ch_bin: str = CH_BIN, intel: dict = None,
     to display but must never reach FP matching or FP-pattern prefill.
 
     `when_days` is approximate days since the most recent observation, and is
-    None for tiers that carry no timestamp (QUIC/SAN/shodan/PTR).
+    None for tiers that carry no timestamp (QUIC/SAN/derp/shodan/PTR).
     """
     dsts = {d for d in dsts if d}
     if not dsts:
@@ -599,8 +658,9 @@ def enrich(dsts, days: int = 7, ch_bin: str = CH_BIN, intel: dict = None,
 
         if intel is None:
             intel = load_ip_intel()
-        _tier_shodan(todo, intel, consider)                # tier 7 shodan
-        _tier_ptr(todo, consider)                          # tier 8 PTR
+        _tier_derp(todo, consider)                         # tier 7 DERP map
+        _tier_shodan(todo, intel, consider)                # tier 8 shodan
+        _tier_ptr(todo, consider)                          # tier 9 PTR
 
         today_dt = date.today()
         for d in todo:
