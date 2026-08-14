@@ -76,6 +76,11 @@ NAME_CACHE_FILE = Path("/var/lib/beaconbutty/ip-names-cache.json")
 # slow-cadence.py) cheap, since they would otherwise redo tiers 5-8 every run.
 NAME_CACHE_TTL = 6 * 3600
 
+# Bump whenever a change to the ladder could produce a different name for the
+# same IP. Entries stamped with an older version are ignored, so a fix takes
+# effect on the next run instead of being masked by cached answers for a TTL.
+CACHE_VERSION = 2
+
 # Wall-clock ceiling for the whole PTR tier, and per-lookup. Reverse DNS is the
 # only tier that touches the network, and it runs inside a page render.
 PTR_TOTAL_TIMEOUT = 3.0
@@ -400,12 +405,42 @@ def load_ip_intel(path: Path = IP_INTEL_FILE) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def _pick_shodan_hostname(hostnames) -> str:
+def is_ip_derived(name: str, ip: str) -> bool:
+    """True if `name` is just `ip` re-encoded as a hostname.
+
+    Cloud providers auto-generate PTRs that embed the address:
+    `172-237-72-79.ip.linodeusercontent.com`, `ec2-3-8-1-2.compute.amazonaws.com`,
+    `4.3.2.1.in-addr.arpa`. These are not identities - they carry no more
+    information than the IP already shown next to them, and worse, displaying
+    one crowds out the ASN owner ("Akamai Connected Cloud"), which at least
+    names the provider.
+
+    Detected by flattening every run of non-digits to a single separator and
+    looking for the octets in order, forwards or reversed, plain or zero-padded
+    - so it is agnostic to the provider's chosen separator and suffix.
+    """
+    octets = (ip or "").split(".")
+    if len(octets) != 4 or not all(o.isdigit() for o in octets):
+        return False
+    flat = "-" + re.sub(r"[^0-9]+", "-", name or "") + "-"
+    for seq in (octets, list(reversed(octets))):
+        for form in ("-".join(seq), "-".join(o.zfill(3) for o in seq)):
+            if f"-{form}-" in flat:
+                return True
+    return False
+
+
+def _pick_shodan_hostname(hostnames, ip: str = "") -> str:
     """Shodan often returns several PTR-ish names for one IP. Prefer the
     shortest - it is the most canonical (`aidemos.meta.com` over
     `trunkstable.aidemos.meta.com`) - breaking ties alphabetically so the
-    choice is stable across runs and cache rebuilds."""
-    cands = [h for h in (hostnames or []) if h and not _IP_RE.match(h)]
+    choice is stable across runs and cache rebuilds.
+
+    IP-derived names are dropped rather than ranked last: if that is all Shodan
+    has, the caller is better served by falling through to the ASN owner.
+    """
+    cands = [h for h in (hostnames or [])
+             if h and not _IP_RE.match(h) and not is_ip_derived(h, ip)]
     if not cands:
         return ""
     return sorted(cands, key=lambda h: (len(h), h))[0]
@@ -424,7 +459,8 @@ def _tier_intel(todo: set, intel: dict, consider, weak: bool) -> None:
                      "whois", None)
         else:
             consider(dst,
-                     _pick_shodan_hostname((rec.get("shodan") or {}).get("hostnames")),
+                     _pick_shodan_hostname(
+                         (rec.get("shodan") or {}).get("hostnames"), dst),
                      "shodan", None)
 
 
@@ -457,7 +493,8 @@ def _tier_ptr(todo: set, consider) -> None:
                 ip, name = fut.result(timeout=min(remaining, PTR_LOOKUP_TIMEOUT))
             except Exception:
                 continue
-            if name:
+            # An IP-derived PTR is the address in disguise — see is_ip_derived.
+            if name and not is_ip_derived(name, ip):
                 consider(ip, name, "PTR", None)
 
 
@@ -514,7 +551,8 @@ def enrich(dsts, days: int = 7, ch_bin: str = CH_BIN, intel: dict = None,
     cache = _load_name_cache(cache_path) if use_cache else {}
     for d in dsts:
         c = cache.get(d)
-        if c and isinstance(c, dict) and now - c.get("ts", 0) < NAME_CACHE_TTL:
+        if (c and isinstance(c, dict) and c.get("v") == CACHE_VERSION
+                and now - c.get("ts", 0) < NAME_CACHE_TTL):
             out[d] = {k: c.get(k) for k in ("name", "source", "when_days")}
             out[d]["weak"] = c.get("source") in WEAK_SOURCES
         else:
@@ -564,13 +602,14 @@ def enrich(dsts, days: int = 7, ch_bin: str = CH_BIN, intel: dict = None,
                 entry = {"name": "", "source": "", "when_days": None}
             entry["weak"] = entry["source"] in WEAK_SOURCES
             out[d] = entry
-            cache[d] = {**entry, "ts": now}
+            cache[d] = {**entry, "ts": now, "v": CACHE_VERSION}
 
         if use_cache:
-            # Evict stale entries before writing, so the file cannot grow
-            # without bound as the network meets new external IPs.
+            # Evict stale and superseded entries before writing, so the file
+            # cannot grow without bound as the network meets new external IPs.
             for k in [k for k, v in cache.items()
                       if not isinstance(v, dict)
+                      or v.get("v") != CACHE_VERSION
                       or now - v.get("ts", 0) > NAME_CACHE_TTL * 4]:
                 del cache[k]
             _save_name_cache(cache, cache_path)
