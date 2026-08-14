@@ -67,13 +67,15 @@ _IP_RE = re.compile(r'^\d{1,3}(\.\d{1,3}){3}$')
 # repo checkout's lib/ (exported by the bash wrapper); there is no __file__ to
 # derive it from inside a heredoc.
 bb_enrich = None
+bb_fp = None
 try:
     for _p in (os.environ.get('BB_LIB_DIR', ''), '/usr/local/lib/beaconbutty'):
         if _p and _p not in sys.path:
             sys.path.append(_p)
     import bb_enrich
+    import bb_fp
 except Exception:
-    bb_enrich = None
+    pass
 
 def org_display(org):
     """Friendly ASN owner for DISPLAY. Matching keeps the raw string."""
@@ -200,10 +202,16 @@ if isinstance(fp_raw, dict) and fp_raw.get('version') == 2:
     fp_by_mac  = fp_raw.get('devices', {})
     fp_domains = fp_raw.get('domains', {})    # pattern → reason
     fp_protos  = fp_raw.get('protocols', {})  # svc → reason
+    # Org FPs used to be ignored here entirely, so an entry added through the
+    # UI suppressed on /beacons/slow and silently did nothing in this summary
+    # or on /beacons. Normalisation is shared (lib/bb_fp.py) rather than a
+    # fourth hand-synchronised copy.
+    fp_org_ents = bb_fp.org_entries(fp_raw) if bb_fp else []
 else:
     fp_by_mac  = fp_raw
     fp_domains = {}
     fp_protos  = {}
+    fp_org_ents = []
 
 mac_to_ip  = {}
 ip_to_host = {}
@@ -356,17 +364,42 @@ def _proto_suppressed(svc):
     return all(any(c == pat or c.startswith(pat + ':') for pat in fp_protos)
                for c in comps)
 
+# Source IP → MAC, so an org FP scoped to one device only suppresses that
+# device. Built from the same DHCP history as the device-FP resolution above,
+# so an IP a device held earlier in the window still resolves.
+_ip_to_mac = {}
+for _mac, _ips in mac_ips_hist.items():
+    for _ip in _ips:
+        _ip_to_mac[_ip] = _mac
+
+def _org_suppressed(src, dst):
+    # NB: reads _asn_reader directly rather than asn_org_for(), which is
+    # defined further down the file than this loop runs.
+    if not fp_org_ents or not bb_fp or not _asn_reader or not dst or dst == '::':
+        return False
+    try:
+        org = _asn_reader.asn(dst).autonomous_system_organization or ''
+    except Exception:
+        return False
+    # Raw MaxMind string — never org_display(), which would break every
+    # pattern written against the real ASN owner.
+    return bb_fp.org_match(org, _ip_to_mac.get(src, ''), fp_org_ents)
+
 fp_domain_count = 0
 fp_proto_count  = 0
+fp_org_count    = 0
 filtered_rows   = []
 for r in rows:
     fqdn = r[COL['FQDN']].strip()
     dst  = r[COL['Destination IP']].strip()
+    src  = r[COL['Source IP']].strip()
     svc  = r[COL['Port:Proto:Service']].strip()
     if _domain_suppressed(fqdn, dst):
         fp_domain_count += 1
     elif _proto_suppressed(svc):
         fp_proto_count += 1
+    elif _org_suppressed(src, dst):
+        fp_org_count += 1
     else:
         filtered_rows.append(r)
 rows = filtered_rows
@@ -743,8 +776,11 @@ print()
 has_fp = fp_mac_display or fp_domains or fp_protos
 if has_fp:
     dev_sup = sum(fp_suppressed.values())
-    total_sup = dev_sup + fp_domain_count + fp_proto_count
-    total_rules = len(fp_mac_display) + len(fp_domains) + len(fp_protos)
+    total_sup = dev_sup + fp_domain_count + fp_proto_count + fp_org_count
+    # Org FPs were missing from both totals, so this header disagreed with the
+    # webapp's rule count (375 vs 387) and under-reported what was suppressed.
+    total_rules = (len(fp_mac_display) + len(fp_domains) + len(fp_protos)
+                   + len(fp_org_ents))
     print(f'FALSE POSITIVES  ({total_rules} registered \u2014 {total_sup} findings suppressed)')
     if fp_mac_display:
         print('  Devices:')

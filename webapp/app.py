@@ -34,6 +34,7 @@ for _p in (str(Path(__file__).resolve().parent.parent / "lib"),
     if _p not in sys.path:
         sys.path.append(_p)
 import bb_enrich
+import bb_fp
 
 app = Flask(__name__)
 
@@ -469,35 +470,15 @@ def load_fps():
 def _fp_org_entries(fp_all):
     """Normalise the `orgs` FP block to [(pattern, macs_or_None)].
 
-    An org value is either a bare reason string (LAN-wide — the original v2
-    shape) or {"reason": str, "devices": [mac, ...]} scoping the suppression
-    to those source devices. None means LAN-wide.
-
-    MIRROR: same normalisation in scripts/slow-cadence.py `fp_orgs()` and
-    scripts/slow-cadence-digest.py `fp_filter()` — change all three together.
+    Thin wrapper — the implementation lives in lib/bb_fp.py so the webapp,
+    slow-cadence.py, its digest and summarize.sh cannot drift apart.
     """
-    entries = []
-    for pat, val in (fp_all.get("orgs") or {}).items():
-        if isinstance(val, dict):
-            macs = {m.lower() for m in (val.get("devices") or [])}
-            entries.append((pat, macs or None))
-        else:
-            entries.append((pat, None))
-    return entries
+    return bb_fp.org_entries(fp_all)
 
 
 def _fp_org_match(org, src_mac, entries):
-    """True if this GeoIP ASN owner is FP'd — either LAN-wide, or specifically
-    for the device the traffic came from."""
-    if not org:
-        return False
-    src_mac = (src_mac or "").lower()
-    for pat, macs in entries:
-        if not fnmatch.fnmatch(org, pat):
-            continue
-        if macs is None or src_mac in macs:
-            return True
-    return False
+    """True if this GeoIP ASN owner is FP'd — LAN-wide or for this device."""
+    return bb_fp.org_match(org, src_mac, entries)
 
 
 def _fp_domain_match(q, patterns):
@@ -823,6 +804,11 @@ def get_beacon_data(report_file, mac_to_ip, ip_to_host, assets=None):
             fp_ip_reason[ip] = reason
     fp_domains   = fp_all["domains"]    # pattern → reason
     fp_protocols = fp_all["protocols"]  # svc → reason
+    # Org FPs were never applied on this page — an entry added through the UI
+    # suppressed on /beacons/slow and did nothing here. Reverse the MAC map so
+    # a device-scoped entry only suppresses the device it was scoped to.
+    fp_org_ents  = _fp_org_entries(fp_all)
+    _ip_to_mac   = {ip: mac for mac, ip in mac_to_ip.items() if ip}
 
     def _fp_domain_hit(fqdn, dst, enrich_name=""):
         # FQDN if RITA had one, the literal dst as fallback, AND the
@@ -911,6 +897,7 @@ def get_beacon_data(report_file, mac_to_ip, ip_to_host, assets=None):
         # deciding whether an FP matches it further down.
         e_name = (emap.get((src.strip(), dst.strip())) or {}).get("name", "")
         dest = _annotate_dest(fqdn if fqdn else dst, "" if fqdn else e_name)
+        _dst_is_ip = bool(_IP_RE.match(dst.strip()))
 
         # Skip non-IPv4 source IPs
         if not _IP_RE.match(src.strip()):
@@ -948,6 +935,19 @@ def get_beacon_data(report_file, mac_to_ip, ip_to_host, assets=None):
             _record_suppression("protocol", proto_pat, proto_reason,
                                 row_label, dest, row_score, svc, sev)
             continue
+        # Org FP — matched on the RAW MaxMind ASN owner, never the friendly
+        # label org_label() renders, which no pattern is written against.
+        if fp_org_ents and _dst_is_ip:
+            _, _, _row_org = _geoip_info(dst.strip())
+            if _fp_org_match(_row_org or "", _ip_to_mac.get(src.strip(), ""),
+                             fp_org_ents):
+                suppressed += 1
+                _record_suppression(
+                    "org", _row_org or "?",
+                    bb_fp.org_reason(_row_org or "",
+                                     _ip_to_mac.get(src.strip(), ""), fp_all),
+                    row_label, dest, row_score, svc, sev)
+                continue
 
         score = row_score
 

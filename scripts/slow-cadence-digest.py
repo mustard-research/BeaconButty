@@ -34,6 +34,15 @@ import sys
 import urllib.request
 import urllib.error
 from datetime import date
+from pathlib import Path
+
+# Shared FP-registry matching (also used by webapp/app.py, slow-cadence.py and
+# summarize.sh). Repo checkout first, then the deployed copy.
+for _p in (str(Path(__file__).resolve().parent.parent / "lib"),
+           "/usr/local/lib/beaconbutty"):
+    if _p not in sys.path:
+        sys.path.append(_p)
+import bb_fp
 
 REPORT       = "/var/lib/beaconbutty/reports/slow-cadence.json"
 SLACK_CONF   = "/var/lib/beaconbutty/slack-config.json"
@@ -64,14 +73,10 @@ def fp_filter(cands: list[dict]) -> list[dict]:
     protos = list(fp.get("protocols", {}))
 
     # Org entries are either a bare reason (LAN-wide) or {"reason","devices"}
-    # scoped to specific MACs. Same normalisation as slow-cadence.py fp_orgs().
-    org_entries: list[tuple[str, set[str] | None]] = []
-    for pat, val in (fp.get("orgs") or {}).items():
-        if isinstance(val, dict):
-            scoped = {m.lower() for m in (val.get("devices") or [])}
-            org_entries.append((pat, scoped or None))
-        else:
-            org_entries.append((pat, None))
+    # scoped to specific MACs. Normalisation is shared via lib/bb_fp.py — it
+    # used to be copied here, in slow-cadence.py and in webapp/app.py, each
+    # with a "change all three together" comment.
+    org_entries = bb_fp.org_entries(fp)
 
     # IP → MAC from leases plus asset history; history matters because the
     # 14-day window covers IPs a device no longer holds.

@@ -39,6 +39,7 @@ for _p in (str(Path(__file__).resolve().parent.parent / "lib"),
     if _p not in sys.path:
         sys.path.append(_p)
 import bb_enrich
+import bb_fp
 
 CH_BIN = "/usr/bin/clickhouse-client"
 WINDOW_DAYS = 14
@@ -172,42 +173,14 @@ def fp_service_match(services: list[str], pats: list[str]) -> bool:
 
 
 def fp_orgs() -> list[tuple[str, set[str] | None]]:
-    """Org FPs — fnmatch against the GeoIP ASN owner (mirrors the webapp's
-    render-time filter, which alone can't stop the Slack alert).
-
-    Returns [(pattern, macs_or_None)]. A value of None means the entry applies
-    LAN-wide (the original bare-string shape); a set means it only suppresses
-    for those source devices.
-
-    MIRROR: the same normalisation lives in slow-cadence-digest.py and in
-    webapp/app.py `_fp_org_entries` — change all three together."""
-    try:
-        with open(FP_PATH) as f:
-            raw = json.load(f).get("orgs", {})
-    except (FileNotFoundError, json.JSONDecodeError):
-        return []
-    entries: list[tuple[str, set[str] | None]] = []
-    for pat, val in raw.items():
-        if isinstance(val, dict):
-            macs = {m.lower() for m in (val.get("devices") or [])}
-            entries.append((pat, macs or None))
-        else:
-            entries.append((pat, None))
-    return entries
+    """Org FPs — fnmatch against the GeoIP ASN owner. Implementation shared
+    with the webapp, the digest and summarize.sh via lib/bb_fp.py."""
+    return bb_fp.org_entries(FP_PATH)
 
 
-def fp_org_match(org: str, src_mac: str,
-                 entries: list[tuple[str, set[str] | None]]) -> bool:
+def fp_org_match(org: str, src_mac: str, entries) -> bool:
     """True if this ASN owner is FP'd, either LAN-wide or for this device."""
-    if not org:
-        return False
-    src_mac = (src_mac or "").lower()
-    for pat, macs in entries:
-        if not fnmatch.fnmatch(org, pat):
-            continue
-        if macs is None or src_mac in macs:
-            return True
-    return False
+    return bb_fp.org_match(org, src_mac, entries)
 
 
 def ip_to_mac_map() -> dict[str, str]:
