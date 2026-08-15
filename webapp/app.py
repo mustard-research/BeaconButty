@@ -829,6 +829,15 @@ def get_beacon_data(report_file, mac_to_ip, ip_to_host, assets=None):
     def _fp_proto_hit(svc):
         return _fp_service_match(svc, fp_protocols)
 
+    # Tailscale DERP netcheck probes. Not expressible as a registry entry: the
+    # probe and real relay traffic share a destination AND a port set, and only
+    # differ by volume. See lib/bb_fp.py for the derivation.
+    _derp_hosts = bb_fp.derp_hosts()
+
+    def _derp_probe_hit(dst, svc, conns, total_bytes):
+        return bb_fp.is_derp_probe(dst, _split_service_components(svc),
+                                   conns, total_bytes, hosts=_derp_hosts)
+
     sev_counts = {"Critical": 0, "High": 0, "Medium": 0, "Low": 0, "None": 0}
     suppressed = 0
     suppressed_groups_map = {}  # (rule_type, rule) → {rule_type, rule, reason, rows}
@@ -948,6 +957,19 @@ def get_beacon_data(report_file, mac_to_ip, ip_to_host, assets=None):
                                      _ip_to_mac.get(src.strip(), ""), fp_all),
                     row_label, dest, row_score, svc, sev)
                 continue
+        # DERP netcheck probe — volume-gated, so genuine relay traffic to the
+        # same host on the same ports stays visible.
+        _derp_host = _derp_probe_hit(
+            dst, svc,
+            row[COL["Connection Count"]] if len(row) > COL["Connection Count"] else 0,
+            row[COL["Total Bytes"]] if len(row) > COL["Total Bytes"] else 0)
+        if _derp_host:
+            suppressed += 1
+            _record_suppression("derp-probe", "Tailscale netcheck",
+                                "DERP latency probe (< %d B/conn)"
+                                % bb_fp.MAX_PROBE_BYTES_PER_CONN,
+                                row_label, dest, row_score, svc, sev)
+            continue
 
         score = row_score
 
@@ -1530,6 +1552,8 @@ def count_beacon_findings_today():
     def _fp_proto_hit(svc):
         return _fp_service_match(svc, fp_protocols)[0] is not None
 
+    _derp_hosts = bb_fp.derp_hosts()
+
     for path in sorted(REPORTS_DIR.glob("beacon-report-*.txt"), reverse=True):
         _, rows_by_date = parse_beacon_report(path)
         if not rows_by_date:
@@ -1563,6 +1587,14 @@ def count_beacon_findings_today():
             candidates = [t for t in (fqdn, dst, e_name) if t]
             if (any(_fp_domain_match(t, fp_domains) for t in candidates)
                     or _fp_proto_hit(svc)):
+                continue
+            # DERP netcheck probe — mirrors get_beacon_data, else the tile
+            # counts devices the Hotlist no longer shows.
+            if bb_fp.is_derp_probe(
+                    dst, _split_service_components(svc),
+                    row[COL["Connection Count"]] if len(row) > COL["Connection Count"] else 0,
+                    row[COL["Total Bytes"]] if len(row) > COL["Total Bytes"] else 0,
+                    hosts=_derp_hosts):
                 continue
             try:
                 score = float(row[COL["Beacon Score"]])
@@ -3385,6 +3417,8 @@ def build_new_beacons(ip_to_host, assets=None):
     def _fp_proto_match(svc):
         return _fp_service_match(svc, fp_protocols)[0] is not None
 
+    _derp_hosts = bb_fp.derp_hosts()
+
     # Pre-pass: enrich every bare-IP candidate (not already FP'd by IP)
     # so the FP-domain check below can match against the Zeek-recovered
     # FQDN. Without this, "*.knock.app" never suppresses bare AWS IPs.
@@ -3411,6 +3445,15 @@ def build_new_beacons(ip_to_host, assets=None):
         candidates = [t for t in (row_fqdn, row_dst, e_name) if t]
         if any(_fp_domain_match(t, fp_domains) for t in candidates) \
                 or _fp_proto_match(svc):
+            continue
+        # A newly-added DERP region shows up here as a "new beacon" every time
+        # Tailscale grows the map. Volume-gated, so a new relay that actually
+        # carries traffic is still reported.
+        if bb_fp.is_derp_probe(
+                row_dst, _split_service_components(svc),
+                row[COL["Connection Count"]] if len(row) > COL["Connection Count"] else 0,
+                row[COL["Total Bytes"]] if len(row) > COL["Total Bytes"] else 0,
+                hosts=_derp_hosts):
             continue
         sc  = current_scores.get((src, dest_key), 0.0)
         fs  = row[COL["First Seen"]]         if len(row) > COL["First Seen"]          else ""
@@ -4005,6 +4048,13 @@ def _load_slow_cadence_filtered():
         # before the detector emitted it; those simply skip this check.
         if any(_fp_service_match(s, fp_protos)[0]
                for s in (c.get("services") or [])):
+            continue
+        # DERP netcheck probe — third of the three mirrored slow-cadence
+        # filters (detector, digest, here); all must carry it or a suppressed
+        # candidate reappears at render time. Volume-gated, so relay traffic
+        # still shows. Legacy candidates without `total_bytes` fall through.
+        if bb_fp.is_derp_probe(c.get("dst", ""), c.get("services"),
+                               c.get("total_conns"), c.get("total_bytes")):
             continue
         c["src_mac"] = src_mac
         filtered.append(c)

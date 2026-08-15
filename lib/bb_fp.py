@@ -108,3 +108,114 @@ def org_reason(org: str, src_mac: str, fp_all_or_path=None) -> str:
             return val.get("reason", "") or pat
         return val or pat
     return ""
+
+
+# ---------------------------------------------------------------------------
+# Tailscale DERP netcheck probes
+# ---------------------------------------------------------------------------
+#
+# Every Tailscale node latency-probes EVERY DERP region on a fixed schedule, so
+# a handful of tailnet devices generate a near-perfect beacon against dozens of
+# relays. That is pure noise. But DERP relays also carry real, E2E-encrypted
+# WireGuard payload that neither Tailscale nor we can inspect, so a compromised
+# node exfiltrating over DERP looks exactly like legitimate relay use. A domain
+# FP on "*.tailscale.com" suppresses both and is therefore a real detection
+# hole — it was tried, and removed again, on 2026-08-13.
+#
+# The probe and the payload are separable, just not by port. Netcheck was
+# assumed to be UDP/3478 only, which is why a "3478:udp" protocol FP was
+# expected to cover it; in fact netcheck also runs an HTTPS leg on 443, and
+# since a protocol FP may only suppress a row when EVERY component matches
+# (correctly — else one keepalive hides the bulk traffic beside it), the 443
+# leg keeps the whole row alive. Observed live on this box:
+#
+#   probe   derp5e  275 conns    45,196 B  ->    164 B/conn
+#   probe   derp7f  298 conns    65,275 B  ->    219 B/conn
+#   relay   derp8g   22 conns   967,335 B  -> 43,969 B/conn
+#
+# What separates them is VOLUME, and by two orders of magnitude. Hence the gate
+# below. The threshold sits below a single completed TLS handshake (~4-6 KB),
+# so this cannot hide even one real DERP session — anything actually moving
+# data breaks the gate and stays visible. That property is the whole point;
+# do not raise MAX_PROBE_BYTES_PER_CONN without re-deriving it.
+#
+# Conditions 1 and 2 buy precision rather than safety: a DERP host contacted on
+# an unexpected port stays visible whatever its volume.
+
+#: Service components netcheck is allowed to use. A bare "port:proto" prefix
+#: matches any Zeek service subfield ("443:tcp:", "443:tcp:ssl", ...).
+DERP_PROBE_SERVICES = ("3478:udp", "443:tcp", "80:tcp:http")
+
+#: Above this, the row is carrying payload, not probing. See derivation above.
+MAX_PROBE_BYTES_PER_CONN = 2000
+
+_DERP_HOSTS_CACHE: dict = {"map": None}
+
+
+def derp_hosts(refresh: bool = False) -> dict:
+    """`{ip: hostname}` for every Tailscale DERP relay, or {} if unavailable.
+
+    Delegates to bb_enrich.derp_map(), which shells out to the local Tailscale
+    client and caches. Imported lazily so bb_fp stays dependency-light for
+    callers that only need the registry matchers (bb_enrich pulls in GeoIP).
+    """
+    if _DERP_HOSTS_CACHE["map"] is not None and not refresh:
+        return _DERP_HOSTS_CACHE["map"]
+    try:
+        import bb_enrich  # noqa: PLC0415 - lazy by design, see docstring
+        out = bb_enrich.derp_map() or {}
+    except Exception:
+        out = {}
+    _DERP_HOSTS_CACHE["map"] = out
+    return out
+
+
+def _is_probe_service(components) -> bool:
+    """True when every service component is one netcheck legitimately uses.
+
+    `components` must already be split — a plain split(",") is wrong because
+    Zeek's own service subfield contains commas ("443:udp:quic,ssl" is ONE
+    component). Callers that hold a raw RITA service string should split it
+    with their existing component splitter first.
+    """
+    comps = [(c or "").strip() for c in (components or [])]
+    comps = [c for c in comps if c]
+    if not comps:
+        return False
+    return all(
+        any(c == p or c.startswith(p + ":") for p in DERP_PROBE_SERVICES)
+        for c in comps
+    )
+
+
+def is_derp_probe(dst: str, components, conns, total_bytes,
+                  hosts: dict | None = None) -> str:
+    """Hostname of the DERP relay when this row is netcheck probe traffic, else "".
+
+    A truthy return means "suppress this row"; the hostname is returned rather
+    than a bool so the caller can name the rule in its suppressed-rows table.
+
+    `dst` is the destination IP, `components` the already-split service
+    components, `conns` the connection count and `total_bytes` the byte total
+    for the row. Missing or unparseable counts fail OPEN (return "") — an
+    unknown volume must never be treated as a probe.
+    """
+    dst = (dst or "").strip().replace("::ffff:", "")
+    if not dst:
+        return ""
+    hosts = derp_hosts() if hosts is None else hosts
+    host = hosts.get(dst, "")
+    if not host:
+        return ""
+    if not _is_probe_service(components):
+        return ""
+    try:
+        n_conns = int(conns)
+        n_bytes = int(total_bytes)
+    except (TypeError, ValueError):
+        return ""
+    if n_conns <= 0 or n_bytes < 0:
+        return ""
+    if n_bytes / n_conns >= MAX_PROBE_BYTES_PER_CONN:
+        return ""
+    return host

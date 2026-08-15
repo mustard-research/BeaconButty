@@ -131,6 +131,8 @@ def fp_filter(cands: list[dict]) -> list[dict]:
                 return True
         return False
 
+    derp_hosts = bb_fp.derp_hosts()
+
     kept = []
     for c in cands:
         src_mac = ip_mac.get(c.get("src", ""), "")
@@ -143,6 +145,13 @@ def fp_filter(cands: list[dict]) -> list[dict]:
         if org_match(c.get("dst_org", ""), src_mac):
             continue
         if proto_match(c.get("services")):
+            continue
+        # DERP netcheck probe — volume-gated so real relay traffic still
+        # digests. Candidates written before the detector emitted
+        # `total_bytes` fall through (is_derp_probe fails open on a 0 count).
+        if bb_fp.is_derp_probe(c.get("dst", ""), c.get("services"),
+                               c.get("total_conns"), c.get("total_bytes"),
+                               hosts=derp_hosts):
             continue
         kept.append(c)
     return kept

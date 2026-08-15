@@ -385,9 +385,27 @@ def _org_suppressed(src, dst):
     # pattern written against the real ASN owner.
     return bb_fp.org_match(org, _ip_to_mac.get(src, ''), fp_org_ents)
 
+# Tailscale DERP netcheck probes. Neither a domain nor a protocol FP can
+# express this: probe and real relay traffic share both destination and port
+# set, and separate only by volume. Gate lives in lib/bb_fp.py — see there for
+# why the byte threshold is what keeps DERP exfil visible.
+_derp_hosts = bb_fp.derp_hosts() if bb_fp else {}
+
+def _derp_probe_suppressed(r):
+    if not bb_fp or not _derp_hosts:
+        return False
+    def _col(name):
+        i = COL.get(name)
+        return r[i] if i is not None and len(r) > i else 0
+    return bool(bb_fp.is_derp_probe(
+        r[COL['Destination IP']].strip(),
+        _svc_components(r[COL['Port:Proto:Service']].strip()),
+        _col('Connection Count'), _col('Total Bytes'), hosts=_derp_hosts))
+
 fp_domain_count = 0
 fp_proto_count  = 0
 fp_org_count    = 0
+fp_derp_count   = 0
 filtered_rows   = []
 for r in rows:
     fqdn = r[COL['FQDN']].strip()
@@ -400,6 +418,8 @@ for r in rows:
         fp_proto_count += 1
     elif _org_suppressed(src, dst):
         fp_org_count += 1
+    elif _derp_probe_suppressed(r):
+        fp_derp_count += 1
     else:
         filtered_rows.append(r)
 rows = filtered_rows
@@ -776,7 +796,8 @@ print()
 has_fp = fp_mac_display or fp_domains or fp_protos
 if has_fp:
     dev_sup = sum(fp_suppressed.values())
-    total_sup = dev_sup + fp_domain_count + fp_proto_count + fp_org_count
+    total_sup = (dev_sup + fp_domain_count + fp_proto_count + fp_org_count
+                 + fp_derp_count)
     # Org FPs were missing from both totals, so this header disagreed with the
     # webapp's rule count (375 vs 387) and under-reported what was suppressed.
     total_rules = (len(fp_mac_display) + len(fp_domains) + len(fp_protos)
@@ -801,6 +822,11 @@ if has_fp:
         print(f'  Protocols  ({fp_proto_count} suppressed):')
         proto_data = [[svc, trunc(reason, 50)] for svc, reason in sorted(fp_protos.items())]
         print(table(['Service', 'Reason'], proto_data, ['<', '<']))
+    if fp_derp_count:
+        # Not a registry rule — a built-in structural gate. Reported anyway so
+        # the suppression total above is fully accounted for.
+        print(f'  Tailscale DERP netcheck probes: {fp_derp_count} suppressed '
+              f'(< {bb_fp.MAX_PROBE_BYTES_PER_CONN} B/conn; relay traffic stays visible)')
     print()
 
 # ── 2. Likely benign ─────────────────────────────────────────────────────────

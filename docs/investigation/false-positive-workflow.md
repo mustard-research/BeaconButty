@@ -215,6 +215,8 @@ The same matching contract is implemented in five places. Changing one without t
 | `scripts/slow-cadence-digest.py` `proto_match` | morning Slack digest | `services` list, already split |
 | `scripts/summarize.sh` `_proto_suppressed` | terminal summary / daily report | RITA compound string, needs splitting |
 
+The Tailscale DERP netcheck gate (`bb_fp.is_derp_probe`, below) rides the same five surfaces plus `build_new_beacons`, but as **one shared implementation** in `lib/bb_fp.py` rather than a sixth mirrored copy.
+
 The list-shaped ones must **not** comma-split: each element is already one component (built individually by `groupUniqArray`), so a comma inside an element belongs to Zeek's service list.
 
 The FP modal on `/beacons` dims the **Protocol** option and shows a prominent red warning unless the row's service is on a narrow safe list. `_isSafeProto()` inspects **every** component (so STUN paired with an incidental HTTP flow is still recognised) and matches either a Zeek service name or a known-safe `port:proto`:
@@ -227,6 +229,33 @@ ports: 3478:udp · 3478:tcp   (STUN/TURN — Zeek leaves these unlabelled)
 Clicking the dimmed Protocol option fires a `confirm()` dialog spelling out the consequence; only an explicit OK proceeds.  Safe protocols behave normally — single click, no friction.
 
 Existing FP file has exactly two protocol entries: `123:udp:ntp` and `3478:udp` (STUN, added 2026-05-06). Both fall in the "standard signalling protocol on its standard port" category — see below. Adding anything ending in `:ssl`, `:http`, `:dns`, or a bare `:tcp` is almost certainly a mistake.
+
+## Structural gate: Tailscale DERP netcheck (added 2026-08-15)
+
+Not every false positive is expressible as a registry entry. Tailscale's netcheck latency-probes **every** DERP region on a schedule, so a few tailnet devices produce near-perfect beacons (0.95–0.98) against dozens of relays. Neither FP dimension can express it:
+
+- **Domain FP** (`*.tailscale.com`) — tried and removed on 2026-08-13. DERP relays carry E2E-encrypted WireGuard, so a compromised tailnet node exfiltrating over DERP is indistinguishable from legitimate relay use. Suppressing the hostname is a real detection hole.
+- **Protocol FP** (`3478:udp`) — netcheck was assumed to be STUN-only. It also runs an **HTTPS leg on 443**, and since a protocol FP may only suppress a row when every component matches, the 443 leg keeps the whole row alive.
+
+Probe and payload share a destination *and* a port set. What separates them is **volume**, by two orders of magnitude — measured on this box, 2026-08-15:
+
+| | conns | bytes | B/conn |
+|---|---|---|---|
+| probe `derp5e` | 275 | 45,196 | **164** |
+| probe `derp7f` | 298 | 65,275 | **219** |
+| relay `derp8g` | 22 | 967,335 | **43,969** |
+
+Hence `bb_fp.is_derp_probe()` — suppress only when **all three** hold:
+
+1. destination IP is in the local `tailscale debug derp-map` (authoritative, no network call)
+2. every service component is netcheck-shaped (`3478:udp`, `443:tcp`, `80:tcp:http`)
+3. `total_bytes / connections < 2000`
+
+Condition 3 is the security property, and the threshold is deliberately below a **single completed TLS handshake** (~4–6 KB): the gate cannot hide even one real DERP session. Do not raise `MAX_PROBE_BYTES_PER_CONN` without re-deriving it. Conditions 1 and 2 buy precision — a DERP host reached on an unexpected port stays visible at any volume.
+
+The gate **fails open**: a missing or unparseable connection/byte count returns "not a probe". Unknown volume must never be read as low volume. Slow-cadence candidates written before the detector emitted `total_bytes` therefore fall through and self-heal on the next scan.
+
+Applied in six places — the five protocol-FP mirrors above plus `build_new_beacons` (a new DERP region otherwise reports as a new beacon every time Tailscale grows the map). On `/beacons` it renders as its own suppression group, rule type `derp-probe`; the terminal summary reports the count on its own line under FALSE POSITIVES.
 
 ## Standard signalling protocols (STUN, NTP, mDNS, DHCP, …)
 

@@ -256,7 +256,8 @@ def fetch_pairs(dbs: list[str]) -> list[dict]:
     low-rate prefilter to keep groupArray sizes bounded; cap at MAX_TS_PER_PAIR
     as belt-and-braces."""
     inner = " UNION ALL ".join(
-        f"""SELECT src, dst, dst_port, ts, proto, service FROM {db}.conn
+        f"""SELECT src, dst, dst_port, ts, proto, service,
+                   src_ip_bytes, dst_ip_bytes FROM {db}.conn
             WHERE dst_local = false AND src_local = true
               AND proto IN ('tcp', 'udp')
               AND service NOT IN ('dns', 'ntp')"""
@@ -272,6 +273,10 @@ def fetch_pairs(dbs: list[str]) -> list[dict]:
         dst_port                    AS dst_port,
         count()                     AS total_conns,
         uniqExact(toDate(ts))       AS days_seen,
+        -- ip_bytes, not orig/resp_bytes: the latter inflate on sequence wrap.
+        -- Feeds the DERP netcheck gate, which separates probe from relay by
+        -- bytes-per-connection (see lib/bb_fp.is_derp_probe).
+        sum(src_ip_bytes + dst_ip_bytes) AS total_bytes,
         groupUniqArray(concat(toString(dst_port), ':',
                               toString(proto), ':',
                               toString(service)))      AS services,
@@ -479,6 +484,7 @@ def main() -> int:
     fp_srcs = fp_source_ips()
     org_pats = fp_orgs()
     proto_pats = fp_protocols()
+    derp_hosts = bb_fp.derp_hosts()
     ip_mac = ip_to_mac_map()
 
     candidates = []
@@ -507,6 +513,14 @@ def main() -> int:
         # Deliberately port+proto scoped rather than host scoped: a relay's
         # bulk traffic on 443 stays visible.
         if fp_service_match(r.get("services", []), proto_pats):
+            continue
+        # DERP netcheck probe. The protocol FP above cannot reach it: netcheck
+        # also probes 443, and a row bundling 443 with 3478 is (rightly) not
+        # fully covered. Volume-gated, so a relay actually carrying WireGuard
+        # payload still surfaces. See lib/bb_fp.py.
+        if bb_fp.is_derp_probe(dst_ip, r.get("services", []),
+                               r["total_conns"], r.get("total_bytes", 0),
+                               hosts=derp_hosts):
             continue
 
         dst_org, dst_cc = geoip_lookup(dst_ip)
@@ -541,6 +555,11 @@ def main() -> int:
             "http_method_mix": http_info.get("method_mix", ""),
             "days_seen": r["days_seen"],
             "total_conns": r["total_conns"],
+            # Carried so the digest and the webapp can re-apply the DERP
+            # netcheck gate without going back to ClickHouse. Candidates
+            # written before this existed have no key; both consumers treat
+            # that as "no volume data" and fall through rather than guessing.
+            "total_bytes": r.get("total_bytes", 0),
             "conns_per_active_day": round(
                 r["total_conns"] / r["days_seen"], 2
             ),
