@@ -1540,14 +1540,19 @@ def count_alerts_by_priority():
 
 def count_beacon_findings_today():
     """Count unique source IPs on the Device Hotlist. Must mirror get_beacon_data's
-    filter set exactly: safe-dest, FP device/domain/protocol (incl. Zeek-recovered
-    FQDN), and score==0 skip. Drift between this counter and get_beacon_data
-    surfaces as the dashboard tile disagreeing with the Hotlist itself."""
+    filter set exactly: safe-dest, FP device/domain/protocol/org (incl. the
+    Zeek-recovered FQDN), the DERP netcheck gate, and the score==0 skip. Drift
+    between this counter and get_beacon_data surfaces as the dashboard tile
+    disagreeing with the Hotlist itself — which is how the missing org filter
+    was found on 2026-08-15: three Mullvad org FPs emptied the Hotlist while
+    this tile still read 1."""
     mac_to_ip, _ = load_leases()
     fp_all       = load_fp_all()
     fp_ips       = _fp_device_ips(fp_all["devices"], mac_to_ip)
     fp_domains   = fp_all["domains"]
     fp_protocols = fp_all["protocols"]
+    fp_org_ents  = _fp_org_entries(fp_all)
+    _ip_to_mac   = {ip: mac for mac, ip in mac_to_ip.items() if ip}
 
     def _fp_proto_hit(svc):
         return _fp_service_match(svc, fp_protocols)[0] is not None
@@ -1596,6 +1601,14 @@ def count_beacon_findings_today():
                     row[COL["Total Bytes"]] if len(row) > COL["Total Bytes"] else 0,
                     hosts=_derp_hosts):
                 continue
+            # Org FP — raw MaxMind ASN owner, device-scoped. Mirrors
+            # get_beacon_data, which gained this on 2026-08-14; the tile did
+            # not, so any org-suppressed device was still counted here.
+            if fp_org_ents and _IP_RE.match(dst):
+                _, _, _row_org = _geoip_info(dst)
+                if _fp_org_match(_row_org or "", _ip_to_mac.get(src, ""),
+                                 fp_org_ents):
+                    continue
             try:
                 score = float(row[COL["Beacon Score"]])
             except (ValueError, IndexError):

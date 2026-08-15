@@ -67,9 +67,11 @@ Health is only accessible via the Dashboard Health tile — it is intentionally 
 
 ### False positive filtering
 
-Every `build_*` function that returns network intelligence data must apply FP filtering at the dimensions relevant to its panel: **device** always; **domain** where the row has an FQDN or external host; **protocol** where a beacon row with a `svc` field is retained. See memory `feedback_network_intel_fp.md` for the current coverage matrix. Missing the right dimension is how FP-registered rules silently fail to suppress matching rows (gmail / skype / NTP incidents).
+Every `build_*` function that returns network intelligence data must apply FP filtering at the dimensions relevant to its panel: **device** always; **domain** where the row has an FQDN or external host; **protocol** where a beacon row with a `svc` field is retained; **org** where the row has a destination IP to resolve an ASN owner from. See memory `feedback_network_intel_fp.md` for the current coverage matrix. Missing the right dimension is how FP-registered rules silently fail to suppress matching rows (gmail / skype / NTP incidents).
 
-This applies to dashboard tile counters as well as page builders. `count_beacon_findings_today` (the "Beaconing Devices" tile) must track `get_beacon_data`'s filter set exactly — device + domain + protocol + safe-dest + `score==0` — or the dashboard count diverges from the `/beacons` Device Hotlist and the user sees two different numbers for the same thing (2026-04-22 incident).
+This applies to dashboard tile counters as well as page builders. `count_beacon_findings_today` (the "Beaconing Devices" tile) must track `get_beacon_data`'s filter set exactly — device + domain + protocol + org + the DERP netcheck gate + safe-dest + `score==0` — or the dashboard count diverges from the `/beacons` Device Hotlist and the user sees two different numbers for the same thing (2026-04-22 incident, and again 2026-08-15 when the tile turned out never to have gained the org check `get_beacon_data` got the day before).
+
+Beyond the four registry dimensions there is one **structural gate**: `bb_fp.is_derp_probe()` suppresses Tailscale DERP netcheck probes on volume, because probe and real relay traffic share a destination and a port set and cannot be told apart by any registry pattern. Builders that carry both a byte total and a connection count per row should apply it. See [False Positive Workflow](../investigation/false-positive-workflow.md).
 
 Domain matching uses an apex-aware helper (`_fp_domain_match(q, patterns)`) so that `*.foo.com` also suppresses the bare `foo.com`. See [False Positive Workflow](../investigation/false-positive-workflow.md).
 

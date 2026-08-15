@@ -332,7 +332,7 @@ FP added through the UI suppressed on `/beacons/slow` and silently did nothing o
 either of the two surfaces an operator looks at most. This was found by adding
 `*31173*` for Mullvad and watching the CLI summary not change.
 
-All five consumers now share one implementation, `lib/bb_fp.py`:
+All six consumers now share one implementation, `lib/bb_fp.py`:
 
 | Consumer | Applies org FPs |
 |---|---|
@@ -341,6 +341,14 @@ All five consumers now share one implementation, `lib/bb_fp.py`:
 | `webapp/app.py` `_load_slow_cadence_filtered` (`/beacons/slow`) | yes |
 | `webapp/app.py` `get_beacon_data` (`/beacons`) | **added 2026-08-14** |
 | `scripts/summarize.sh` (CLI + daily report) | **added 2026-08-14** |
+| `webapp/app.py` `count_beacon_findings_today` (dashboard tile) | **added 2026-08-15** |
+
+The tile was the last one missing, and it stayed missing because nothing had
+exercised it: `get_beacon_data` gained the org check on 2026-08-14 but the
+counter that is supposed to mirror it did not. It surfaced on 2026-08-15 when
+three Mullvad org FPs emptied the `/beacons` Device Hotlist while the dashboard
+tile still read 1. **A counter that mirrors a builder is a consumer too** — when
+adding an FP dimension, grep for the tile as well as the page.
 
 The normalisation previously existed in three hand-synchronised copies, each
 carrying a "change all three together" comment — which is exactly how the two
