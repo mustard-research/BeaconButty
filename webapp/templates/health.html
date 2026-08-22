@@ -20,6 +20,80 @@
   <span id="alert-feedback-msg" style="font-size:13px;"></span>
 </div>
 
+{# ── WAN / ISP status ────────────────────────────────────────────────────────
+   Source: /var/lib/beaconbutty/wan-status.json, written by wan-watchdog.sh on
+   every run. Deliberately NOT probed on page load: a live ping would put
+   seconds of latency in the render path and hang the page when the WAN is the
+   thing that is broken — which is exactly when this card matters. The trade is
+   that the reading is up to 5 min old, so we always show when it was taken. #}
+{% set _wan_map = {
+     'ok':           ('Internet OK',            '#4caf50'),
+     'isp_upstream': ('ISP outage — upstream',  '#f44336'),
+     'link_fault':   ('Link / CPE fault',       '#f44336'),
+     'no_route':     ('Local routing fault',    '#ff9800'),
+     'no_ip':        ('WAN has no IP',          '#ff9800'),
+   } %}
+{% set _wan_label, _wan_colour = _wan_map.get(wan_status.get('state'), ('Unknown', '#888')) %}
+{% if wan_status.get('stale') %}{% set _wan_colour = '#888' %}{% endif %}
+<div class="card" style="margin-bottom:16px;">
+  <h3 style="margin:0 0 12px;">WAN / ISP
+    <span class="bb-pop" tabindex="0" style="font-size:12px;font-weight:400;color:var(--text-muted,#888);cursor:help;"
+          data-pop="Checked every 5 minutes by wan-watchdog.timer. Not a live probe — a brief outage can fall between two checks.">&#9432;</span>
+  </h3>
+  {% if not wan_status %}
+    <p style="font-size:13px;color:var(--text-muted,#888);margin:0;">
+      No reading yet — <code>/var/lib/beaconbutty/wan-status.json</code> is missing or unreadable.
+      It appears after the next <code>wan-watchdog.timer</code> run.
+    </p>
+  {% else %}
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">
+      <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:{{ _wan_colour }};flex:none;"></span>
+      <span style="font-weight:600;color:{{ _wan_colour }};">{{ _wan_label }}</span>
+      <span style="font-size:12px;color:var(--text-muted,#888);">
+        {% if wan_status.get('checked_at') %}
+          checked {{ wan_status.checked_at[11:16] }}
+          {%- if wan_status.get('age_secs') is not none %} ({{ (wan_status.age_secs // 60) }}m ago){% endif %}
+        {% else %}check time unknown{% endif %}
+      </span>
+      {% if wan_status.get('stale') %}
+        <span style="font-size:12px;color:#ff9800;font-weight:600;">STALE — is wan-watchdog.timer running?</span>
+      {% endif %}
+    </div>
+    <p style="font-size:13px;margin:0 0 10px;">{{ wan_status.get('verdict', '—') }}</p>
+    <table style="font-size:13px;border-collapse:collapse;">
+      <tr>
+        <td style="padding:3px 14px 3px 0;color:var(--text-muted,#888);">WAN IP</td>
+        <td style="padding:3px 0;font-family:monospace;">{{ wan_status.get('wan_ip') or '—' }}
+          <span style="color:var(--text-muted,#888);font-family:inherit;">on {{ wan_status.get('wan_iface', '?') }}</span></td>
+      </tr>
+      <tr>
+        <td style="padding:3px 14px 3px 0;color:var(--text-muted,#888);">ISP gateway</td>
+        <td style="padding:3px 0;font-family:monospace;">{{ wan_status.get('gateway') or '—' }}
+          {% if wan_status.get('gateway_reachable') is not none %}
+            <span style="font-family:inherit;color:{% if wan_status.gateway_reachable %}#4caf50{% else %}#f44336{% endif %};">
+              {{ 'reachable' if wan_status.gateway_reachable else 'unreachable' }}</span>
+          {% endif %}</td>
+      </tr>
+      <tr>
+        <td style="padding:3px 14px 3px 0;color:var(--text-muted,#888);">DNS</td>
+        <td style="padding:3px 0;">
+          {% if wan_status.get('dns_ok') is none %}
+            <span style="color:var(--text-muted,#888);">not tested</span>
+          {% else %}
+            <span style="color:{% if wan_status.dns_ok %}#4caf50{% else %}#f44336{% endif %};">
+              {{ 'resolving' if wan_status.dns_ok else 'failing' }}</span>
+          {% endif %}</td>
+      </tr>
+      {% if wan_status.get('fails') %}
+      <tr>
+        <td style="padding:3px 14px 3px 0;color:var(--text-muted,#888);">Consecutive fails</td>
+        <td style="padding:3px 0;">{{ wan_status.fails }} / {{ wan_status.get('threshold', 3) }}</td>
+      </tr>
+      {% endif %}
+    </table>
+  {% endif %}
+</div>
+
 <div class="card" style="margin-bottom:16px;">
   <h3 style="margin:0 0 12px;">Alert Criteria</h3>
   <p style="font-size:13px;color:var(--text-muted,#888);margin:0 0 12px;">

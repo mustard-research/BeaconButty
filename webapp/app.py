@@ -63,6 +63,7 @@ TLS_PRIVKEY     = f"{BB_TLS_CERT_DIR}/{BB_HOST}/privkey.pem"
 # ── Paths ──────────────────────────────────────────────────────────────────────
 WATCHDOG_DATA_DIR   = Path("/var/lib/beaconbutty/watchdog/data")
 HEALTH_STATUS_FILE  = Path("/var/lib/beaconbutty/watchdog/health-status.json")
+WAN_STATUS_FILE     = Path("/var/lib/beaconbutty/wan-status.json")
 REPORTS_DIR         = Path("/var/lib/beaconbutty/reports")
 BACKUP_DIR          = Path("/var/lib/beaconbutty/backups")
 BACKUP_SCRIPT       = Path("/usr/local/bin/beaconbutty-backup.sh")
@@ -1627,6 +1628,42 @@ def load_health():
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
+
+
+# How old wan-status.json may be before we stop trusting it. The timer runs
+# every 5 min; 12 min allows one missed run plus slack before we tell the user
+# the reading is stale rather than quietly showing an old "all clear".
+WAN_STATUS_STALE_SECS = 12 * 60
+
+
+def load_wan_status():
+    """
+    Load wan-status.json written by wan-watchdog.sh.
+
+    Returns {} if absent/corrupt. Adds derived 'age_secs' and 'stale' so the
+    template never implies real-time truth: the underlying check is 5-minutely,
+    so a short outage can fall between two runs.
+    """
+    try:
+        with open(WAN_STATUS_FILE) as f:
+            st = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+    if not isinstance(st, dict):
+        return {}
+    st["age_secs"] = None
+    st["stale"] = True
+    try:
+        checked = datetime.fromisoformat(st["checked_at"])
+        now = datetime.now(checked.tzinfo) if checked.tzinfo else datetime.now()
+        age = (now - checked).total_seconds()
+        # Clamp negatives: a clock step backwards should read as fresh, not as
+        # a nonsensical negative age.
+        st["age_secs"] = max(0, int(age))
+        st["stale"] = st["age_secs"] > WAN_STATUS_STALE_SECS
+    except (KeyError, ValueError, TypeError):
+        pass
+    return st
 
 
 # ── Temperature data ────────────────────────────────────────────────────────────
@@ -4706,6 +4743,7 @@ def health():
     except (FileNotFoundError, json.JSONDecodeError):
         pass
     return render_template("health.html", report=report, error=error,
+                           wan_status=load_wan_status(),
                            alert_config=load_alert_config(),
                            cert=get_cert_info(),
                            gate_stats=gate_stats,
