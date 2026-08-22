@@ -18,6 +18,47 @@
   </p>
 </div>
 
+{# ── WAN / ISP banner ────────────────────────────────────────────────────────
+   Rendered ONLY when something is wrong or the reading has gone stale. A
+   permanent green "WAN OK" tile would be noise on a page that already carries
+   six stat cards, and would dilute the ones that matter. Source is
+   wan-status.json (5-minutely) rather than health-status.json, which is only
+   refreshed daily and so cannot carry a live WAN signal.
+
+   The point of this banner is not to announce the outage — you already know —
+   but to put the verdict (upstream vs. local, i.e. whether a reboot is worth
+   trying) on the page you actually land on. #}
+{% if wan_status and (wan_status.get('state') != 'ok' or wan_status.get('stale')) %}
+  {% set _wan_hard = wan_status.get('state') in ('isp_upstream', 'link_fault') %}
+  {% set _wan_titles = {
+       'isp_upstream': 'ISP outage — upstream of the gateway',
+       'link_fault':   'WAN link / CPE fault',
+       'no_route':     'No default route on the WAN interface',
+       'no_ip':        'WAN interface has no IP address',
+     } %}
+<div class="card {{ 'card-red' if _wan_hard else 'card-yellow' }}">
+  {# Stale wins the heading: reporting the last known state as if it were
+     current would be worse than admitting the reading has aged out. #}
+  <div class="card-title {{ 'text-red' if _wan_hard else 'text-yellow' }}">
+    ⚠ {% if wan_status.get('stale') %}WAN status stale — last reading may be out of date
+      {%- else %}{{ _wan_titles.get(wan_status.get('state'), 'WAN status unknown') }}{% endif %}
+    <small>
+      {% if wan_status.get('checked_at') %}checked {{ wan_status.checked_at[11:16] }}
+        {%- if wan_status.get('age_secs') is not none %} ({{ wan_status.age_secs // 60 }}m ago){% endif %}
+      {% else %}check time unknown{% endif %}
+      {%- if wan_status.get('stale') %} · STALE, is wan-watchdog.timer running?{% endif %}
+    </small>
+  </div>
+  <ul class="issue-list{{ '' if _wan_hard else ' warn' }}">
+    <li>{{ wan_status.get('verdict', 'No verdict recorded.') }}</li>
+    {% if wan_status.get('fails') %}
+      <li>{{ wan_status.fails }} of {{ wan_status.get('threshold', 3) }} consecutive checks failed.</li>
+    {% endif %}
+  </ul>
+  <div style="font-size:12px;"><a href="{{ url_for('health') }}">WAN / ISP detail →</a></div>
+</div>
+{% endif %}
+
 {# ── Stat grid ── #}
 <div class="stat-grid">
 

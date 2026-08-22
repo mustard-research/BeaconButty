@@ -3931,6 +3931,7 @@ def dashboard():
         "dashboard.html",
         stats=stats,
         health=health,
+        wan_status=load_wan_status(),
         beacon_count=beacon_count,
         suricata_counts=suricata_counts,
         network=network,
