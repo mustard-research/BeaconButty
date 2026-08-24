@@ -124,6 +124,8 @@ This matters because DNS-anomaly queries and some beacon destinations hit the ap
 
 If you add a new `build_*` function that filters by domain, call the shared helper — don't re-invent `any(fnmatch.fnmatch(q, p) for p in patterns)` or the apex case will silently break again.
 
+Not the same matcher, same discipline: the terminal summary's `LIKELY BENIGN` device prints match destination keywords on whole DNS labels, anchored at the end, for the reason any domain matcher must — `kw in dest` let `fing.com` match `surfing.com` and let an attacker-chosen `evil-garmin.com.example.net` claim a vendor's label. Those prints label rows and never suppress them, so they live with `summarize.sh` rather than here: see [Scripts & Timers](../development/scripts-and-timers.md#summary-device-prints--likely-benign-rewritten-2026-08-24).
+
 ## DNS entropy filtering
 
 The Network page calculates DNS query entropy per device to detect potential DNS tunnelling. Implementation details:
@@ -237,7 +239,7 @@ Not every false positive is expressible as a registry entry. Tailscale's netchec
 - **Domain FP** (`*.tailscale.com`) — tried and removed on 2026-08-13. DERP relays carry E2E-encrypted WireGuard, so a compromised tailnet node exfiltrating over DERP is indistinguishable from legitimate relay use. Suppressing the hostname is a real detection hole.
 - **Protocol FP** (`3478:udp`) — netcheck was assumed to be STUN-only. It also runs an **HTTPS leg on 443**, and since a protocol FP may only suppress a row when every component matches, the 443 leg keeps the whole row alive.
 
-Netcheck has a third leg, found on 2026-08-24 when 38 rows per tailnet node survived the gate on one component: an **ICMP echo sweep**. Unlike the STUN leg it runs once, not on a schedule — on 2026-08-22 zgx and agx each sent exactly one ICMP conn to each of 56 relays inside the same second, 5 echo requests of ~30 B and a single reply apiece. RITA folds that lone 150-byte conn into the same `(src, dst)` row as the ~275 STUN probes, so a leg that costs nothing to emit blocked every row it touched. `icmp:8/0` is now on the allowlist; `icmp:3/3` is not, because it has never once appeared against a DERP host and an unsolicited ICMP error from a relay is worth seeing.
+Netcheck has a third leg, found on 2026-08-24 when 38 rows per tailnet node survived the gate on one component: an **ICMP echo sweep**. Unlike the STUN leg it runs once, not on a schedule — on 2026-08-22 two Linux tailnet nodes each sent exactly one ICMP conn to each of 56 relays inside the same second, 5 echo requests of ~30 B and a single reply apiece. RITA folds that lone 150-byte conn into the same `(src, dst)` row as the ~275 STUN probes, so a leg that costs nothing to emit blocked every row it touched. `icmp:8/0` is now on the allowlist; `icmp:3/3` is not, because it has never once appeared against a DERP host and an unsolicited ICMP error from a relay is worth seeing.
 
 Probe and payload share a destination *and* a port set. What separates them is **volume**, by two orders of magnitude — measured on this box, 2026-08-15:
 

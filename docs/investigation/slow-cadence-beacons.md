@@ -259,6 +259,15 @@ with `controlplane.`, `log.`, `pkgs.` and `login.tailscale.com` so that
 
 **Generalisable rule:** for any VPN, relay or NAT-traversal service, FP the
 keepalive component (`port:proto`), never the destination host.
+
+> [!note]
+> Netcheck turned out to have a third leg — a one-off ICMP echo sweep across
+> every relay — found on 2026-08-24 when it kept 38 rows per tailnet node
+> alive on the `/beacons` side. **This page never saw it**: the candidate
+> query filters `proto IN ('tcp', 'udp')`, so ICMP cannot reach slow-cadence
+> at all. The fix landed in `lib/bb_fp.py` alone. Worth remembering in both
+> directions — the protocol filter here is also why an ICMP-carried slow
+> beacon would be invisible on this page.
 - **Coherent ghost view on `/assets`.** A device that disappeared
   mid-window (e.g. someone's laptop went home for the weekend) still
   shows on `/assets` as a dimmed "ghost · Nd" row, populated from

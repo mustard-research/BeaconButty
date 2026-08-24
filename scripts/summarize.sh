@@ -698,8 +698,8 @@ CHINESE_TECH = [
 
 # fingerprint() returns the FIRST match, so order is the whole design here.
 #
-# Two rules, learned the hard way on 2026-08-24 when four devices — agx, zgx,
-# an unknown host and the MacBook — were all labelled "The Pi":
+# Two rules, learned the hard way on 2026-08-24 when four devices — two Linux
+# tailnet nodes, an unknown host and a Mac — were all labelled "The Pi":
 #
 # 1. A print must DISCRIMINATE. The entry was (['tailscale.com',
 #    'anthropic.com'], 'The Pi'), written when bb0 was the only tailnet node
@@ -735,9 +735,8 @@ DEVICE_PRINTS = [
     (['endpoint.security.microsoft.com',
       'trouter.teams.microsoft.com'],                               'Windows/Mac + Office 365'),
     # ── Attribute: software that can be installed on anything ──
-    # Below Apple for the same reason: the Fing *box* (192.168.50.166) matches
-    # nothing else and still lands here, while a Mac running the Fing app is
-    # named for the Mac.
+    # Below Apple for the same reason: the Fing *box* matches nothing else and
+    # still lands here, while a Mac running the Fing app is named for the Mac.
     (['fing.io', 'fing.com'],                                        'Fing network scanner'),
     (['newrelic.com'],                                                'Device with New Relic agent'),
     (['signal.org'],                                                  'Device with Signal'),

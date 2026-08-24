@@ -100,6 +100,57 @@ Every consumer script and the webapp has defaults/constants pointing at canonica
 > [!warning]
 > Silent drift is the default failure mode. A script reading a stale path doesn't throw — it returns empty and happily exits 0. Always verify with output, not exit codes.
 
+## Summary device prints — `LIKELY BENIGN` (rewritten 2026-08-24)
+
+`summarize.sh` labels a source IP by what it talks to: `DEVICE_PRINTS` maps
+destination keywords to a device label, and `fingerprint()` returns the first
+entry that hits. Display only — it names rows, it never suppresses them — but it
+is the line an operator reads as "this is a recognised device", so it is worth
+getting right. Three rules, all learned from the same bug:
+
+**1. A print must discriminate.** The first entry was
+`(['tailscale.com', 'anthropic.com'], 'The Pi')`, true when the Pi was the only
+tailnet node and the only box running Claude Code, and quietly false the day a
+second node joined. Four devices ended up labelled "The Pi" — and the Pi itself
+never appeared in the table at all, because as the router it is rarely a beacon
+*source*. Before adding a print, ask what **else** now produces that signal: a
+print earns its place by what it excludes.
+
+**2. Identity prints first, attribute prints last.** `fingerprint()` returns the
+first match, so a broad early entry pre-empts every precise one behind it — one
+Mac matched five prints and displayed the least informative. "Ubuntu machine"
+says what a device **is**; "Device with Signal" says what it happens to **run**.
+Anything phrased "device with/running X" belongs at the bottom of the list.
+
+**3. Match whole DNS labels, anchored at the end.** Keywords were matched with a
+bare `kw in dest`, which made every short one a liability — `fing.com` matched
+`surfing.com`, and `garmin.com` matched an attacker-chosen
+`evil-garmin.com.example.net`. `print_match()` now splits both sides on `.` and
+compares label runs. Anchoring is at the **end** by default, because an
+unanchored label run still accepts `tailscale.com.evil.io`, and prepending a
+real domain to one you control is the cheaper forgery of the two.
+
+A keyword that deliberately stops short of a regional TLD says so with a
+**trailing dot**, which flips the anchor to the start:
+
+```python
+'thumbnails-photos.amazon.'   # .co.uk / .com / .de
+'icloud.com'                  # end-anchored: matches mask.icloud.com,
+                              # rejects icloud.com.phish.example
+```
+
+`_dns_labels()` strips what callers actually pass before splitting: the
+` (1.2.3.4)` annotation `annotate_dest` appends, the `:80` RITA leaves on some
+FQDNs, and RITA's inconsistent root-anchoring trailing dot. Under substring
+matching those three only worked by accident.
+
+> [!note]
+> This is a **display heuristic, not authentication**. It stops a domain name
+> from claiming to be a recognised device; it does not prove what the device is.
+> The same anchoring discipline applies to — but is separate from — the FP
+> domain matcher, which has its own apex rule. See
+> [False Positive Workflow](../investigation/false-positive-workflow.md#domain-pattern-matching).
+
 ## RITA import details
 
 ```bash

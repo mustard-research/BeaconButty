@@ -58,18 +58,30 @@ bb0 is enrolled in Tailscale under `<your tailscale user>`. Provides secure remo
 
 ### Tailscale traffic in beacon detection
 
-Tailscale clients constantly latency-probe **every** DERP region — UDP 3478
-STUN plus `GET /generate_204?t=<epoch>` with a `Go-http-client/1.1` UA — so
-far-flung relays show up as beacon-shaped destinations even though a tailnet
-only ever relays through the one region it picks.
+Tailscale clients constantly latency-probe **every** DERP region, so far-flung
+relays show up as beacon-shaped destinations even though a tailnet only ever
+relays through the one region it picks. Netcheck probes on three legs, each
+found separately:
 
-Probe traffic is suppressed by the **`3478:udp` protocol FP**, deliberately
-*not* by a host or domain FP: DERP relays carry end-to-end-encrypted
-WireGuard that neither Tailscale nor the sensor can inspect, so
-blanket-suppressing the destination would hide exfiltration over the tailnet.
-A `*.tailscale.com` wildcard should be narrowed to the control-plane
-endpoints (`controlplane.`, `log.`, `pkgs.`, `login.`) so `derp*` stays
-visible. See [Slow-Cadence Beacons](../investigation/slow-cadence-beacons.md#worked-example-tailscale-derp-relays).
+| Leg | Traffic | Cadence |
+|---|---|---|
+| STUN | UDP 3478 | continuous, ~275 conns/relay/day |
+| HTTPS | `GET /generate_204?t=<epoch>`, `Go-http-client/1.1` UA | continuous |
+| ICMP | 5 echo requests of ~30 B (found 2026-08-24) | one sweep, all relays at once |
+
+Suppression is deliberately **not** by host or domain FP: DERP relays carry
+end-to-end-encrypted WireGuard that neither Tailscale nor the sensor can
+inspect, so blanket-suppressing the destination would hide exfiltration over
+the tailnet. A `*.tailscale.com` wildcard should be narrowed to the
+control-plane endpoints (`controlplane.`, `log.`, `pkgs.`, `login.`) so
+`derp*` stays visible.
+
+Nor is a `3478:udp` protocol FP enough on the main beacon surfaces: RITA
+bundles all three legs into one row, and a protocol FP may only suppress a row
+when *every* component matches. What separates probe from payload is **volume**
+— see [False Positive Workflow](../investigation/false-positive-workflow.md#structural-gate-tailscale-derp-netcheck-added-2026-08-15)
+for the structural gate, and [Slow-Cadence Beacons](../investigation/slow-cadence-beacons.md#worked-example-tailscale-derp-relays)
+for the case that started it.
 
 ## Known LAN devices
 

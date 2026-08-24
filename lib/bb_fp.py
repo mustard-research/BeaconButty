@@ -150,8 +150,8 @@ def org_reason(org: str, src_mac: str, fp_all_or_path=None) -> str:
 #: "icmp:8/0" is netcheck's ICMP latency leg, added 2026-08-24 after 38 rows
 #: per tailnet node survived the gate on that one component alone. It is a
 #: single sweep, not a per-region schedule like the STUN leg — on 2026-08-22
-#: zgx and agx each emitted exactly ONE icmp conn to each of 56 relays, all
-#: inside the same second, 5 echo requests of ~30 B and one reply apiece.
+#: two Linux tailnet nodes each emitted exactly ONE icmp conn to each of 56
+#: relays, all in the same second, 5 echo requests of ~30 B and one reply.
 #: RITA folds that lone conn into the same (src, dst) row as the ~275 STUN
 #: probes, so it cost nothing to produce and blocked the whole row.
 #: Only echo request (type 8) is listed: "icmp:3/3" (port unreachable) does
