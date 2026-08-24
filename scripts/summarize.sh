@@ -696,20 +696,47 @@ CHINESE_TECH = [
     (r'aliyun\.com',    'Alibaba Cloud'),
 ]
 
+# fingerprint() returns the FIRST match, so order is the whole design here.
+#
+# Two rules, learned the hard way on 2026-08-24 when four devices — agx, zgx,
+# an unknown host and the MacBook — were all labelled "The Pi":
+#
+# 1. A print must DISCRIMINATE. The entry was (['tailscale.com',
+#    'anthropic.com'], 'The Pi'), written when bb0 was the only tailnet node
+#    and the only box running Claude Code. Neither is true now: every tailnet
+#    member talks to *.tailscale.com (controlplane, pkgs, and every derp
+#    relay), and bb0 — 192.168.50.1 — never even appeared in the table it was
+#    claiming. A destination that every device on the network reaches is the
+#    opposite of a fingerprint.
+#
+# 2. IDENTITY prints first, ATTRIBUTE prints last. The list holds both kinds:
+#    "Ubuntu machine" says what a device IS, "Device with Signal" says what
+#    it happens to run. An attribute placed early pre-empts the identity
+#    behind it — the MacBook matched five prints and displayed the least
+#    informative one. Anything phrased "device with/running X" belongs below.
 DEVICE_PRINTS = [
-    (['tailscale.com', 'anthropic.com'],                              'The Pi'),
+    # ── Identity: endpoints only one kind of device ever reaches ──
     (['svc.ui.com', 'ubnt.com'],                                      'Ubiquiti UniFi'),
     (['logsink.devices.nest.com', 'weather.nest.com'],                'Nest device'),
     (['amazonalexa.com'],                                             'Alexa device'),
     (['thumbnails-photos.amazon'],                                    'Amazon device'),
-    (['connectivity-check.ubuntu.com'],                               'Ubuntu machine'),
     (['garmin.com'],                                                  'Garmin device'),
-    (['fing.io', 'fing.com'],                                        'Fing network scanner'),
-    (['endpoint.security.microsoft', 'trouter.teams.microsoft.com'], 'Windows/Mac + Office 365'),
+    (['connectivity-check.ubuntu.com'],                               'Ubuntu machine'),
     (['icloud.com', 'mask.icloud.com', 'tether.edge.apple',
       'xp.apple.com', 'smoot.apple.com'],                            'Apple device'),
+    # Below Apple deliberately: a Mac in a Microsoft shop hits both, and the
+    # hardware is the more useful label. A device matching ONLY these is the
+    # Windows box this print was written for.
+    (['endpoint.security.microsoft', 'trouter.teams.microsoft.com'], 'Windows/Mac + Office 365'),
+    # ── Attribute: software that can be installed on anything ──
+    # Below Apple for the same reason: the Fing *box* (192.168.50.166) matches
+    # nothing else and still lands here, while a Mac running the Fing app is
+    # named for the Mac.
+    (['fing.io', 'fing.com'],                                        'Fing network scanner'),
     (['newrelic.com'],                                                'Device with New Relic agent'),
     (['signal.org'],                                                  'Device with Signal'),
+    (['tailscale.com'],                                               'Tailscale node'),
+    (['anthropic.com'],                                               'Device running Claude Code'),
 ]
 
 def is_benign(d):
