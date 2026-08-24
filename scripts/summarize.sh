@@ -714,20 +714,26 @@ CHINESE_TECH = [
 #    it happens to run. An attribute placed early pre-empts the identity
 #    behind it — the MacBook matched five prints and displayed the least
 #    informative one. Anything phrased "device with/running X" belongs below.
+#
+# 3. A keyword is a complete domain, matched on whole labels at the END of the
+#    destination. The trailing dot on two of them below means the opposite —
+#    anchor at the START — and is the only way to write "the TLD varies".
+#    See print_match().
 DEVICE_PRINTS = [
     # ── Identity: endpoints only one kind of device ever reaches ──
     (['svc.ui.com', 'ubnt.com'],                                      'Ubiquiti UniFi'),
     (['logsink.devices.nest.com', 'weather.nest.com'],                'Nest device'),
     (['amazonalexa.com'],                                             'Alexa device'),
-    (['thumbnails-photos.amazon'],                                    'Amazon device'),
+    (['thumbnails-photos.amazon.'],                                   'Amazon device'),
     (['garmin.com'],                                                  'Garmin device'),
     (['connectivity-check.ubuntu.com'],                               'Ubuntu machine'),
-    (['icloud.com', 'mask.icloud.com', 'tether.edge.apple',
+    (['icloud.com', 'tether.edge.apple.',
       'xp.apple.com', 'smoot.apple.com'],                            'Apple device'),
     # Below Apple deliberately: a Mac in a Microsoft shop hits both, and the
     # hardware is the more useful label. A device matching ONLY these is the
     # Windows box this print was written for.
-    (['endpoint.security.microsoft', 'trouter.teams.microsoft.com'], 'Windows/Mac + Office 365'),
+    (['endpoint.security.microsoft.com',
+      'trouter.teams.microsoft.com'],                               'Windows/Mac + Office 365'),
     # ── Attribute: software that can be installed on anything ──
     # Below Apple for the same reason: the Fing *box* (192.168.50.166) matches
     # nothing else and still lands here, while a Mac running the Fing app is
@@ -797,9 +803,49 @@ def flag_row(row):
 
     return None, None
 
+def _dns_labels(host):
+    """DNS labels of `host`, lowercased — the unit a print keyword matches on.
+
+    Three kinds of noise have to come off first, all of them real inputs here:
+    the ` (1.2.3.4)` / ` (Canonical Group Limited, GB)` annotation that
+    `annotate_dest` appends, the `:80` RITA leaves on some FQDNs, and the
+    root-anchoring trailing dot RITA emits inconsistently.
+    """
+    host = (host or '').strip().split(' ', 1)[0]
+    host = host.split(':', 1)[0].lower().rstrip('.')
+    return [lab for lab in host.split('.') if lab]
+
+def print_match(kw, d):
+    """True when print keyword `kw` matches destination `d` on whole DNS labels.
+
+    Matching is anchored, never a bare substring and never a floating run:
+
+      * normally at the END — `icloud.com` matches `mask.icloud.com`;
+      * at the START when the keyword carries a TRAILING DOT, for the two
+        endpoints whose TLD varies by region (`thumbnails-photos.amazon.co.uk`
+        vs `.com` vs `.de`).
+
+    Both anchors matter. Substring matching, which this replaces, made every
+    short keyword a liability: `fing.com` matched `surfing.com` and
+    `garmin.com` matched an attacker-chosen `evil-garmin.com.example.net`. An
+    unanchored *label* run fixes those but still accepts `tailscale.com.evil.io`
+    — prepending a real domain to one you control is the cheaper forgery of the
+    two, so the end anchor has to be the default.
+
+    Display-only code, so a bad match mislabels rather than hides. But a label
+    an operator reads as "recognised device" should not be forgeable by picking
+    a domain name.
+    """
+    kw = (kw or '').strip()
+    anchor_start = kw.endswith('.')   # keyword stops short of a regional TLD
+    k, d = _dns_labels(kw), _dns_labels(d)
+    if not k or len(k) > len(d):
+        return False
+    return d[:len(k)] == k if anchor_start else d[-len(k):] == k
+
 def fingerprint(dests_list):
     for keywords, label in DEVICE_PRINTS:
-        if any(any(kw in d for d in dests_list) for kw in keywords):
+        if any(print_match(kw, d) for kw in keywords for d in dests_list):
             return label
     return None
 
