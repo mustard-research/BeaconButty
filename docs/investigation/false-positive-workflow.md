@@ -237,6 +237,8 @@ Not every false positive is expressible as a registry entry. Tailscale's netchec
 - **Domain FP** (`*.tailscale.com`) — tried and removed on 2026-08-13. DERP relays carry E2E-encrypted WireGuard, so a compromised tailnet node exfiltrating over DERP is indistinguishable from legitimate relay use. Suppressing the hostname is a real detection hole.
 - **Protocol FP** (`3478:udp`) — netcheck was assumed to be STUN-only. It also runs an **HTTPS leg on 443**, and since a protocol FP may only suppress a row when every component matches, the 443 leg keeps the whole row alive.
 
+Netcheck has a third leg, found on 2026-08-24 when 38 rows per tailnet node survived the gate on one component: an **ICMP echo sweep**. Unlike the STUN leg it runs once, not on a schedule — on 2026-08-22 zgx and agx each sent exactly one ICMP conn to each of 56 relays inside the same second, 5 echo requests of ~30 B and a single reply apiece. RITA folds that lone 150-byte conn into the same `(src, dst)` row as the ~275 STUN probes, so a leg that costs nothing to emit blocked every row it touched. `icmp:8/0` is now on the allowlist; `icmp:3/3` is not, because it has never once appeared against a DERP host and an unsolicited ICMP error from a relay is worth seeing.
+
 Probe and payload share a destination *and* a port set. What separates them is **volume**, by two orders of magnitude — measured on this box, 2026-08-15:
 
 | | conns | bytes | B/conn |
@@ -248,8 +250,10 @@ Probe and payload share a destination *and* a port set. What separates them is *
 Hence `bb_fp.is_derp_probe()` — suppress only when **all three** hold:
 
 1. destination IP is in the local `tailscale debug derp-map` (authoritative, no network call)
-2. every service component is netcheck-shaped (`3478:udp`, `443:tcp`, `80:tcp:http`)
+2. every service component is netcheck-shaped (`3478:udp`, `443:tcp`, `80:tcp:http`, `icmp:8/0`)
 3. `total_bytes / connections < 2000`
+
+Condition 2 is the one that keeps needing widening, and each widening is safe only because condition 3 is untouched: a new probe leg admitted to the allowlist still cannot suppress a row whose volume says payload.
 
 Condition 3 is the security property, and the threshold is deliberately below a **single completed TLS handshake** (~4–6 KB): the gate cannot hide even one real DERP session. Do not raise `MAX_PROBE_BYTES_PER_CONN` without re-deriving it. Conditions 1 and 2 buy precision — a DERP host reached on an unexpected port stays visible at any volume.
 

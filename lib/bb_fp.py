@@ -127,7 +127,9 @@ def org_reason(org: str, src_mac: str, fp_all_or_path=None) -> str:
 # expected to cover it; in fact netcheck also runs an HTTPS leg on 443, and
 # since a protocol FP may only suppress a row when EVERY component matches
 # (correctly — else one keepalive hides the bulk traffic beside it), the 443
-# leg keeps the whole row alive. Observed live on this box:
+# leg keeps the whole row alive. The same trap sprang again on 2026-08-24
+# with netcheck's ICMP latency leg — one 150-byte echo sweep per node, folded
+# by RITA into the same row as the STUN probes. Observed live on this box:
 #
 #   probe   derp5e  275 conns    45,196 B  ->    164 B/conn
 #   probe   derp7f  298 conns    65,275 B  ->    219 B/conn
@@ -144,7 +146,18 @@ def org_reason(org: str, src_mac: str, fp_all_or_path=None) -> str:
 
 #: Service components netcheck is allowed to use. A bare "port:proto" prefix
 #: matches any Zeek service subfield ("443:tcp:", "443:tcp:ssl", ...).
-DERP_PROBE_SERVICES = ("3478:udp", "443:tcp", "80:tcp:http")
+#:
+#: "icmp:8/0" is netcheck's ICMP latency leg, added 2026-08-24 after 38 rows
+#: per tailnet node survived the gate on that one component alone. It is a
+#: single sweep, not a per-region schedule like the STUN leg — on 2026-08-22
+#: zgx and agx each emitted exactly ONE icmp conn to each of 56 relays, all
+#: inside the same second, 5 echo requests of ~30 B and one reply apiece.
+#: RITA folds that lone conn into the same (src, dst) row as the ~275 STUN
+#: probes, so it cost nothing to produce and blocked the whole row.
+#: Only echo request (type 8) is listed: "icmp:3/3" (port unreachable) does
+#: occur on this network but never once against a DERP host, and an
+#: unsolicited ICMP error from a relay is worth seeing.
+DERP_PROBE_SERVICES = ("3478:udp", "443:tcp", "80:tcp:http", "icmp:8/0")
 
 #: Above this, the row is carrying payload, not probing. See derivation above.
 MAX_PROBE_BYTES_PER_CONN = 2000
