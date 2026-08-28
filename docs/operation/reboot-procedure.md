@@ -30,6 +30,8 @@ The fix is to pre-stop ClickHouse cleanly before calling the real reboot.
 3. Calls `systemctl reboot`
 4. Displays "REBOOTING" on the OLED and holds the LED state
 
+Since 2026-07-06: a failed ClickHouse stop or log2ram flush logs a WARNING and **still proceeds to the reboot** — previously `set -e` aborted the script, so a scripted `sudo reboot` could silently leave the box up.
+
 ### Files
 
 | File | Location | Purpose |
@@ -57,10 +59,10 @@ sudo reboot --force
 sudo reboot -f
 ```
 
-The wrapper detects `--force` / `-f` and calls `/usr/sbin/reboot` directly, bypassing bb-reboot entirely.
+The wrapper detects `--force` / `-f`, **strips the flag**, and calls `/usr/sbin/reboot` directly — bypassing bb-reboot but still performing a normal systemd reboot.
 
 > [!warning]
-> Force rebooting without stopping ClickHouse first risks the watchdog hang. Only use `--force` if bb-reboot is non-functional and you need to recover the system.
+> Fixed 2026-07-06: the wrapper used to pass `-f`/`--force` **through** to the real reboot, where those flags mean a *hard* reboot (skip systemd shutdown entirely — no ClickHouse stop, no clean unmounts): the most dangerous reboot available, from the flag meant to be the escape hatch. If you genuinely need a hard reboot, call `/usr/sbin/reboot -f` explicitly. Bypassing bb-reboot still risks the ClickHouse watchdog hang — only use it when bb-reboot itself is broken.
 
 ## After a reboot — what to expect
 
@@ -71,4 +73,38 @@ The wrapper detects `--force` / `-f` and calls `/usr/sbin/reboot` directly, bypa
 - **Display state**: OLED display will be **on** by default (flag file persists `"0"` on NVMe)
 - **Webapp**: available on HTTPS :443 within ~30 seconds of boot
 
-See [Health Monitoring](health-monitoring.md) for post-reboot verification commands.
+## Post-reboot verification
+
+A reboot is the only routine event that exercises log2ram's writeback, so check it every time rather than assuming. Four commands:
+
+```bash
+# 1. Nothing failed to come back
+systemctl --failed
+journalctl -b -p 3 --no-pager | tail
+
+# 2. The previous boot is still in the journal (proves persistent storage)
+journalctl --list-boots | tail -3
+
+# 3. log2ram flushed on the way down, and re-mounted on the way up
+findmnt -t tmpfs | grep log2ram
+sudo tail -3 /var/log/zeek/log2ram.log        # look for the rsync "sent N bytes" line
+
+# 4. Full sweep
+sudo beaconbutty-health.sh
+```
+
+For step 3, compare **apparent bytes and file counts**, not `du` — tmpfs page accounting makes the RAM copy look 10–15 % larger than its backing store even when the two are byte-identical:
+
+```bash
+for d in /var/log/zeek/2026-*; do
+  n=$(basename "$d")
+  echo "$n ram=$(find "$d" -type f -printf '%s\n' | awk '{t+=$1}END{print t}')" \
+       "disk=$(sudo find /var/log/hdd.zeek/$n -type f -printf '%s\n' | awk '{t+=$1}END{print t}')"
+done
+```
+
+Known-benign journal noise at priority ≤ 3 on every boot: two `alsa-restore.rules` GOTO warnings from udev, one `raspberrypi-firmware … returned status 0x80000001`, and two `wpa_supplicant` nl80211 messages about signal-strength monitoring on wlan0.
+
+Reference numbers from the 2026-08-28 reboot (the first after the log2ram rescope): 1.4 s kernel + 21.9 s userspace to `multi-user.target`, writeback of 458,833,398 B complete, both boots present in the journal, all health checks green. See [Log2Ram Usage](../architecture/log2ram-usage.md).
+
+See [Health Monitoring](health-monitoring.md) for the full check list.

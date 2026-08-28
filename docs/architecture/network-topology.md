@@ -27,10 +27,15 @@ The Pi (hostname `bb0`) sits between the ISP router and the LAN, acting as a NAT
 
 | Interface | MAC | Role | Address |
 |-----------|-----|------|---------|
-| eth0 | `aa:bb:cc:dd:ee:f0` | WAN — upstream to ISP router | DHCP (e.g. 203.0.113.45) |
+| eth0 | `aa:bb:cc:dd:ee:f0` | WAN — upstream to ISP router | DHCP, **routable public /24** (e.g. 203.0.113.45) |
 | eth1 | `aa:bb:cc:dd:ee:ff` | LAN — gateway, Zeek capture | 192.168.50.1/24 (static) |
 | wlan0 | `aa:bb:cc:dd:ee:f1` | WiFi — secondary LAN path, **DHCP client of bb0's own dnsmasq** | 192.168.50.151/24 (DHCP) |
 | tailscale0 | n/a | Remote access VPN | `<tailscale-ip>` |
+
+> [!warning] Check whether your WAN address is routable before trusting the firewall alone
+> On this deployment the ISP hands out a public address rather than CGNAT, which makes bb0 directly internet-facing: its own firewall is the primary barrier, not an upstream NAT. Worth re-verifying on any new install — `curl -s ifconfig.me` matching the address on `eth0` means there is nothing in front of you.
+>
+> Because `sshd` and the webapp both bind `0.0.0.0`, netfilter would otherwise be a single point of failure, so each carries a second control that does not depend on it. See [Hardening](../security/hardening.md). Also worth confirming: no DNAT or port forwards, `FORWARD` policy `DROP` with WAN→LAN limited to `RELATED,ESTABLISHED`, no UPnP/NAT-PMP, and Tailscale advertising no subnet routes.
 
 > [!note] bb0 is multi-homed on its own LAN
 > Both `eth1` and `wlan0` sit on `192.168.50.0/24`. With kernel ARP defaults this produces "ARP flux" — either interface replies for the other's IP — which the L2 monitor flags as MAC-change anomalies. Mitigated by `arp_ignore=1` + `arp_announce=2` in the hardening sysctls (see [Hardening](../security/hardening.md)) **and** by the L2 builder auto-suppressing any IP whose MACs are entirely from `/sys/class/net/*/address`. So the Pi has two different MACs visibly active on the LAN by design.

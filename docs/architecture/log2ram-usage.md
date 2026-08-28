@@ -43,6 +43,20 @@ Unit files:
 - `log2ram.service` — mounts the tmpfs at boot (one-shot).
 - `log2ram-daily.timer` → `log2ram-daily.service` — `OnCalendar=*-*-* 23:55:00`, runs `systemctl reload log2ram.service` which triggers the rsync back to NVMe.
 
+## The fill risk
+
+If a tmpfs fills **before** the 23:55 sync, further writes fail **silently** — logs are dropped with no error. This is the single most important failure mode of the design.
+
+`beaconbutty-health.sh` watches it. It reads `PATH_DISK` from `/etc/log2ram.conf` and checks each mounted path in turn; it previously guarded on `mountpoint -q /var/log`, which turned the whole check into a silent no-op the moment `/var/log` stopped being a mount (i.e. from the 2026-08-28 rescope onwards).
+
+| Usage | Status |
+|---|---|
+| < 70 % | ✓ OK |
+| 70–84 % | ⚠ WARN |
+| ≥ 85 % | ✗ FAIL — "may drop logs before 23:55 sync" |
+
+The dashboard log2ram tile uses the same 70 / 85 thresholds.
+
 ## What's on log2ram
 
 Only the two bulk traffic-log paths:
@@ -134,7 +148,7 @@ This matches Suricata's 14-day archive convention. ~350 MB steady-state footprin
 
 ### dnsmasq → `/var/lib/beaconbutty/logs/`
 
-The dnsmasq block lives in `/etc/logrotate.d/beaconbutty`:
+`/var/log/dnsmasq.log` itself is on NVMe since the 2026-08-28 rescope, so this rotation is now about **retention**, not about getting the data off RAM. The block lives in `/etc/logrotate.d/beaconbutty`:
 
 ```
 /var/log/dnsmasq.log {
@@ -153,7 +167,7 @@ The dnsmasq block lives in `/etc/logrotate.d/beaconbutty`:
 - Archives live in `/var/lib/beaconbutty/logs/` on NVMe via `olddir` (same pattern as Suricata)
 - Had the same lastaction-mv overwrite bug as Suricata; fixed 2026-04-24 — see the warning callout above
 
-### BeaconButty operational → stay on log2ram (weekly, 8 weeks)
+### BeaconButty operational → NVMe (weekly, 8 weeks)
 
 `/etc/logrotate.d/beaconbutty`:
 
@@ -167,11 +181,14 @@ The dnsmasq block lives in `/etc/logrotate.d/beaconbutty`:
 }
 ```
 
-Small footprint — no offload configured. Contents persist in log2ram for 8 weeks' worth of rotations and rejoin NVMe only at the nightly sync.
+Small footprint — no offload configured, and none needed: since the rescope `/var/log/beaconbutty/` is written straight to NVMe, so `watchdog.log` and `alerts.log` are durable the instant they are written rather than at 23:55.
 
-### Everything else (syslog, auth, apt, fail2ban…)
+### Everything else (journal, auth, apt, fail2ban…)
 
-Standard Debian logrotate defaults. All archives live in `/var/log/...` (log2ram) and sync to NVMe at 23:55.
+Standard Debian logrotate defaults, and since the rescope these paths are ordinary NVMe files — log2ram is not involved at any point in their life.
+
+> [!important] Rule of thumb
+> New BeaconButty data files go under `/var/lib/beaconbutty/`, **never** under `/var/log`. Anything bulk placed under `/var/log/zeek` or `/var/log/suricata` competes for a 1 G tmpfs and, when it fills, is dropped silently. ClickHouse's server logs were moved to `/var/lib/clickhouse/logs/` for exactly this reason.
 
 ## Nightly sync (23:55)
 
@@ -180,22 +197,37 @@ systemctl list-timers log2ram-daily.timer
 journalctl -u log2ram-daily.service --since "2 days ago" --no-pager
 ```
 
-The sync runs `rsync` from the tmpfs to `/var/log.hdd/` on NVMe — so the NVMe copy is at most 24 hours stale. On reboot, log2ram reads from `/var/log.hdd/` back into tmpfs.
+The sync rsyncs each tmpfs down to its **own** backing store on NVMe — `/var/log/zeek` → `/var/log/hdd.zeek`, `/var/log/suricata` → `/var/log/hdd.suricata` — so each NVMe copy is at most 24 hours stale. On boot, log2ram copies the backing store back up into tmpfs. (`/var/hdd.log` is the empty leftover of the pre-rescope whole-`/var/log` layout; `log2ram.service` still names it in `RequiresMountsFor`, so leave the directory in place.)
 
 > [!warning]
-> **Hard power loss lost-data window**: last entry of any log file since the 23:55 sync is gone. Rotated archives (Suricata + dnsmasq) are safe because they've already been moved to NVMe on rotation. BeaconButty operational logs, current-day live log tails (eve.json, dnsmasq.log, syslog), and any journal spillover are the exposed surface.
+> **Hard power-loss window**: for the two RAM-backed paths, everything written since the last 23:55 sync is gone. Since the rescope that is Zeek's traffic logs and Suricata's `eve.json` / `fast.log` / `stats.log` only — bulk evidence that regenerates continuously, not the incident record. Rotated Suricata archives are already safe on NVMe. Everything wanted *after* an incident — the journal, `beaconbutty/watchdog.log`, `beaconbutty/alerts.log`, `dnsmasq.log` — no longer lives in RAM at all.
+
+### Verified on the 2026-08-28 reboot
+
+First reboot after the rescope, at 21:30. All three properties held:
+
+| Property | Evidence |
+|---|---|
+| Shutdown writeback completes | log2ram's own rsync logged `sent 459,553,001 bytes … total size is 458,833,398` |
+| Nothing lost in the round trip | `2026-08-27` and `2026-08-28` under `/var/log/zeek` matched their `hdd.zeek` counterparts exactly — 472 files / 38,972,950 B and 536 files / 33,588,635 B |
+| The journal survives a reboot | `journalctl --list-boots` listed the pre-reboot boot (16:54 → 21:29) alongside the new one — the first reboot on which it did |
+
+`beaconbutty-health.sh` came back all-green afterwards: 51% of the zeek tmpfs, 2% of the suricata one, no failed units, Zeek capturing 912 conn rows in the first five minutes.
+
+> [!tip] `du` overstates the tmpfs — don't read a size gap as data loss
+> `/var/log/zeek` reports 518M against 454M for `/var/log/hdd.zeek`. That is tmpfs page accounting over ~15k small gzips. When checking a writeback, compare apparent bytes (`find … -printf '%s\n'`) and file counts, never `du`.
 
 ## Live monitoring
 
 ```bash
-# Current usage
-df -h /var/log
+# Current usage of each RAM-backed path
+df -h /var/log/zeek /var/log/suricata
 
-# Top space users inside log2ram
-sudo du -sh /var/log/* 2>/dev/null | sort -rh | head
+# Top space users inside the zeek tmpfs
+sudo du -sh /var/log/zeek/* 2>/dev/null | sort -rh | head
 
-# Mount info (confirms tmpfs + size)
-mount | grep '/var/log '
+# Confirm what is actually RAM-backed — and, just as usefully, what is not
+findmnt -t tmpfs | grep log2ram
 
 # Next scheduled sync
 systemctl list-timers log2ram-daily.timer
@@ -209,21 +241,34 @@ Dashboard tile (webapp) shows current log2ram utilisation at a glance.
 ## Data-flow summary (what ends up where)
 
 ```
-LIVE WRITES                               AFTER ROTATION                     AFTER 23:55 SYNC
-─────────────────                         ──────────────────                  ──────────────────
-Suricata eve.json                 ─▶ log2ram ─▶ gz ─▶ /var/lib/suricata/archive/ (NVMe)
-Suricata fast.log                 ─▶ log2ram ─▶ gz ─▶ /var/lib/suricata/archive/ (NVMe)
-Zeek live (/opt/zeek/spool/zeek/) ─▶ tmpfs 128M ─▶ gz ─▶ /var/log/zeek/YYYY-MM-DD/ (log2ram, 7d)
-dnsmasq queries                   ─▶ log2ram ─▶ gz ─▶ /var/lib/beaconbutty/logs/ (NVMe)
-BeaconButty operational           ─▶ log2ram ─▶ gz ─▶ /var/log/beaconbutty/ (log2ram)
-syslog / auth / apt / fail2ban    ─▶ log2ram ─▶ gz ─▶ /var/log/... (log2ram)
+LIVE WRITES                                AFTER ROTATION                              DURABILITY
+───────────                                ──────────────                              ──────────
+Zeek live (/opt/zeek/spool/zeek/)  ─▶ own 128M tmpfs ─▶ gz ─▶ /var/log/zeek/<date>/    log2ram, 14d
+Suricata eve.json / fast.log       ─▶ /var/log/suricata     ─▶ gz ─▶ /var/lib/suricata/archive/   NVMe on rotation
+dnsmasq queries                    ─▶ /var/log/dnsmasq.log  ─▶ gz ─▶ /var/lib/beaconbutty/logs/   NVMe throughout
+BeaconButty operational            ─▶ /var/log/beaconbutty/ ─▶ gz ─▶ same dir                     NVMe throughout
+systemd journal                    ─▶ /var/log/journal/     ─▶ vacuum at 512M / 1 month           NVMe throughout
+ClickHouse server logs             ─▶ /var/lib/clickhouse/logs/                                   NVMe throughout
 
-All log2ram content ─────────────────────────────────────── rsync'd to NVMe at 23:55 ──▶ /var/log.hdd/
+Only the two RAM-backed paths need a sync ── 23:55 daily + clean stop ──▶ /var/log/hdd.zeek
+                                                                         /var/log/hdd.suricata
 ```
 
 ## Capacity headroom
 
 See [Capacity & Performance](../operation/capacity-and-performance.md) for the budget math. Short version: steady-state ~460 MB against a 1G cap leaves roughly 2× headroom for logrotate transient bursts.
+
+### Sizing history
+
+| Date | Change |
+|---|---|
+| (initial) | `SIZE=128M` |
+| 2026-04-16 | → `512M`; Suricata + Zeek logs consolidated under `/var/log` for unified log2ram management |
+| 2026-04-17 | → `1G` |
+| 2026-05-15 | Suricata `eve.json` trimmed to `alert`/`anomaly` — `/var/log` 70 % → 48 %. See *Upgrade Log*. |
+| 2026-08-28 | Rescoped: `PATH_DISK` narrowed from `/var/log` to `/var/log/zeek;/var/log/suricata`, `SIZE` applied **per path** |
+
+The Pi 5 has 8 GB RAM, so two 1 G tmpfs caps are comfortable. If usage creeps back toward 70 %, prefer **reducing log volume** (the eve.json trim is the model) over enlarging the tmpfs — a bigger tmpfs only defers the problem.
 
 ## See also
 
