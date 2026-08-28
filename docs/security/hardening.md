@@ -23,6 +23,28 @@ The script is idempotent and reports per-section ✓/!/✗ with a final failures
 | `tailscale0` | Tailnet (authenticated peers) | INPUT ACCEPT |
 | `lo` | Loopback | ACCEPT |
 
+> [!important] eth0 holds a **public** IP
+> bb0's WAN address is a routable public IP (not CGNAT), so it is directly internet-facing and its
+> firewall is the primary barrier. Both `sshd` and the webapp bind `0.0.0.0`, which made
+> iptables a **single point of failure**: a flushed ruleset, or `netfilter-persistent`
+> failing to load at boot, would have exposed them on a public IP.
+
+### Second-layer controls (added 2026-08-28, independent of netfilter)
+
+| Service | Control | Why this mechanism |
+|---------|---------|--------------------|
+| `ssh` | `/etc/systemd/system/ssh.service.d/10-bb-ipaddress-allow.conf` — `IPAddressDeny=any` plus LAN/Tailscale/loopback | BPF-based, enforced by systemd, so it holds even with no firewall. Chosen over `ListenAddress` because binding the Tailscale IP risks sshd failing to bind at boot before `tailscaled` is up. Restricts only the **listener** — logind puts SSH logins in `session-N.scope`, not `ssh.service`, so session egress is unaffected (verified). |
+| `bb-graphs` (webapp) | `_restrict_to_local_networks()` `@app.before_request` in `webapp/app.py` | **The UI has no authentication of any kind.** Client-address based rather than systemd `IPAddressAllow=`, because that filters **egress** too and would break the Slack buttons (`slack_cleaner2` reaches slack.com). |
+
+Provisioned by `harden.sh`, asserted by `beaconbutty-health.sh`. Verified: LAN, loopback and
+Tailscale all reach both services; the public WAN address gets **403** from the webapp and
+**no SSH banner**.
+
+> [!warning] The webapp has no authentication
+> Anyone who can reach `:443` — any LAN or tailnet host — gets the full console: device
+> inventory, beacon findings, FP registry. The ingress allowlist limits *where* from, not
+> *who*. Adding real auth remains open.
+
 ## Firewall (iptables)
 
 Baseline written by `07_router_mode.sh`, verified + extended by `harden.sh`:
@@ -146,6 +168,8 @@ Written to `/etc/sysctl.d/99-beaconbutty-hardening.conf`:
 | Alert shared secret | Hard-coded in `scripts/alert.sh` (`<shared-alert-secret>`) | Validated by Lambda via `X-BeaconButty-Secret` header |
 | SSH host keys | `/etc/ssh/ssh_host_*` | Standard sshd perms |
 | Tailscale state | `/var/lib/tailscale/` | root-only |
+| Site config incl. `BB_ALERT_SECRET` | `/etc/beaconbutty/local.env` | `0640 root:dm` — **must stay readable by `dm`** (bb-graphs and bb-watchdog run as that user). Was world-readable `0644` until 2026-08-28. |
+| Managed switch login | `/etc/beaconbutty/switch.env` | `0600 root:root`. SG2008P was on TP-Link factory defaults until 2026-08-28. |
 
 > [!danger]
 > All secrets live on the NVMe, which is cloned by `rpi-clone`. The USB clone drive therefore contains **every** production secret — keep it physically secured.

@@ -60,6 +60,48 @@ BB_TLS_CERT_DIR = os.environ.get("BB_TLS_CERT_DIR", "/etc/letsencrypt/live")
 TLS_FULLCHAIN   = f"{BB_TLS_CERT_DIR}/{BB_HOST}/fullchain.pem"
 TLS_PRIVKEY     = f"{BB_TLS_CERT_DIR}/{BB_HOST}/privkey.pem"
 
+# ── Ingress allowlist (defence in depth) ───────────────────────────────────────
+# This UI has no authentication and binds 0.0.0.0:443 on a box whose WAN interface
+# holds a *public* IP, so today iptables is the only thing keeping the whole beacon
+# console off the internet. That is a single control: flush the rules, or let
+# netfilter-persistent fail to load at boot, and the console is exposed.
+#
+# Reject any client outside the LAN / Tailscale / loopback so a firewall failure
+# degrades to 403s instead of full exposure. Deliberately client-address based and
+# NOT systemd IPAddressAllow=, because that filters egress too and would break the
+# Slack buttons (slack_cleaner2 reaches slack.com).
+_DEFAULT_ALLOWED_NETS = ",".join([
+    os.environ.get("BB_LAN_SUBNET", "192.168.50.0/24"),
+    "127.0.0.0/8", "::1/128",
+    "100.64.0.0/10",            # Tailscale IPv4 (CGNAT range)
+    "fd7a:115c:a1e0::/48",      # Tailscale IPv6
+])
+_ALLOWED_CLIENT_NETS = [
+    ipaddress.ip_network(n.strip())
+    for n in os.environ.get("BB_ALLOWED_CLIENT_NETS", _DEFAULT_ALLOWED_NETS).split(",")
+    if n.strip()
+]
+
+@app.before_request
+def _restrict_to_local_networks():
+    """403 anything that is not on the LAN, Tailscale, or loopback."""
+    addr = request.remote_addr
+    if not addr:
+        return "Forbidden", 403
+    try:
+        ip = ipaddress.ip_address(addr)
+    except ValueError:
+        return "Forbidden", 403
+    if ip.is_loopback:
+        return None
+    # IPv4-mapped IPv6 (::ffff:192.168.50.5) — compare on the embedded v4 address
+    mapped = getattr(ip, "ipv4_mapped", None)
+    if mapped is not None:
+        ip = mapped
+    if not any(ip in net for net in _ALLOWED_CLIENT_NETS):
+        return "Forbidden", 403
+    return None
+
 # ── Paths ──────────────────────────────────────────────────────────────────────
 WATCHDOG_DATA_DIR   = Path("/var/lib/beaconbutty/watchdog/data")
 HEALTH_STATUS_FILE  = Path("/var/lib/beaconbutty/watchdog/health-status.json")

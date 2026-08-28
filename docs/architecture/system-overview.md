@@ -38,7 +38,7 @@ BeaconButty uses RITA's statistical analysis to score these connections and surf
 
 **NVMe storage.** ClickHouse write amplification is too heavy for an SD card. An NVMe SSD via the Pironman case's M.2 slot is used for the OS and all data.
 
-**log2ram.** `/var/log` is a 1GB tmpfs to reduce NVMe wear from frequent log writes. Suricata live logs (`eve.json`, `stats.log`), Zeek daily log dirs, and dnsmasq.log are written here — eliminating ~250MB/day of continuous NVMe writes. log2ram syncs to NVMe once daily at 23:55. Rotated archives are offloaded to NVMe after compression (`/var/lib/suricata/archive/`, `/var/lib/beaconbutty/logs/`). Reports and ClickHouse data live outside `/var/log`.
+**log2ram.** Reduces NVMe wear by keeping the bulk traffic logs in RAM. **Rescoped 2026-08-28** to `PATH_DISK="/var/log/zeek;/var/log/suricata"` (1GB tmpfs each) — previously all of `/var/log`. It syncs to NVMe at 23:55 and on clean shutdown only, so anything it holds is lost in a power cut; that is now limited to traffic logs by design. The systemd journal, `/var/log/beaconbutty/` (`watchdog.log`, `alerts.log`) and `dnsmasq.log` are deliberately **on NVMe** so an incident's evidence survives an unclean stop. Rotated archives are offloaded after compression (`/var/lib/suricata/archive/`, `/var/lib/beaconbutty/logs/`). Reports and ClickHouse data live outside `/var/log`. See [Log2Ram Usage](log2ram-usage.md).
 
 **RITA v5.1.1.** The most recent version with a ClickHouse backend. Older RITA versions used MongoDB.
 

@@ -295,6 +295,31 @@ else
     rm -f "$SSHD_DROP_IN"
 fi
 
+# ── 3b. SSH peer allowlist, independent of netfilter ──────────────────────────
+# eth0 carries a PUBLIC IP and sshd binds 0.0.0.0:22, so without this iptables is
+# the ONLY control keeping SSH off the internet. IPAddressDeny/Allow is BPF-based
+# and enforced by systemd, so a flushed ruleset or a netfilter-persistent failure
+# at boot no longer means exposure.
+#
+# Safe wrt sessions: logind places SSH logins in session-N.scope under user.slice,
+# not in ssh.service, so this restricts only the sshd listener's own peers and does
+# not limit what a logged-in user can reach from inside a session.
+SSH_IPFILTER_DIR="/etc/systemd/system/ssh.service.d"
+SSH_IPFILTER="${SSH_IPFILTER_DIR}/10-bb-ipaddress-allow.conf"
+mkdir -p "$SSH_IPFILTER_DIR"
+cat > "$SSH_IPFILTER" <<EOF
+[Service]
+IPAddressDeny=any
+IPAddressAllow=127.0.0.0/8 ::1/128 ${BB_LAN_SUBNET:-192.168.50.0/24} 100.64.0.0/10 fd7a:115c:a1e0::/48
+EOF
+systemctl daemon-reload
+if systemctl restart ssh 2>/dev/null && systemctl is-active --quiet ssh; then
+    OK "SSH peer allowlist: LAN + Tailscale + loopback (systemd IPAddressDeny=any)."
+else
+    FAIL "ssh failed to restart with the peer allowlist — removing it."
+    rm -f "$SSH_IPFILTER"; systemctl daemon-reload; systemctl restart ssh || true
+fi
+
 # ── 4. fail2ban ───────────────────────────────────────────────────────────────
 echo ""
 echo -e "${BOLD}fail2ban (SSH brute-force protection)${RESET}"

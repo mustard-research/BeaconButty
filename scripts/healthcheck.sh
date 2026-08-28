@@ -165,18 +165,58 @@ if command -v vcgencmd &>/dev/null; then
     fi
 fi
 
-# log2ram tmpfs (/var/log) — silently drops logs if it fills before daily sync
-if mountpoint -q /var/log 2>/dev/null; then
-    LOG2RAM_PCT=$(df /var/log | awk 'NR==2 {gsub(/%/,"",$5); print $5}')
-    LOG2RAM_USED=$(df -h /var/log | awk 'NR==2 {print $3}')
-    LOG2RAM_SIZE=$(df -h /var/log | awk 'NR==2 {print $2}')
-    if [[ "$LOG2RAM_PCT" -lt 70 ]]; then
-        OK "log2ram (/var/log): ${LOG2RAM_PCT}% used  (${LOG2RAM_USED} of ${LOG2RAM_SIZE})"
-    elif [[ "$LOG2RAM_PCT" -lt 85 ]]; then
-        WARN "log2ram (/var/log): ${LOG2RAM_PCT}% used  (${LOG2RAM_USED} of ${LOG2RAM_SIZE})"
-    else
-        FAIL "log2ram (/var/log): ${LOG2RAM_PCT}% used  (${LOG2RAM_USED} of ${LOG2RAM_SIZE}) — may drop logs before 23:55 sync"
-    fi
+# log2ram tmpfs — silently drops logs if it fills before the daily 23:55 sync.
+# Read the paths from PATH_DISK rather than assuming /var/log: since 2026-08-28
+# log2ram is scoped to the bulk traffic logs only (/var/log/zeek;/var/log/suricata)
+# and /var/log itself is ordinary NVMe. Hardcoding /var/log made this check a no-op.
+LOG2RAM_PATHS=$(grep -oP '^PATH_DISK="\K[^"]+' /etc/log2ram.conf 2>/dev/null || true)
+if [[ -z "$LOG2RAM_PATHS" ]]; then
+    WARN "log2ram: PATH_DISK not readable from /etc/log2ram.conf — tmpfs fill unmonitored"
+else
+    LOG2RAM_SEEN=0
+    # PATH_DISK is semicolon-separated
+    while IFS= read -r L2R_PATH; do
+        [[ -z "$L2R_PATH" ]] && continue
+        mountpoint -q "$L2R_PATH" 2>/dev/null || continue
+        LOG2RAM_SEEN=1
+        LOG2RAM_PCT=$(df "$L2R_PATH" | awk 'NR==2 {gsub(/%/,"",$5); print $5}')
+        LOG2RAM_USED=$(df -h "$L2R_PATH" | awk 'NR==2 {print $3}')
+        LOG2RAM_SIZE=$(df -h "$L2R_PATH" | awk 'NR==2 {print $2}')
+        if [[ "$LOG2RAM_PCT" -lt 70 ]]; then
+            OK "log2ram (${L2R_PATH}): ${LOG2RAM_PCT}% used  (${LOG2RAM_USED} of ${LOG2RAM_SIZE})"
+        elif [[ "$LOG2RAM_PCT" -lt 85 ]]; then
+            WARN "log2ram (${L2R_PATH}): ${LOG2RAM_PCT}% used  (${LOG2RAM_USED} of ${LOG2RAM_SIZE})"
+        else
+            FAIL "log2ram (${L2R_PATH}): ${LOG2RAM_PCT}% used  (${LOG2RAM_USED} of ${LOG2RAM_SIZE}) — may drop logs before 23:55 sync"
+        fi
+    done < <(printf '%s\n' "$LOG2RAM_PATHS" | tr ';' '\n')
+    [[ "$LOG2RAM_SEEN" -eq 0 ]] && WARN "log2ram: no PATH_DISK entry is mounted (${LOG2RAM_PATHS}) — logs are on disk, not RAM"
+fi
+
+# Second-layer network controls. bb0's eth0 holds a PUBLIC IP and both sshd and the
+# (unauthenticated) webapp bind 0.0.0.0, so if these silently vanish — a package
+# upgrade dropping the drop-in, an edit removing the Flask guard — iptables becomes
+# the single control again with nothing to say so.
+if systemctl show ssh -p IPAddressDeny --value 2>/dev/null | grep -q '0.0.0.0/0'; then
+    OK "SSH peer allowlist: active  (systemd IPAddressDeny=any + LAN/Tailscale allow)"
+else
+    WARN "SSH peer allowlist: NOT active — iptables is the only control keeping SSH off the WAN"
+fi
+
+WEBAPP_SRC="/home/dm/BeaconButty/webapp/app.py"
+if grep -q '_restrict_to_local_networks' "$WEBAPP_SRC" 2>/dev/null; then
+    OK "Webapp ingress allowlist: present  (UI has no auth; this is its second control)"
+else
+    WARN "Webapp ingress allowlist: MISSING from app.py — unauthenticated UI protected only by iptables"
+fi
+
+# The journal must be persistent, or an unclean reboot leaves no forensic trail.
+# Raspberry Pi OS ships a 40- drop-in with Storage=volatile; ours must sort after it.
+JRNL_STORAGE=$(systemd-analyze cat-config systemd/journald.conf 2>/dev/null | grep '^Storage=' | tail -1 | cut -d= -f2)
+if [[ "$JRNL_STORAGE" == "persistent" ]] && [[ -d /var/log/journal ]]; then
+    OK "Journal: persistent  ($(du -sh /var/log/journal 2>/dev/null | cut -f1) on disk)"
+else
+    FAIL "Journal: Storage=${JRNL_STORAGE:-unset} — logs will not survive an unclean reboot (check 99-beaconbutty-persistent.conf ordering)"
 fi
 
 # Sustained-high-CPU state — reflects bb-watchdog's rolling 60-min CPU detector.

@@ -124,4 +124,4 @@ The Flask webapp reads beacon data two ways:
 | `/var/lib/clickhouse/logs/` | ClickHouse logs (NVMe — persistent) |
 
 > [!warning]
-> `/var/log` is a 1G log2ram tmpfs, synced to NVMe once daily at 23:55. Do not write large or database-critical data here — use `/var/lib/beaconbutty/` or `/var/lib/clickhouse/` instead.
+> Since 2026-08-28 log2ram covers **only `/var/log/zeek` and `/var/log/suricata`** (1G tmpfs each, synced to NVMe at 23:55 and on clean shutdown). The rest of `/var/log` — journal, `beaconbutty/`, `dnsmasq.log` — is on NVMe and survives an unclean stop. Do not write large or database-critical data under `/var/log` — use `/var/lib/beaconbutty/` or `/var/lib/clickhouse/`. See [Log2Ram Usage](log2ram-usage.md).

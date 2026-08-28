@@ -51,17 +51,46 @@ apt-get install -y --no-install-recommends "${ALL_DEPS[@]}"
 echo "Installing Python packages..."
 pip3 install --break-system-packages flask psutil geoip2
 
-# ── log2ram (reduce SSD write wear by keeping /var/log in RAM) ────────────────
+# ── log2ram (reduce SSD write wear by keeping the BULK logs in RAM) ───────────
+# Scope matters here. log2ram only writes back to disk on clean shutdown and once
+# daily at 23:55 (log2ram-daily.timer), so anything it holds is lost in a power cut
+# or panic. We therefore RAM only the high-churn traffic logs and leave every
+# forensically useful log durable on NVMe. See CLAUDE.md "log2ram" (2026-08-28).
 if ! command -v log2ram &>/dev/null; then
     echo "Installing log2ram..."
     curl -fsSL https://raw.githubusercontent.com/azlux/log2ram/master/install.sh | bash
-    # Set RAM log size to 1 GB — matches live bb0 (journal + dnsmasq +
-    # suricata + beaconbutty logs overflow the old 128M within a day,
-    # destroying live logs; see the 2026-04-15 Suricata gap).
+    # 1 GB per RAM'd path — Zeek alone holds ~515M (14-day retention).
     sed -i 's/^SIZE=.*/SIZE=1G/' /etc/log2ram.conf 2>/dev/null || true
 else
     echo "log2ram already installed."
 fi
+
+# Rescope to the bulk traffic logs only. NOTE: PATH_DISK is SEMICOLON-separated.
+# Durable on NVMe as a result: the systemd journal, /var/log/beaconbutty (watchdog
+# + alerts), dnsmasq.log, fail2ban.log, apt/, dpkg.log, unattended-upgrades/.
+if [[ -f /etc/log2ram.conf ]]; then
+    sed -i 's|^PATH_DISK=.*|PATH_DISK="/var/log/zeek;/var/log/suricata"|' /etc/log2ram.conf
+    echo "log2ram PATH_DISK: $(grep '^PATH_DISK=' /etc/log2ram.conf)"
+fi
+
+# ── Persistent systemd journal ────────────────────────────────────────────────
+# Raspberry Pi OS ships /usr/lib/systemd/journald.conf.d/40-rpi-volatile-storage.conf
+# with Storage=volatile. Drop-ins apply in LEXICAL order, so ours must sort after
+# "40-" to win — hence the 99- prefix. Anything lower is silently overridden and the
+# system looks healthy while keeping no journal across an unclean reboot.
+# Verify with: systemd-analyze cat-config systemd/journald.conf | grep '^Storage='
+mkdir -p /etc/systemd/journald.conf.d
+cat > /etc/systemd/journald.conf.d/99-beaconbutty-persistent.conf <<'JOURNALD'
+[Journal]
+Storage=persistent
+SystemMaxUse=512M
+SystemMaxFileSize=64M
+MaxRetentionSec=1month
+JOURNALD
+mkdir -p /var/log/journal
+systemd-tmpfiles --create --prefix /var/log/journal 2>/dev/null || true
+systemctl restart systemd-journald 2>/dev/null || true
+echo "journal storage: $(systemd-analyze cat-config systemd/journald.conf 2>/dev/null | grep '^Storage=' | tail -1)"
 
 # ── rpi-clone (full-disk USB backup) ─────────────────────────────────────────
 if ! command -v rpi-clone &>/dev/null; then

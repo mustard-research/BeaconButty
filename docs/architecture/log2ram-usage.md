@@ -11,11 +11,21 @@ This page is the definitive source on **what's on log2ram, when it syncs off, an
 
 ## How log2ram works (short version)
 
-1. On boot, `log2ram.service` mounts a **tmpfs** at `/var/log` (1 GB).
-2. The contents of `/var/log` on the underlying NVMe are copied into the tmpfs at mount time — so reads/writes behave as if nothing had changed.
-3. All writes to `/var/log` now hit RAM. The NVMe copy is stale until the next sync.
-4. `log2ram-daily.timer` fires at **23:55 every night**, calling `systemctl reload log2ram.service`, which rsync's the tmpfs **back down** to `/var/log` on NVMe.
-5. Reboot/shutdown also trigger a flush. **Hard power loss** (pulling the plug) skips the flush — anything written since the last 23:55 sync is lost.
+> [!warning] Rescoped 2026-08-28 — log2ram no longer covers all of `/var/log`
+> It now RAM-backs **only `/var/log/zeek` and `/var/log/suricata`**. Everything else in
+> `/var/log` — the systemd journal, `beaconbutty/`, `dnsmasq.log`, `fail2ban.log`, `apt/`,
+> `dpkg.log` — lives directly on NVMe and survives an unclean shutdown.
+>
+> **Why:** log2ram flushes only on clean shutdown and at 23:55. Before this change a power
+> cut or panic lost up to ~24h of *every* log, including `watchdog.log` and `alerts.log` —
+> precisely the evidence needed after an incident. The 2026-08-28 WAN outage survived only
+> because the reboot happened to be clean.
+
+1. On boot, `log2ram.service` mounts a **tmpfs** over each path in `PATH_DISK` (1 GB cap each).
+2. The on-NVMe contents of each path are copied into its tmpfs at mount time, so reads/writes behave as if nothing had changed.
+3. Writes to those paths hit RAM. The NVMe copy is stale until the next sync. Writes anywhere else under `/var/log` go straight to NVMe.
+4. `log2ram-daily.timer` fires at **23:55 every night**, rsync'ing each tmpfs **back down** to its NVMe backing store.
+5. Reboot/shutdown also trigger a flush. **Hard power loss** skips it — anything written to the RAM-backed paths since the last 23:55 sync is lost. That is now an acceptable loss (traffic logs only), which is the entire point of the rescope.
 
 ## Configuration
 
@@ -24,7 +34,7 @@ This page is the definitive source on **what's on log2ram, when it syncs off, an
 | Setting | Value | Notes |
 |---------|-------|-------|
 | `SIZE` | `1G` | tmpfs cap. Was 128M originally → 512M (2026-04-16) → 1G (2026-04-17). See *Upgrade Log*. |
-| `PATH_DISK` | `/var/log` | What gets RAM-backed |
+| `PATH_DISK` | `/var/log/zeek;/var/log/suricata` | What gets RAM-backed. **Semicolon-separated, not spaces.** Applies `SIZE` per path. Was `/var/log` until 2026-08-28. |
 | `ZL2R` | `false` | Zstd compression of RAM disk disabled (we have headroom) |
 | `LOG_DISK_SIZE` | `256M` | Cap on the NVMe-side mirror |
 
@@ -35,15 +45,36 @@ Unit files:
 
 ## What's on log2ram
 
-Everything under `/var/log/`. The high-volume residents are:
+Only the two bulk traffic-log paths:
 
-| Source | Live path | Approx. daily write volume |
-|--------|----------|----------------------------|
-| **Suricata** | `/var/log/suricata/eve.json`, `fast.log`, `stats.log` | ~200–250 MB (eve.json dominates) |
-| **Zeek rotated archives** | `/var/log/zeek/YYYY-MM-DD/` | ~25 MB/day rotated-in; steady state ~350 MB for 14 days |
-| **dnsmasq queries** | `/var/log/dnsmasq.log` | ~28 MB/day |
-| **BeaconButty operational** | `/var/log/beaconbutty/*.log` — includes `alerts.log`, report runs, housekeeping, etc. | ~1–5 MB/day |
-| **Systemd / package / auth** | `/var/log/syslog`, `daemon.log`, `auth.log`, `apt/`, `fail2ram/`, `journal/` (partial) | Small |
+| Source | Live path | Backing store on NVMe | Approx. volume |
+|--------|----------|----------------------|----------------|
+| **Zeek rotated archives** | `/var/log/zeek/YYYY-MM-DD/` | `/var/log/hdd.zeek` | ~40 MB/day rotated-in; steady state ~515 MB for 14 days |
+| **Suricata** | `/var/log/suricata/eve.json`, `fast.log`, `stats.log` | `/var/log/hdd.suricata` | ~11 MB live (eve.json trimmed to alert/anomaly only) |
+
+### Durable on NVMe (rescoped off log2ram 2026-08-28)
+
+These are the logs you need *after* an incident, so they must survive an unclean stop:
+
+| Source | Path | Why it matters |
+|--------|------|----------------|
+| **systemd journal** | `/var/log/journal/` | Persistent since 2026-08-28 — see below |
+| **BeaconButty operational** | `/var/log/beaconbutty/*.log` | `watchdog.log`, `alerts.log` — the incident record |
+| **dnsmasq queries** | `/var/log/dnsmasq.log` | ~28 MB/day; diagnosed the 2026-08-28 WAN outage |
+| **Package / auth** | `apt/`, `dpkg.log`, `fail2ban.log`, `unattended-upgrades/`, `letsencrypt/` | Change and access history |
+
+Cost of moving these to NVMe is ~40 MB/day (~15 GB/yr) against a 238 GB drive rated
+~100 TB+ TBW — negligible. Note log2ram already wrote the same bytes to its backing store
+on every sync, so this changed write *frequency*, not volume.
+
+### Persistent journal
+
+`/etc/systemd/journald.conf.d/99-beaconbutty-persistent.conf` sets `Storage=persistent`
+(512M cap, 1 month). **The `99-` prefix is load-bearing:** Raspberry Pi OS ships
+`/usr/lib/systemd/journald.conf.d/40-rpi-volatile-storage.conf` with `Storage=volatile`,
+and drop-ins apply in lexical order, so anything sorting below `40-` is silently
+overridden. Verify with `systemd-analyze cat-config systemd/journald.conf | grep '^Storage='`
+(last line wins) — never by reading our file alone.
 
 Not on log2ram (deliberately excluded — too large, too hot, or database-critical):
 
@@ -54,6 +85,7 @@ Not on log2ram (deliberately excluded — too large, too hot, or database-critic
 | **Zeek state.db + metadata** | `/opt/zeek/spool/` (parent) | Must survive reboot |
 | **BeaconButty data** | `/var/lib/beaconbutty/` | Reports, FP registry, assets — persistent |
 | **Rotated archives** | See below | Moved off log2ram at rotation time |
+| **`/var/hdd.log`** | `/var/hdd.log` | Empty leftover of the pre-2026-08-28 whole-`/var/log` layout. `log2ram.service` still names it in `RequiresMountsFor`, so leave the directory in place. |
 
 > [!important]
 > `/var/log` is for **active, hot** log files. Anything large or database-critical must use `/var/lib/...` instead. This is the single most common mistake when adding new logging.

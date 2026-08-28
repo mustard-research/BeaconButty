@@ -23,6 +23,12 @@ Also download the matching `packages-YYYY-MM-DD.txt` file.
   > All four ClickHouse overrides must be restored: `logs.xml`, `memory.xml`, `system-log-ttl.xml`, `merge-tree-compat.xml`. Repo copies live in `config/clickhouse/config.d/`; own them `clickhouse:clickhouse` and restart. **Omitting `merge-tree-compat.xml` breaks RITA silently on ClickHouse 26.7+** — the current day's import keeps working and the failure only appears at the next midnight rollover, when RITA cannot create the new day's database. See *Troubleshooting → RITA fails to create a new day's database*.
 - False positive registry, asset cache, Slack config
 - SSH server config, fail2ban, all of `/etc/sudoers.d/`, log2ram config, unattended-upgrades origins (`52beaconbutty-autoupdate`)
+- Journal persistence (`/etc/systemd/journald.conf.d/`)
+- Second-layer network controls: `/etc/systemd/system/ssh.service.d/10-bb-ipaddress-allow.conf` (restored with `/etc/systemd/system/`) and the `_restrict_to_local_networks` guard in `webapp/app.py` (restored with the repo)
+
+  > **Both must come back or a public-IP box is left with iptables as its only control.** eth0 holds a routable IP and `sshd` + the webapp bind `0.0.0.0`; the webapp has **no authentication at all**. `harden.sh` re-creates the SSH drop-in, and `beaconbutty-health.sh` asserts both — but a partial restore that skips `/etc/systemd/system/` or reverts `app.py` silently removes them.
+
+  > **Restore `99-beaconbutty-persistent.conf` or the journal silently goes volatile.** Raspberry Pi OS ships `/usr/lib/systemd/journald.conf.d/40-rpi-volatile-storage.conf` with `Storage=volatile`; drop-ins apply in lexical order, so our file must keep a `99-` prefix to win. Without it the system looks healthy but keeps no journal across an unclean reboot — the failure is invisible until you actually need the logs. Verify with `systemd-analyze cat-config systemd/journald.conf | grep '^Storage='` (last line wins), not by reading our file alone. Related: log2ram now RAMs only `/var/log/zeek` and `/var/log/suricata` (`PATH_DISK`, semicolon-separated), so everything else in `/var/log` is durable on NVMe.
 - root's crontab (now normally empty — Zeek supervision moved to `zeek-cron.timer` 2026-07-06)
 - Boot firmware config (`/boot/firmware/config.txt`, `cmdline.txt`)
 - certbot renewal config, ACME account, deploy hook, AWS credentials for Route 53
