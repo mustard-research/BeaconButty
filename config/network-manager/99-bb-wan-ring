@@ -1,0 +1,49 @@
+#!/bin/sh
+# BeaconButty — WAN interface RX ring sizing.
+#
+# The Pi 5's macb NIC ships a 512-descriptor RX ring (hardware max 8192).
+# bb0 is the NAT router, so eth0 carries the whole LAN's inbound traffic
+# (~124 GB/day). A 512-entry ring holds only ~6 ms of line-rate traffic, so
+# any short scheduling delay on CPU0 — which handles eth0's single IRQ and
+# single RX queue — overruns it. That shows up as rx_resource_errors, NOT as
+# a wire error: 4.67M of them (5.7% of inbound frames) over 23 h on
+# 2026-08-29, plus 117k rx_overruns.
+#
+# This is a ring-depth problem, not a CPU one. /proc/net/softnet_stat showed
+# time_squeeze 0 and dropped 0 on every CPU at the same time, so NAPI was
+# keeping up and only the descriptor supply ran dry. Raising the ring is
+# therefore sufficient; RPS/IRQ-affinity tuning is not needed. (macb exposes
+# a single fixed RX queue — `ethtool -l` returns EOPNOTSUPP — so RPS would be
+# the only way to spread it, and there is no evidence that is required.)
+#
+# TX is deliberately left alone: tx errors 0 and 2 dropped of 13.5M frames.
+#
+# The interface is NetworkManager-managed, so ifupdown stanzas under
+# /etc/network/interfaces.d/ never apply — this dispatcher hook re-applies
+# the setting on every interface up.
+#
+# Deployed to /etc/NetworkManager/dispatcher.d/ by scripts/05_configure.sh.
+
+WAN_IFACE="eth0"
+WAN_RX_RING="4096"
+[ -f /etc/beaconbutty/local.env ] && . /etc/beaconbutty/local.env
+WAN_IFACE="${BB_WAN_IFACE:-$WAN_IFACE}"
+WAN_RX_RING="${BB_WAN_RX_RING:-$WAN_RX_RING}"
+
+[ "$1" = "$WAN_IFACE" ] || exit 0
+
+case "$2" in
+    up)
+        # Resizing the ring reinitialises the DMA rings and can bounce the
+        # link, which would fire this hook again. Only act when the value
+        # actually differs, so the hook is idempotent and cannot loop.
+        current=$(ethtool -g "$WAN_IFACE" 2>/dev/null | \
+            awk '/^Current hardware settings:/{f=1} f&&/^RX:/{print $2; exit}')
+
+        [ -n "$current" ] || exit 0
+        [ "$current" = "$WAN_RX_RING" ] && exit 0
+
+        ethtool -G "$WAN_IFACE" rx "$WAN_RX_RING" 2>/dev/null || true
+        ;;
+esac
+exit 0

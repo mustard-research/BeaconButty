@@ -286,6 +286,37 @@ for iface in eth0 eth1; do
     fi
 done
 
+# WAN RX ring depth. The macb default of 512 descriptors holds only ~6 ms of
+# line-rate traffic; bb0 routes the whole LAN through eth0, so short scheduling
+# delays on CPU0 (single IRQ, single RX queue) overrun it and the NIC drops
+# frames as rx_resource_errors. Those are host-side starvation, NOT wire errors,
+# so they are invisible to every other check here — assert the ring explicitly,
+# because a dropped dispatcher hook would otherwise regress silently.
+WAN_RING_IFACE="${BB_WAN_IFACE:-eth0}"
+WAN_RING_WANT="${BB_WAN_RX_RING:-4096}"
+WAN_RING_NOW=$(ethtool -g "$WAN_RING_IFACE" 2>/dev/null | \
+    awk '/^Current hardware settings:/{f=1} f&&/^RX:/{print $2; exit}')
+if [[ -z "$WAN_RING_NOW" ]]; then
+    : # driver doesn't report ring params — nothing to assert
+elif [[ "$WAN_RING_NOW" -ge "$WAN_RING_WANT" ]]; then
+    OK "${WAN_RING_IFACE} RX ring: $WAN_RING_NOW descriptors"
+else
+    WARN "${WAN_RING_IFACE} RX ring: $WAN_RING_NOW (expected $WAN_RING_WANT) — NIC will drop inbound frames under load; check dispatcher hook 99-bb-wan-ring"
+fi
+
+# Report the symptom the ring guards against, as a share of all inbound frames.
+RX_FRAMES=$(ethtool -S "$WAN_RING_IFACE" 2>/dev/null | awk '/rx_frames:/{print $2; exit}')
+RX_STARVED=$(ethtool -S "$WAN_RING_IFACE" 2>/dev/null | \
+    awk '/rx_resource_errors:|rx_overruns:/{s+=$2} END{print s+0}')
+if [[ -n "$RX_FRAMES" && "$RX_FRAMES" -gt 0 ]]; then
+    RX_PCT=$(( RX_STARVED * 1000 / RX_FRAMES ))   # tenths of a percent
+    if [[ "$RX_PCT" -ge 10 ]]; then
+        WARN "${WAN_RING_IFACE} inbound drops: ${RX_STARVED} starved frames (${RX_PCT:0:-1}.${RX_PCT: -1}% of ${RX_FRAMES}) since boot"
+    else
+        OK "${WAN_RING_IFACE} inbound drops: ${RX_STARVED} starved frames (<0.1% of ${RX_FRAMES})"
+    fi
+fi
+
 # WAN connectivity
 if ping -c 1 -W 3 -q 1.1.1.1 &>/dev/null; then
     WAN_IP=$(ip -4 addr show eth0 2>/dev/null | awk '/inet / {print $2}' | head -1)

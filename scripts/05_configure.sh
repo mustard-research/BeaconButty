@@ -56,6 +56,11 @@ ethtool -K "$CAPTURE_IFACE" \
 install -m 755 "$SCRIPT_DIR/config/network-manager/99-bb-capture-offload" \
     /etc/NetworkManager/dispatcher.d/99-bb-capture-offload
 
+# The WAN NIC's default 512-descriptor RX ring overruns under router load
+# (rx_resource_errors); size it up on every interface up, same mechanism.
+install -m 755 "$SCRIPT_DIR/config/network-manager/99-bb-wan-ring" \
+    /etc/NetworkManager/dispatcher.d/99-bb-wan-ring
+
 # ── RITA configuration ────────────────────────────────────────────────────────
 echo "Configuring RITA..."
 mkdir -p /etc/rita /etc/rita/threat_intel_feeds

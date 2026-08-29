@@ -58,6 +58,7 @@ tar -czf "$OUT" \
     /etc/NetworkManager/system-connections/bb-lan.nmconnection \
     /etc/NetworkManager/system-connections/bb-wan.nmconnection \
     /etc/NetworkManager/dispatcher.d/99-bb-capture-offload \
+    /etc/NetworkManager/dispatcher.d/99-bb-wan-ring \
     /etc/beaconbutty/ \
     /etc/apt/apt.conf.d/52beaconbutty-autoupdate \
     /etc/ssl/tailscale/ \

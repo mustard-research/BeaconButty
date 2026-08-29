@@ -358,6 +358,8 @@ fi
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 install -m 755 "$REPO_DIR/config/network-manager/99-bb-capture-offload" \
     /etc/NetworkManager/dispatcher.d/99-bb-capture-offload
+install -m 755 "$REPO_DIR/config/network-manager/99-bb-wan-ring" \
+    /etc/NetworkManager/dispatcher.d/99-bb-wan-ring
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 7: Install WAN watchdog

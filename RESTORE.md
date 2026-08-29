@@ -17,7 +17,7 @@ Also download the matching `packages-YYYY-MM-DD.txt` file.
 - All of `/etc/systemd/system/` (units, timers, and the `.wants/` enablement symlinks)
 - Full webapp source (`/home/dm/BeaconButty/`)
 - **Site config `/etc/beaconbutty/local.env`** — BB_HOST, LAN subnet/gateway MAC, alert Lambda URL + shared secret. Without this the alert pipeline and gateway-impersonation check are dead; restore it before enabling services.
-- Network config: NetworkManager profiles (eth0 WAN / eth1 LAN), the capture-offload dispatcher hook (`/etc/NetworkManager/dispatcher.d/99-bb-capture-offload`), dnsmasq, iptables rules, sysctl tweaks
+- Network config: NetworkManager profiles (eth0 WAN / eth1 LAN), the dispatcher hooks (`/etc/NetworkManager/dispatcher.d/99-bb-capture-offload` for capture offloads, `99-bb-wan-ring` for the eth0 RX ring depth), dnsmasq, iptables rules, sysctl tweaks
 - App config: RITA (`/etc/rita/`), Suricata, ClickHouse `config.d/` overrides (memory cap, log path, TTLs, **MergeTree schema compat**), Zeek site policy
 
   > All four ClickHouse overrides must be restored: `logs.xml`, `memory.xml`, `system-log-ttl.xml`, `merge-tree-compat.xml`. Repo copies live in `config/clickhouse/config.d/`; own them `clickhouse:clickhouse` and restart. **Omitting `merge-tree-compat.xml` breaks RITA silently on ClickHouse 26.7+** — the current day's import keeps working and the failure only appears at the next midnight rollover, when RITA cannot create the new day's database. See *Troubleshooting → RITA fails to create a new day's database*.
