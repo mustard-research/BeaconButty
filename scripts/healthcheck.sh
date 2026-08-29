@@ -304,17 +304,28 @@ else
     WARN "${WAN_RING_IFACE} RX ring: $WAN_RING_NOW (expected $WAN_RING_WANT) — NIC will drop inbound frames under load; check dispatcher hook 99-bb-wan-ring"
 fi
 
-# Report the symptom the ring guards against, as a share of all inbound frames.
-RX_FRAMES=$(ethtool -S "$WAN_RING_IFACE" 2>/dev/null | awk '/rx_frames:/{print $2; exit}')
+# Report the symptom the ring guards against. Deliberately a DELTA, not the
+# since-boot total: the cumulative figure can never fall, so warning on it would
+# leave a warning that stays red for the rest of the uptime even once the ring
+# fix has taken hold — an alert that cannot go green is an alert people learn to
+# ignore. What matters is whether frames are STILL being starved.
+RX_STARVED_STATE="/var/lib/beaconbutty/wan-rx-starved.last"
 RX_STARVED=$(ethtool -S "$WAN_RING_IFACE" 2>/dev/null | \
     awk '/rx_resource_errors:|rx_overruns:/{s+=$2} END{print s+0}')
-if [[ -n "$RX_FRAMES" && "$RX_FRAMES" -gt 0 ]]; then
-    RX_PCT=$(( RX_STARVED * 1000 / RX_FRAMES ))   # tenths of a percent
-    if [[ "$RX_PCT" -ge 10 ]]; then
-        WARN "${WAN_RING_IFACE} inbound drops: ${RX_STARVED} starved frames (${RX_PCT:0:-1}.${RX_PCT: -1}% of ${RX_FRAMES}) since boot"
+if [[ -n "$RX_STARVED" ]]; then
+    RX_STARVED_PREV=$(cat "$RX_STARVED_STATE" 2>/dev/null || echo "")
+    if [[ -z "$RX_STARVED_PREV" ]]; then
+        OK "${WAN_RING_IFACE} starved frames: ${RX_STARVED} since boot (first check — baseline recorded)"
+    elif [[ "$RX_STARVED" -lt "$RX_STARVED_PREV" ]]; then
+        # Counter went backwards: reboot or driver reload reset it.
+        OK "${WAN_RING_IFACE} starved frames: counter reset (now ${RX_STARVED}) — baseline re-recorded"
+    elif [[ "$RX_STARVED" -gt "$RX_STARVED_PREV" ]]; then
+        WARN "${WAN_RING_IFACE} starved frames: +$(( RX_STARVED - RX_STARVED_PREV )) since last check (${RX_STARVED} since boot) — RX ring $WAN_RING_NOW may still be too small"
     else
-        OK "${WAN_RING_IFACE} inbound drops: ${RX_STARVED} starved frames (<0.1% of ${RX_FRAMES})"
+        OK "${WAN_RING_IFACE} starved frames: none since last check (${RX_STARVED} since boot)"
     fi
+    # Best-effort: a non-root run just skips the update rather than failing.
+    echo "$RX_STARVED" > "$RX_STARVED_STATE" 2>/dev/null || true
 fi
 
 # WAN connectivity
