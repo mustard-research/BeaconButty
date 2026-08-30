@@ -120,7 +120,8 @@
         Windows are what the <strong>{{ outages.probe_mins }}-minutely</strong> watchdog probe detected, so each
         start and end is accurate to about &plusmn;{{ outages.probe_mins }} min and an outage shorter than the gap
         between two probes leaves no trace — a quiet day means &ldquo;none seen&rdquo;, not
-        &ldquo;none happened&rdquo;.
+        &ldquo;none happened&rdquo;. Durations are rounded to that cadence — hover one for the
+        exact detected span.
         {% if outages.last30.count %}
           Last 30 days: <strong>{{ outages.last30.count }}</strong> outage{{ '' if outages.last30.count == 1 else 's' }},
           {{ fmt_duration(outages.last30.total_secs) }} of downtime.
@@ -159,7 +160,8 @@
                 <span style="font-family:inherit;color:var(--text-muted,#888);"> (+1d)</span>{% endif %}
             </td>
             <td style="padding:5px 12px 5px 0;white-space:nowrap;">
-              {{ fmt_duration(o.duration_secs) }}
+              <span class="bb-pop" tabindex="0" style="cursor:help;"
+                    data-pop="Detected {{ o.start[11:19] }} → {% if o.ongoing %}still failing{% else %}{{ o.end[11:19] }}{% endif %}: {{ o.duration_secs }}s between log lines, rounded to the {{ outages.probe_mins }}-minute probe cadence. A failing check spends ~12s on dead pings before it logs and a recovering one logs after ~1s, so the raw gap always reads a few seconds short of a whole interval.">{{ fmt_duration(o.duration_secs) }}</span>
               {%- if o.ongoing %}
                 <span style="color:#f44336;font-weight:600;"> · ongoing</span>
               {%- elif o.end_estimated %}

@@ -283,12 +283,26 @@ def collect(persist=False, now=None):
 # ── Summaries ────────────────────────────────────────────────────────────────
 
 def fmt_duration(secs):
+    """
+    Format a duration, rounding to the nearest minute above a minute.
+
+    Rounding rather than flooring is load-bearing. The watchdog's runs are
+    exactly PROBE_INTERVAL_SECS apart, but the timestamps we measure between
+    are when each run *logged*, and the two runs do unequal amounts of work
+    first: a failing check spends ~12s pinging two dead externals and then the
+    gateway before it writes its line, while the recovering check writes after
+    ~1s because the first host answers. So a one-interval outage measures ~289s,
+    not 300s. Floored, that prints as "4m" — a duration a 5-minutely probe
+    cannot possibly have observed, and an invitation to trust a precision this
+    data does not have. Rounding puts it back on the probe cadence it came from.
+    """
     secs = int(secs or 0)
     if secs < 60:
         return f"{secs}s"
-    if secs < 3600:
-        return f"{secs // 60}m"
-    h, m = divmod(secs // 60, 60)
+    mins = (secs + 30) // 60
+    if mins < 60:
+        return f"{mins}m"
+    h, m = divmod(mins, 60)
     return f"{h}h {m}m" if m else f"{h}h"
 
 
