@@ -374,7 +374,7 @@ cp "$SCRIPT_DIR/systemd/wan-watchdog.timer"   /etc/systemd/system/
 
 systemctl daemon-reload
 systemctl enable wan-watchdog.timer
-echo "  WAN watchdog enabled (runs every 5 minutes after reboot)."
+echo "  WAN watchdog enabled (runs every minute after reboot)."
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 8: Reboot

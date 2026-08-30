@@ -270,7 +270,7 @@ do_wan_watchdog() {
     require_root || return
     hdr "WAN Watchdog — Manual Run"
     info "WAN interface: $WAN_IFACE"
-    info "Normally run by systemd timer every 5 minutes."
+    info "Normally run by systemd timer every minute."
     run_with_env "$SCRIPTS/wan-watchdog.sh"
 }
 

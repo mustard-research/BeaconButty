@@ -1674,9 +1674,12 @@ def load_health():
 
 
 # How old wan-status.json may be before we stop trusting it. The timer runs
-# every 5 min; 12 min allows one missed run plus slack before we tell the user
-# the reading is stale rather than quietly showing an old "all clear".
-WAN_STATUS_STALE_SECS = 12 * 60
+# every minute (5-minutely before 2026-08-30), so this can be far tighter than
+# it was — the floor is one run's own duration, since the status is written once
+# per run: RUN_DEADLINE_SECS caps a failing run at 45s, so 4 min still absorbs a
+# slow run plus two missed ticks before we tell the user the reading is stale
+# rather than quietly showing an old "all clear".
+WAN_STATUS_STALE_SECS = 4 * 60
 
 
 def load_wan_status():
@@ -1684,8 +1687,8 @@ def load_wan_status():
     Load wan-status.json written by wan-watchdog.sh.
 
     Returns {} if absent/corrupt. Adds derived 'age_secs' and 'stale' so the
-    template never implies real-time truth: the underlying check is 5-minutely,
-    so a short outage can fall between two runs.
+    template never implies real-time truth: the underlying check is minutely, so
+    a short outage can still fall between two runs.
     """
     try:
         with open(WAN_STATUS_FILE) as f:

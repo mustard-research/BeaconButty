@@ -3,7 +3,9 @@ set -euo pipefail
 
 # wan-watchdog.sh
 #
-# Runs every 5 minutes via wan-watchdog.timer. Two independent checks:
+# Runs every minute via wan-watchdog.timer (was 5-minutely until 2026-08-30 —
+# the cadence bounds how precisely an outage's ONSET can be known, which no
+# amount of escalation after detection can improve). Two independent checks:
 #   1. WAN interface has an IP (self-recover only for our stack)
 #   2. External DNS still resolves (tripwire for a silently-broken resolv.conf)
 #
@@ -27,14 +29,28 @@ set -euo pipefail
 
 WAN_IFACE="${WAN_IFACE:-eth0}"
 NM_CONN="${NM_CONN:-bb-wan}"    # NetworkManager connection profile for WAN
-FAIL_THRESHOLD=3
+# The threshold is a DURATION, not a number of checks. It gates two actions —
+# re-applying the NM connection when the WAN has no IP, and firing the DNS
+# service_down alert — and both mean "this has been broken for a quarter of an
+# hour", not "this failed three times". Expressing it as a bare count meant the
+# cadence change on 2026-08-30 (5 min → 1 min) would have silently retuned both
+# from 15 minutes to 3 without a line of either being touched.
+#
+# CHECK_INTERVAL_SECS comes from the service unit, single-sourced from the
+# timer's OnUnitActiveSec. This division is only valid while a run cannot
+# outlast one tick — see RUN_DEADLINE_SECS below, which is what guarantees it.
+CHECK_INTERVAL_SECS="${CHECK_INTERVAL_SECS:-60}"
+FAIL_AFTER_SECS="${FAIL_AFTER_SECS:-900}"          # 15 min, unchanged since 2026-07
+FAIL_THRESHOLD=$(( FAIL_AFTER_SECS / CHECK_INTERVAL_SECS ))
+(( FAIL_THRESHOLD < 1 )) && FAIL_THRESHOLD=1
+
 # Overridable so the failure path can be exercised against blackholed addresses
 # without breaking the WAN. Nothing in production sets it.
 PROBE_HOSTS="${PROBE_HOSTS:-1.1.1.1 8.8.8.8}"
 DNS_PROBE_HOST="${DNS_PROBE_HOST:-cloudflare.com}"
 
 # Once a check fails, drop to this cadence until we see recovery. Without it,
-# recovery is only ever noticed by the next 5-minutely run, so every outage
+# recovery is only ever noticed by the next scheduled run, so every outage
 # measures a whole probe interval and a 3-second VRRP failover is
 # indistinguishable from a nine-minute transit break — which is precisely the
 # question the classification is trying to answer. The ceiling leaves ~90s of
@@ -44,9 +60,14 @@ DNS_PROBE_HOST="${DNS_PROBE_HOST:-cloudflare.com}"
 # slow case), so a ceiling measured from the end of the burst leaves total
 # runtime unbounded and one slow burst away from a SIGTERM at TimeoutStartSec —
 # which would kill the watchdog in the middle of the outage it exists to watch.
-# Keep this comfortably below the unit's TimeoutStartSec=300, allowing for the
-# DNS tripwire that still runs after the loop.
-RUN_DEADLINE_SECS="${RUN_DEADLINE_SECS:-260}"
+#
+# It must also stay BELOW CHECK_INTERVAL_SECS. Two runs overlapping would make
+# systemd skip ticks, which stops the consecutive-failure count advancing once
+# per minute and quietly breaks the FAIL_THRESHOLD arithmetic above. That is why
+# the long escalation ceiling shrank when the cadence went to 1 min: at this
+# cadence the timer itself supplies the repetition, so the in-run loop only has
+# to cover the gap until the next tick.
+RUN_DEADLINE_SECS="${RUN_DEADLINE_SECS:-45}"
 ESCALATE_INTERVAL="${ESCALATE_INTERVAL:-10}"
 
 # Overridable alongside PROBE_HOSTS so a simulated outage can be run against
@@ -212,7 +233,7 @@ else
     # die. See lib/bb_wan_diag.py for why the old ICMP-only split was useless.
     STATE=""; VERDICT=""; GW_REACH=null
     if [[ -x "$DIAG_BIN" ]]; then
-        DIAG_ARGS=(--iface "$WAN_IFACE" --gateway "$GW"
+        DIAG_ARGS=(--iface "$WAN_IFACE" --gateway "$GW" --externals-down
                    --outage-start "$OUTAGE_START" --probe-hosts "$PROBE_HOSTS")
         [[ -n "$LAST_OK_AT"     ]] && DIAG_ARGS+=(--last-ok "$LAST_OK_AT")
         [[ "$FIRST_CHECK" == 1  ]] && DIAG_ARGS+=(--full)
@@ -251,6 +272,10 @@ else
     # SECONDS is time since the script started, so this compares against the
     # whole run rather than restarting the clock after the burst.
     while (( SECONDS < RUN_DEADLINE_SECS )); do
+        # Check there is room for a whole interval before sleeping — otherwise a
+        # coarse sleep walks straight past the deadline the whole point of which
+        # is to finish before the next tick.
+        (( RUN_DEADLINE_SECS - SECONDS < ESCALATE_INTERVAL )) && break
         sleep "$ESCALATE_INTERVAL"
         for host in $PROBE_HOSTS; do
             if ping -c 1 -W 2 -q "$host" &>/dev/null; then
@@ -260,7 +285,7 @@ else
                 # DNS is deliberately not tested on this path: we recovered
                 # seconds ago and the resolver may not have caught up yet, so a
                 # probe now would report a failure that is not one. The next
-                # scheduled run tests it 5 minutes from now.
+                # scheduled run tests it a minute from now.
                 write_status ok "WAN reachable — recovered during fast probe" \
                              "$GW" true 0 null
                 exit 0
@@ -271,8 +296,21 @@ fi
 
 # ── Check 3: DNS tripwire ─────────────────────────────────────────────────────
 # Only runs when we actually have a WAN IP so that an ISP outage doesn't
-# masquerade as a DNS fault.
-if getent hosts "$DNS_PROBE_HOST" >/dev/null 2>&1; then
+# masquerade as a DNS fault — and, since 2026-08-30, only when the WAN is
+# actually REACHABLE.
+#
+# A lookup cannot succeed while the WAN is down, so running it there guaranteed
+# a failure, advanced dns-fails on every check, and eventually fired a
+# service_down alert reading "DNS resolution failing — check resolv.conf
+# nameservers" in the middle of an ISP outage. That happened on 2026-08-14: the
+# log shows "Fail 3/3 — likely ISP outage" followed 40s later by "DNS lookup
+# failed. Fail 3/3", pointing the reader at the resolver when the cause was the
+# ISP. The tripwire exists to catch a SILENTLY broken resolv.conf while the
+# network is otherwise fine; with the WAN down it has no signal to offer, so it
+# holds its counter rather than counting a failure it cannot attribute.
+if ! $REACHABLE; then
+    DNS_OK=null
+elif getent hosts "$DNS_PROBE_HOST" >/dev/null 2>&1; then
     DNS_OK=true
     PREV_DNS_FAILS=$(read_count "$DNS_STATE_FILE")
     write_count "$DNS_STATE_FILE" 0

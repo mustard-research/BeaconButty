@@ -76,7 +76,7 @@ def probe_carrier(iface):
 
     carrier_changes is included because it is the only counter that can prove a
     link bounced *between* two probes: a 4-second drop is invisible to a
-    5-minutely ping but leaves a permanent mark here.
+    scheduled ping but leaves a permanent mark here.
     """
     out = {"carrier": None, "carrier_changes": None, "operstate": None}
     for key, fname in (("carrier", "carrier"),
@@ -259,7 +259,7 @@ def append_sample(outage_start, sample, last_ok_at=None):
     return path
 
 
-def gather(iface, gateway, full=False, probe_hosts=()):
+def gather(iface, gateway, full=False, probe_hosts=(), externals_down=False):
     ev = {
         "at":      datetime.now().astimezone().isoformat(timespec="seconds"),
         "iface":   iface,
@@ -268,7 +268,15 @@ def gather(iface, gateway, full=False, probe_hosts=()):
     }
     ev["gateway_arp"]  = probe_gateway_arp(iface, gateway) if gateway else None
     ev["gateway_icmp"] = probe_icmp(iface, gateway) if gateway else False
-    ev["external_icmp"] = {h: probe_icmp(iface, h) for h in probe_hosts}
+    # The watchdog only calls this AFTER every external probe has already
+    # failed, so re-pinging them costs ~6s per dead host to learn what the
+    # caller already knows — and on a 60s check cadence that duplication is a
+    # meaningful slice of the budget the run has to finish inside. Standalone
+    # invocations still probe, so the tool stays honest when run by hand.
+    if externals_down:
+        ev["external_icmp"] = {h: False for h in probe_hosts}
+    else:
+        ev["external_icmp"] = {h: probe_icmp(iface, h) for h in probe_hosts}
     # The expensive probes run once per outage, on the first failing check. A
     # traceroute on every check would add ~8s to each and tell us the same thing.
     if full:
@@ -287,13 +295,17 @@ def main(argv=None):
     ap.add_argument("--outage-start", required=True)
     ap.add_argument("--last-ok", default="")
     ap.add_argument("--probe-hosts", default="1.1.1.1 8.8.8.8")
+    ap.add_argument("--externals-down", action="store_true",
+                    help="caller has already established every probe host is "
+                         "unreachable; record that instead of re-probing")
     ap.add_argument("--full", action="store_true",
                     help="also run traceroute/DHCP/tailscale (first check only)")
     ap.add_argument("--json", action="store_true", help="print the sample too")
     a = ap.parse_args(argv)
 
     ev = gather(a.iface, a.gateway, full=a.full,
-                probe_hosts=tuple(a.probe_hosts.split()))
+                probe_hosts=tuple(a.probe_hosts.split()),
+                externals_down=a.externals_down)
     append_sample(a.outage_start, ev, last_ok_at=a.last_ok or None)
     # The shell reads this: class TAB verdict TAB gateway-ICMP.
     # The third field feeds wan-status.json's existing `gateway_reachable`, so

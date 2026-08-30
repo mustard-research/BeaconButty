@@ -1,11 +1,14 @@
 [Unit]
-Description=BeaconButty — check WAN connectivity every 5 minutes
+Description=BeaconButty — check WAN connectivity every minute
 
 [Timer]
 # First check 2 minutes after boot (give DHCP time to settle)
 OnBootSec=2min
-# Then every 5 minutes
-OnUnitActiveSec=5min
+# Then every minute. The cadence is the ONLY thing bounding how precisely an
+# outage's onset can be known — once a check fails, escalation pins recovery to
+# ~10s, but nothing can recover the moment it began. Keep wan-watchdog.sh's
+# CHECK_INTERVAL_SECS in step with this value: it derives FAIL_THRESHOLD from it.
+OnUnitActiveSec=1min
 Persistent=true
 
 [Install]

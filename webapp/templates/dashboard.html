@@ -22,7 +22,7 @@
    Rendered ONLY when something is wrong or the reading has gone stale. A
    permanent green "WAN OK" tile would be noise on a page that already carries
    six stat cards, and would dilute the ones that matter. Source is
-   wan-status.json (5-minutely) rather than health-status.json, which is only
+   wan-status.json (minutely) rather than health-status.json, which is only
    refreshed daily and so cannot carry a live WAN signal.
 
    The point of this banner is not to announce the outage — you already know —
@@ -52,7 +52,8 @@
   <ul class="issue-list{{ '' if _wan_hard else ' warn' }}">
     <li>{{ wan_status.get('verdict', 'No verdict recorded.') }}</li>
     {% if wan_status.get('fails') %}
-      <li>{{ wan_status.fails }} of {{ wan_status.get('threshold', 3) }} consecutive checks failed.</li>
+      <li>{{ wan_status.fails }} of {{ wan_status.get('threshold', 15) }} consecutive checks failed
+          — the threshold stands for 15 minutes of continuous failure, not a bare count.</li>
     {% endif %}
   </ul>
   <div style="font-size:12px;"><a href="{{ url_for('health') }}">WAN / ISP detail →</a></div>

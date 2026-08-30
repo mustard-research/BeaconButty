@@ -13,12 +13,17 @@ Two consumers, one parser:
 
 Resolution honesty
 ------------------
-The watchdog probes every 5 minutes, so an outage is only ever *detected*
-within that window: the true start lies somewhere in the 5 minutes before the
-first failing probe, and the true end somewhere in the 5 minutes before the
-recovery probe. Everything here reports the detected window and every caller
-is expected to say so — an outage shorter than the gap between two probes
+The watchdog probes on a fixed cadence, so an outage is only ever *detected*
+within that window: the true start lies somewhere in the interval before the
+first failing probe. Everything here reports the detected window and every
+caller is expected to say so — an outage shorter than the gap between two probes
 leaves no trace at all, so "0 outages" means "none seen", not "none happened".
+
+The cadence CHANGED on 2026-08-30, from 5 minutes to 1, and since that date a
+failing check also escalates to 10-second probing. History therefore spans two
+resolutions. Do not present one figure as if it applied to both: rows carrying
+an evidence file were measured under the new regime and have a real onset
+bracket (`last_ok_at`); rows without predate it and are only good to ±5 min.
 
 Why a history file
 ------------------
@@ -58,10 +63,12 @@ EVIDENCE_DIR   = Path(os.environ.get("BB_OUTAGE_EVIDENCE",
 # probe interval, so a window this size cannot select the wrong file.
 EVIDENCE_MATCH_SECS = 180
 
-# wan-watchdog.timer's period. Used only to bound an outage whose recovery was
-# never logged (the log was rotated or lost mid-outage); we credit it one more
-# probe interval rather than guessing further.
-PROBE_INTERVAL_SECS = 5 * 60
+# wan-watchdog.timer's current period (1 min since 2026-08-30). Used only to
+# bound an outage whose recovery was never logged (the log was rotated or lost
+# mid-outage); we credit it one more probe interval rather than guessing
+# further. Deliberately NOT used to reconstruct historical durations — those
+# were sampled at 5 min and their real bound is the recorded onset bracket.
+PROBE_INTERVAL_SECS = 60
 
 # Two failing probes further apart than this are treated as separate outages
 # rather than one long one. Four missed probe intervals: tolerant of a couple
@@ -407,15 +414,18 @@ def fmt_duration(secs):
     """
     Format a duration, rounding to the nearest minute above a minute.
 
-    Rounding rather than flooring is load-bearing. The watchdog's runs are
-    exactly PROBE_INTERVAL_SECS apart, but the timestamps we measure between
-    are when each run *logged*, and the two runs do unequal amounts of work
-    first: a failing check spends ~12s pinging two dead externals and then the
-    gateway before it writes its line, while the recovering check writes after
-    ~1s because the first host answers. So a one-interval outage measures ~289s,
-    not 300s. Floored, that prints as "4m" — a duration a 5-minutely probe
-    cannot possibly have observed, and an invitation to trust a precision this
-    data does not have. Rounding puts it back on the probe cadence it came from.
+    Rounding rather than flooring is load-bearing for anything measured between
+    two scheduled runs. The runs are an exact interval apart, but the timestamps
+    we subtract are when each run *logged*, and the two do unequal work first: a
+    failing check spends ~12s pinging dead externals and then the gateway before
+    writing its line, while the recovering check writes after ~1s because the
+    first host answers. Under the old 5-minute cadence a one-interval outage
+    therefore measured ~289s, and flooring printed it as "4m" — a duration a
+    5-minutely probe cannot possibly have observed, and an invitation to trust a
+    precision this data does not have.
+
+    Outages measured by the 10-second escalation (2026-08-30 onward) are genuine
+    to ~10s and fall below the 60s branch, which prints exact seconds.
     """
     secs = int(secs or 0)
     if secs < 60:

@@ -9,11 +9,17 @@ ExecStart=/usr/local/bin/wan-watchdog.sh
 User=root
 StandardOutput=journal
 StandardError=journal
-# Must exceed ESCALATE_SECS (210s) plus the initial diagnostic burst: once a
-# check fails the script keeps probing every 10s until it sees recovery, so that
-# a short outage is measured rather than rounded up to a whole 5-minute probe
-# interval. 300s still lands inside the timer's 5-minute period.
-TimeoutStartSec=300
+# Must exceed RUN_DEADLINE_SECS (45s) plus the DNS tripwire that runs after it.
+# The run is deliberately bounded BELOW the 60s timer period so two runs can
+# never overlap — if they did, systemd would skip ticks, the consecutive-failure
+# count would stop advancing once per minute, and FAIL_THRESHOLD would quietly
+# stop meaning 15 minutes.
+TimeoutStartSec=90
+
+# The check cadence, single-sourced from wan-watchdog.timer's OnUnitActiveSec.
+# wan-watchdog.sh divides FAIL_AFTER_SECS by this to get its failure threshold,
+# so the "act after 15 minutes" behaviour survives any change to the cadence.
+Environment=CHECK_INTERVAL_SECS=60
 
 # Pass the WAN interface name through (override in environment if non-default)
 Environment=WAN_IFACE=eth0

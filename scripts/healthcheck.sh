@@ -737,7 +737,7 @@ check_timer rita-analyze              "RITA analyse (hourly)"
 check_timer beacon-report             "Beacon report (07:00)"
 check_timer beaconbutty-housekeeping  "Housekeeping (08:00)"
 check_timer beaconbutty-health        "Health check (09:30)"
-check_timer wan-watchdog              "WAN watchdog (5 min)"
+check_timer wan-watchdog              "WAN watchdog (1 min)"
 
 if command -v suricata &>/dev/null; then
     check_timer suricata-update "Suricata rule update (06:00)"

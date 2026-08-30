@@ -25,7 +25,7 @@
    every run. Deliberately NOT probed on page load: a live ping would put
    seconds of latency in the render path and hang the page when the WAN is the
    thing that is broken — which is exactly when this card matters. The trade is
-   that the reading is up to 5 min old, so we always show when it was taken. #}
+   that the reading is up to one check old, so we always show when it was taken. #}
 {% set _wan_map = {
      'ok':           ('Internet OK',            '#4caf50'),
      'isp_upstream': ('ISP outage — upstream',  '#f44336'),
@@ -38,7 +38,7 @@
 <div class="card" style="margin-bottom:16px;">
   <h3 style="margin:0 0 12px;">WAN / ISP
     <span class="bb-pop" tabindex="0" style="font-size:12px;font-weight:400;color:var(--text-muted,#888);cursor:help;"
-          data-pop="Checked every 5 minutes by wan-watchdog.timer. Not a live probe — a brief outage can fall between two checks.">&#9432;</span>
+          data-pop="Checked every minute by wan-watchdog.timer (5-minutely before 2026-08-30). Not a live probe — a brief outage can still fall between two checks.">&#9432;</span>
   </h3>
   {% if not wan_status %}
     <p style="font-size:13px;color:var(--text-muted,#888);margin:0;">
@@ -87,7 +87,11 @@
       {% if wan_status.get('fails') %}
       <tr>
         <td style="padding:3px 14px 3px 0;color:var(--text-muted,#888);">Consecutive fails</td>
-        <td style="padding:3px 0;">{{ wan_status.fails }} / {{ wan_status.get('threshold', 3) }}</td>
+        {# The threshold is a count derived from a DURATION (15 min / cadence), so
+           show the time it stands for — the bare count means nothing on its own
+           and changes whenever the cadence does. #}
+        <td style="padding:3px 0;">{{ wan_status.fails }} / {{ wan_status.get('threshold', 15) }}
+          <span style="color:var(--text-muted,#888);">(acts after 15 min of failure)</span></td>
       </tr>
       {% endif %}
     </table>
@@ -117,17 +121,18 @@
 
     <div id="outage-history" style="display:none;margin-top:12px;">
       <p style="font-size:12px;color:var(--text-muted,#888);margin:0 0 10px;line-height:1.5;">
-        Windows are what the <strong>{{ outages.probe_mins }}-minutely</strong> watchdog probe detected, so each
-        start and end is accurate to about &plusmn;{{ outages.probe_mins }} min and an outage shorter than the gap
-        between two probes leaves no trace — a quiet day means &ldquo;none seen&rdquo;, not
-        &ldquo;none happened&rdquo;. Durations are rounded to that cadence — hover one for the
+        Windows are what the watchdog probe detected, not what happened: an outage shorter than
+        the gap between two probes leaves no trace, so a quiet day means &ldquo;none seen&rdquo;,
+        not &ldquo;none happened&rdquo;. Durations are rounded to that cadence — hover one for the
         exact detected span.
-        Since 2026-08-30 a failing check also drops to <strong>10-second</strong> probing until
-        recovery and captures evidence — carrier, gateway ARP, lease, traceroute — so newer
-        outages are measured rather than rounded, and their cause is derived rather than guessed.
-        Rows with no evidence line predate that: they were classified on whether the gateway
-        answered a ping, which cannot tell an absent router from one that is merely not
-        forwarding, so their cause was never established.
+        <strong>Two resolutions live in this table.</strong> Since 2026-08-30 the check runs
+        every minute instead of every five, a failing check drops to <strong>10-second</strong>
+        probing, and evidence is captured — carrier, gateway ARP, lease, traceroute — so newer
+        outages are measured rather than rounded, carry a real onset bracket, and have a cause
+        derived rather than guessed. Rows with no evidence line predate all of that: sampled
+        5-minutely, and classified on whether the gateway answered a ping, which cannot tell an
+        absent router from one that is merely not forwarding. Their cause was never established
+        and their timings are only good to ±5 min.
         {% if outages.last30.count %}
           Last 30 days: <strong>{{ outages.last30.count }}</strong> outage{{ '' if outages.last30.count == 1 else 's' }},
           {{ fmt_duration(outages.last30.total_secs) }} of downtime.
