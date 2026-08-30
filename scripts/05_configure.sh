@@ -89,6 +89,11 @@ chmod 640 /etc/rita/.env
 echo "Installing shared library..."
 install -d -m 755 /usr/local/lib/beaconbutty
 install -m 644 "$SCRIPT_DIR/lib/bb_enrich.py"          /usr/local/lib/beaconbutty/bb_enrich.py
+# bb_fp holds the FP registry matchers and the DERP probe gate. summarize.sh and
+# the slow-cadence scripts resolve it ONLY from here (no repo fallback), so a
+# missing install line means the daily report can silently run a different gate
+# from the webapp. It had none and was being deployed by hand.
+install -m 644 "$SCRIPT_DIR/lib/bb_fp.py"              /usr/local/lib/beaconbutty/bb_fp.py
 # bb_outages is imported by the webapp and executed as a CLI by healthcheck.sh
 # and housekeeping.sh, so it needs the execute bit the other modules don't.
 install -m 755 "$SCRIPT_DIR/lib/bb_outages.py"         /usr/local/lib/beaconbutty/bb_outages.py

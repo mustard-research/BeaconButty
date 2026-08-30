@@ -157,7 +157,16 @@ def org_reason(org: str, src_mac: str, fp_all_or_path=None) -> str:
 #: Only echo request (type 8) is listed: "icmp:3/3" (port unreachable) does
 #: occur on this network but never once against a DERP host, and an
 #: unsolicited ICMP error from a relay is worth seeing.
-DERP_PROBE_SERVICES = ("3478:udp", "443:tcp", "80:tcp:http", "icmp:8/0")
+#: "80:tcp" is a BARE port:proto prefix, like 3478 and 443 — not "80:tcp:http".
+#: It was the one entry carrying its service subfield, and that made it the one
+#: entry that could not match an empty subfield. Zeek writes "80:tcp:" when it
+#: sees a port-80 connection it cannot classify as HTTP, which is precisely what
+#: netcheck's HTTP latency leg looks like: too short to carry a response body it
+#: could fingerprint. 68 rows across three days broke the gate on that component
+#: alone, every one of them alongside 3478/443 probes to the same relay.
+#: Widening it costs nothing in safety — the volume gate below is what makes
+#: this suppression sound, and a port-80 row moving real data still breaks it.
+DERP_PROBE_SERVICES = ("3478:udp", "443:tcp", "80:tcp", "icmp:8/0")
 
 #: Above this, the row is carrying payload, not probing. See derivation above.
 MAX_PROBE_BYTES_PER_CONN = 2000
