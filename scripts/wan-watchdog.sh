@@ -39,7 +39,14 @@ DNS_PROBE_HOST="${DNS_PROBE_HOST:-cloudflare.com}"
 # indistinguishable from a nine-minute transit break — which is precisely the
 # question the classification is trying to answer. The ceiling leaves ~90s of
 # slack before the timer refires; TimeoutStartSec must exceed it (see the unit).
-ESCALATE_SECS="${ESCALATE_SECS:-210}"
+# Bound the WHOLE run, not just the loop. The diagnostic burst before it is
+# variable (a traceroute walking its full hop budget against a dead path is the
+# slow case), so a ceiling measured from the end of the burst leaves total
+# runtime unbounded and one slow burst away from a SIGTERM at TimeoutStartSec —
+# which would kill the watchdog in the middle of the outage it exists to watch.
+# Keep this comfortably below the unit's TimeoutStartSec=300, allowing for the
+# DNS tripwire that still runs after the loop.
+RUN_DEADLINE_SECS="${RUN_DEADLINE_SECS:-260}"
 ESCALATE_INTERVAL="${ESCALATE_INTERVAL:-10}"
 
 # Overridable alongside PROBE_HOSTS so a simulated outage can be run against
@@ -241,8 +248,9 @@ else
     # minutes, and the dashboard must not keep serving the previous healthy
     # reading for that whole time.
     write_status "$STATE" "$VERDICT" "$GW" "$GW_REACH" "$FAILS" null
-    ESCALATE_DEADLINE=$(( SECONDS + ESCALATE_SECS ))
-    while (( SECONDS < ESCALATE_DEADLINE )); do
+    # SECONDS is time since the script started, so this compares against the
+    # whole run rather than restarting the clock after the burst.
+    while (( SECONDS < RUN_DEADLINE_SECS )); do
         sleep "$ESCALATE_INTERVAL"
         for host in $PROBE_HOSTS; do
             if ping -c 1 -W 2 -q "$host" &>/dev/null; then
