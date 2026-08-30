@@ -83,6 +83,63 @@ High-score beacons (score ≥ 1.0) trigger a Slack message to `#beacon-butty`.
 | Token | xoxp- user token at `/var/lib/beaconbutty/slack-config.json` |
 | Threshold | Score ≥ 1.0 (intentionally high — see [Alert Tuning](../investigation/alert-tuning.md)) |
 
+## ISP outage tracking (added 2026-08-30)
+
+`wan-watchdog.sh` has always logged WAN losses and recoveries, but nothing aggregated them — `/health` showed only the latest reading, and logrotate keeps just 8 weeks of `watchdog.log`, so "how much downtime this year" was unanswerable.
+
+### Where it surfaces
+
+| Surface | What you get |
+|---|---|
+| `/health` → WAN / ISP card | A one-line summary that is **always a link**, even at zero outages ("No ISP outages today · N recorded since YYYY-MM-DD"). Clicking opens the full history grouped by day, with per-day totals and a rolling 30-day figure. |
+| `beaconbutty-health.sh` → Network Interfaces | The same one-liner as an informational `OK` row. |
+| `bb_outages.py` CLI | `--line` (one-liner), `--json` (full history), `--persist` (merge into the durable store). |
+
+Deliberately `OK`, never `WARN`: an ISP outage is not a bb0 fault and nothing here can action it, so a warning would sit amber all day and train the eye to skip the section — the same reasoning as the starved-frames delta. An outage happening *now* still surfaces as the existing WAN-unreachable `FAIL`.
+
+### How the record survives its source log
+
+`lib/bb_outages.py` collapses the log lines into discrete outages and merges them into `/var/lib/beaconbutty/outage-history.json`, keyed on outage start so re-parsing is idempotent. Daily housekeeping calls `--persist`; the webapp **never writes** — it unions the stored history with a fresh in-memory parse, so today's outages appear without waiting for housekeeping, and root's write can never race the webapp's read.
+
+### Evidence-based classification
+
+`lib/bb_wan_diag.py` runs on every failing check. **ARP is the discriminator**: it sits below IP, so it answers from a router that is on the wire but refusing to forward — the one thing a ping cannot tell you.
+
+| Evidence | Class | Means |
+|---|---|---|
+| carrier down | `link_down` | our link or the CPE — go and look at it |
+| gateway silent to ARP | `gateway_absent` | ISP edge off the wire (VRRP with no master, or an access-side outage) |
+| answers ARP, not ICMP | `gateway_silent` | edge present, not handling our traffic |
+| answers both | `upstream_transit` | break is beyond the edge; traceroute names the last live hop |
+
+It uses `arping`, **not** `ip neigh`: the neighbour cache holds a `REACHABLE` entry for minutes after a router disappears, so reading it would report the gateway present throughout the very outage being diagnosed. A cache is evidence about the past, not the present.
+
+Per-outage evidence — carrier and `carrier_changes`, gateway ARP with MAC, gateway ICMP, per-host external ICMP, traceroute hops, DHCP lease and device state, Tailscale backend — lands in `/var/lib/beaconbutty/outage-evidence/<start>.json` and renders as a sub-row under its outage. Files are pruned at 365 days by housekeeping; both the history and the evidence are in the config backup.
+
+> [!warning]
+> **The pre-2026-08-30 classifier was measurably wrong, and its rows are relabelled "cause not established" rather than replayed.** It split outages on one bit — did the gateway answer ICMP — which cannot tell an *absent* router from a *blackholing* one. It called five outages a "link/CPE fault" when every one had an unbroken carrier, a metronomic lease and a device that never left `activated`; meanwhile the single genuine 4-second link drop fell between two probes and was never recorded at all. Do not reinstate a cause the probe cannot establish.
+
+### Resolution, and its limits
+
+The check runs **every minute** (5-minutely before 2026-08-30) and a failing check escalates to **10-second** probing until recovery or `RUN_DEADLINE_SECS`.
+
+| Quantity | Bounded by | Now |
+|---|---|---|
+| Recovery time | escalation loop | ±10 s while the loop runs, ~60 s between ticks |
+| **Onset time** | **base cadence only** | **±1 min** |
+| Duration | both of the above | reported as a measured span plus an "at most" bracket |
+
+Onset is the half no escalation can fix: by the time a check fails, the moment it went down has already passed. It is instead **bracketed** from the last healthy run's `checked_at` in `wan-status.json`, and each row shows "began between X and Y — at most Z".
+
+> [!note]
+> The history spans **two sampling resolutions**. Rows with an evidence sub-row were measured under the current regime and carry a real onset bracket; older rows were sampled 5-minutely and are good only to ±5 min. The panel says so per-row — never quote a single accuracy figure for the whole table.
+
+### Invariants worth not breaking
+
+- **`FAIL_THRESHOLD` is derived, never hard-coded.** It gates the NetworkManager re-apply and the DNS `service_down` alert, and both mean *"broken for a quarter of an hour"*. As the bare count `3` it would have silently become 3 minutes the instant the cadence changed. It is now `FAIL_AFTER_SECS / CHECK_INTERVAL_SECS`, with `CHECK_INTERVAL_SECS` passed from the service unit and single-sourced from the timer — 15 minutes at any cadence. **Retune the timer and retune that `Environment=` line with it.**
+- **`RUN_DEADLINE_SECS` (45 s) must stay below `CHECK_INTERVAL_SECS`.** Overlapping runs make systemd skip ticks, which stops the failure count advancing once per tick and breaks the arithmetic above. It also bounds the *whole run*, not just the loop — the diagnostic burst before it is variable, and a ceiling measured from the end of the burst leaves total runtime one slow traceroute away from a `SIGTERM` at `TimeoutStartSec`.
+- **The DNS tripwire holds its counter while the WAN is unreachable.** A lookup cannot succeed there, so it used to count a guaranteed failure every check and eventually fire *"DNS resolution failing — check resolv.conf nameservers"* in the middle of an ISP outage, pointing the reader at the resolver. It has no signal to offer with the WAN down, so it abstains.
+
 ## Logs
 
 | Log | Location | Persistence |

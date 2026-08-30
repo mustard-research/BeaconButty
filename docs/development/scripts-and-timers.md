@@ -14,7 +14,9 @@ Two modules are imported by the webapp *and* by the one-shot scripts, so behavio
 | Module | Deployed path | Purpose |
 |---|---|---|
 | `lib/bb_enrich.py` | `/usr/local/lib/beaconbutty/bb_enrich.py` | 9-tier IP→hostname ladder, `org_label()` display aliases |
-| `lib/bb_fp.py` | `/usr/local/lib/beaconbutty/bb_fp.py` | FP-registry `orgs` normalisation and matching |
+| `lib/bb_fp.py` | `/usr/local/lib/beaconbutty/bb_fp.py` | FP-registry `orgs` normalisation and matching, Tailscale DERP probe gate |
+| `lib/bb_outages.py` | `/usr/local/lib/beaconbutty/bb_outages.py` | ISP outage history — parse, merge, summarise; also a CLI (`--line` / `--json` / `--persist`) |
+| `lib/bb_wan_diag.py` | `/usr/local/lib/beaconbutty/bb_wan_diag.py` | Evidence gathering and classification for a WAN outage; called by `wan-watchdog.sh` on every failing check |
 
 Consumers resolve them **repo checkout first, then the deployed copy**, so a dev run picks up local edits:
 
@@ -34,7 +36,11 @@ import bb_enrich
 
 Deployment happens via `scripts/05_configure.sh` using `install -m 755`. Repo source is the authoritative copy — always edit the repo and re-deploy, never hand-patch `/usr/local/bin/` (see [Data-path alignment](#data-path-alignment)).
 
-**Three scripts had no install line until 2026-08-14** and were being deployed by hand, so a repo change could sit unshipped indefinitely: `slow-cadence.py`, `slow-cadence-digest.py` and `ip-intel.py`. All three are now installed by `05_configure.sh`. `config/org-aliases.json` is seeded to `/var/lib/beaconbutty/` **only if absent**, since it is hand-edited on the box.
+**Scripts with no install line are a recurring failure mode.** `slow-cadence.py`, `slow-cadence-digest.py` and `ip-intel.py` were found hand-deployed on 2026-08-14; `wan-watchdog.sh` and `lib/bb_fp.py` on 2026-08-30. All are now installed by `05_configure.sh`.
+
+`bb_fp.py` was the sharper case: `summarize.sh` and the slow-cadence scripts resolve it **only** from `/usr/local/lib/beaconbutty` with no repo fallback, so a stale hand-deployed copy would leave the daily report running a different FP gate from the webapp — with no error and no symptom beyond a row appearing on one surface and not another. When you add a module to `lib/`, add its install line in the same commit.
+
+The two 2026-08-30 additions (`bb_outages.py`, `bb_wan_diag.py`) install with `-m 755` rather than `644`: both are executed as CLIs, not only imported. `config/org-aliases.json` is seeded to `/var/lib/beaconbutty/` **only if absent**, since it is hand-edited on the box.
 
 | Repo file | Deployed path | Triggered by | Purpose |
 |-----------|---------------|--------------|---------|

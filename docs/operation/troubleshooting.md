@@ -375,17 +375,60 @@ Covered in [Reboot Procedure](reboot-procedure.md). Summary: the wrapper at `/us
 
 ## WAN outage
 
-`bb-watchdog` auto-recovers most ISP blips — see `scripts/wan-watchdog.sh`. Manual override:
+> [!danger]
+> **Never run `dhclient` or `dhcpcd` directly on `eth0`.** NetworkManager owns that
+> interface. Invoking a DHCP client behind its back releases NM's lease and the
+> `20-resolv.conf` hook overwrites `/etc/resolv.conf` with an empty file — that is
+> exactly what turned a brief ISP blip into a total DNS outage on 2026-07-01.
+> This page recommended it until 2026-08-30. Use `nmcli` only.
+
+`wan-watchdog.sh` runs every minute. It is **log-and-diagnose only** for reachability: three consecutive failures with a valid WAN IP means the ISP is down, not us, and a reboot will not help. It self-heals only the one case it can — no IP at all — and does so via `nmcli device reapply`.
+
+### First, read the classification
+
+Do not start pulling cables. `/health` → **WAN / ISP** and the outage history tell you where the fault is, from evidence gathered at the time:
+
+| Class shown | Where the fault is | What to do |
+|---|---|---|
+| `link_down` | our link or the CPE | **This one is yours.** Check cable, port, CPE power. |
+| `gateway_absent` | ISP edge is off the wire | Nothing local. Note the duration and report it. |
+| `gateway_silent` | ISP edge present, not forwarding | Nothing local. |
+| `upstream_transit` | beyond the ISP edge | Nothing local; the evidence row names the last hop that answered. |
+| `no_route` | local routing fault | Check `ip route show default dev eth0`. |
+
+Only `link_down` and `no_route` are actionable here. The other three are the ISP's, and the evidence sub-row (carrier state, gateway ARP, lease, traceroute) is what you quote when you report it.
+
+### Manual intervention, if genuinely needed
 
 ```bash
-# Drop + renew DHCP on eth0
-sudo ip link set eth0 down
-sudo ip link set eth0 up
-sudo dhclient -r eth0 && sudo dhclient eth0
+# Re-apply the WAN connection (safe — NetworkManager stays in charge)
+sudo nmcli device reapply eth0
 
-# Or via NetworkManager (bb-wan connection)
+# Heavier: bounce the connection profile
 sudo nmcli connection down bb-wan && sudo nmcli connection up bb-wan
 ```
+
+### Diagnose by hand
+
+```bash
+# The same evidence the watchdog gathers, on demand
+sudo /usr/local/lib/beaconbutty/bb_wan_diag.py \
+     --iface eth0 --gateway "$(ip -4 route show default dev eth0 | awk '/via/{print $3}')" \
+     --outage-start "$(date --iso-8601=seconds)" --full --json
+
+# Is the gateway on the wire at all? (ARP answers even from a blackholing router)
+sudo arping -I eth0 -c 3 "$(ip -4 route show default dev eth0 | awk '/via/{print $3}')"
+
+# Has the link itself ever bounced? A 4-second drop is invisible to a scheduled
+# ping but leaves a permanent mark here.
+cat /sys/class/net/eth0/carrier_changes
+
+# Outage history
+/usr/local/lib/beaconbutty/bb_outages.py --line
+```
+
+> [!note]
+> The `dev eth0` scoping on the route lookup is load-bearing, not tidiness. This box is multi-homed (eth0 WAN + wlan0 on the LAN) and **both** carry a default route, so an unscoped lookup also returns our own LAN address — which always pings and would report a healthy gateway in the middle of a total WAN outage.
 
 ## Backup clone failing
 

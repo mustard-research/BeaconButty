@@ -62,6 +62,34 @@ zcat /var/log/zeek/$(date +%Y-%m-%d)/ssl*.gz | grep <destination-ip>
 > [!warning]
 > Score = 0 with `High` RITA classification means a **long-duration persistent connection**, not a beacon. These appear in some report views but should not be treated as beacons. They are skipped in the Device Hotlist.
 
+### Step 4: Choose the right dimension
+
+Four types exist and only one is usually right. Picking the widest one that "works" is how a registry stops detecting things.
+
+| Type | Use when | Scope |
+|---|---|---|
+| `domains` | you have a **strong** hostname (SNI or DNS, not an org-derived guess) | LAN-wide |
+| `devices` | the whole device is understood and noisy | that MAC |
+| `protocols` | a *signalling protocol on a standard port* is boring (NTP, STUN, mDNS, DHCP) | global — see the warnings below |
+| `orgs` | the destination has **no host name at all** and the ASN is the meaningful unit | LAN-wide, or `--device`-scoped |
+
+The deciding question for `domains` is whether the name is strong. If a destination only resolved to an org-derived label, a domain FP will silently fail to match — check the matcher's input before blaming the pattern.
+
+#### Worked example: an undocumented CDN (2026-08-30)
+
+`img.os-content.com` appeared as a slow-cadence candidate from one Mac and had no public documentation at all. Identified from its own DNS and TLS metadata rather than from search results:
+
+- **MX record `no-mail.onesignal.internal`** — an internal hostname in OneSignal's namespace; nobody else would configure it
+- `SPF v=spf1 -all` — the domain sends no mail; a pure asset domain
+- `img.` subdomain returning an `x-guploader-uploadid` header — Cloudflare fronting a **Google Cloud Storage** bucket
+- The client's JA4 also talked to `mtalk.google.com`, Google's web-push endpoint — so: a site using OneSignal web push, with the browser fetching the notification image
+
+Traffic shape confirmed it was not a beacon: intervals from 6 minutes to 53 hours, waking hours only, nothing overnight, ~9 KB per connection.
+
+**Classified as `domains`, pattern `*.os-content.com`.** Not `orgs` — the ASN owner is Cloudflare, and `*Cloudflare*` would blind the system to an enormous amount of unrelated traffic. Not `protocols` — it is ordinary `443:tcp:ssl` with no protocol-level identity. Not `devices` — that would suppress the whole Mac.
+
+The general lesson: **an unbranded, undocumented asset domain is not evidence of anything.** Serving user-generated content from a domain separate from the main brand (`googleusercontent.com`, `fbcdn.net`, `githubusercontent.com`) is a deliberate security practice that limits cookie and XSS blast radius. Absence from search results is expected for that role. Identify it from DNS, TLS and traffic shape instead.
+
 ## Registering a false positive
 
 ### Via webapp
@@ -252,10 +280,21 @@ Probe and payload share a destination *and* a port set. What separates them is *
 Hence `bb_fp.is_derp_probe()` — suppress only when **all three** hold:
 
 1. destination IP is in the local `tailscale debug derp-map` (authoritative, no network call)
-2. every service component is netcheck-shaped (`3478:udp`, `443:tcp`, `80:tcp:http`, `icmp:8/0`)
+2. every service component is netcheck-shaped (`3478:udp`, `443:tcp`, `80:tcp`, `icmp:8/0`)
 3. `total_bytes / connections < 2000`
 
 Condition 2 is the one that keeps needing widening, and each widening is safe only because condition 3 is untouched: a new probe leg admitted to the allowlist still cannot suppress a row whose volume says payload.
+
+**Uniform specificity in the allowlist (fixed 2026-08-30).** The entry for port 80 was written as `80:tcp:http` — the only one of the four carrying its service subfield. The matcher accepts `c == p or c.startswith(p + ":")`, so `3478:udp` matches `3478:udp:` and `443:tcp` matches both `443:tcp:` and `443:tcp:ssl`, but `80:tcp:http` matched only itself. Zeek writes `80:tcp:` with an **empty** subfield when it cannot classify a port-80 connection, which is exactly what netcheck's HTTP latency leg looks like: too short to carry a body worth fingerprinting.
+
+Measured over three days of RITA data: 752 rows hit a DERP relay, 92 escaped the gate, and **68 of those failed on the bare `80:tcp:` component alone** — every one alongside 3478/443 probes to the same relay. Widening it to a bare `port:proto` prefix, consistent with its neighbours, took escapes from 92 to 27.
+
+Two lessons generalise beyond this gate:
+
+- **Audit an allowlist for uniform specificity, not just correct membership.** Every entry was individually defensible; the bug was that one sat at a different level of the hierarchy from its neighbours. Read the list as a column and the odd one out is obvious — read the entries one at a time and it is invisible.
+- **Enumerate what the data actually contains before editing the pattern.** Counting every distinct service component seen against a DERP relay, with a PASS/FAIL beside each, found it in one pass. The failing token was an *empty* subfield, which nobody writes down and nobody guesses.
+
+**The remaining 27 are the gate working, not a gap.** They run up to 154 KB/conn against ~2 MB totals: real relayed traffic, which is precisely what must stay visible. Raising `MAX_PROBE_BYTES_PER_CONN` to mop them up would trade the property that makes the whole suppression sound for a tidier page. Fix the matcher; never the safety gate.
 
 Condition 3 is the security property, and the threshold is deliberately below a **single completed TLS handshake** (~4–6 KB): the gate cannot hide even one real DERP session. Do not raise `MAX_PROBE_BYTES_PER_CONN` without re-deriving it. Conditions 1 and 2 buy precision — a DERP host reached on an unexpected port stays visible at any volume.
 

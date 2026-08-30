@@ -23,6 +23,22 @@ The Pi (hostname `bb0`) sits between the ISP router and the LAN, acting as a NAT
 [LAN devices]
 ```
 
+## ISP outages — what the evidence supports (2026-08-30)
+
+The WAN gateway's MAC sits in the IANA **VRRP virtual-router** range, so the ISP terminates us on a redundant router pair and the gateway address is a floating virtual IP rather than a box on the end of our cable. During a failover no router owns that virtual MAC, so it goes silent — which is why "the gateway did not answer" cannot, on its own, mean "our link is broken".
+
+**Treat "VRRP failover" as unproven.** The virtual MAC proves the topology is redundant, not that a failover happened, and a VRRP failover is sub-second to ~3 s while observed outages survive a 12-second probe burst and often two consecutive checks. `wan-watchdog.sh` now records per-outage evidence (carrier, gateway ARP, DHCP lease, traceroute) so the question can be settled from data rather than inference — see [Health Monitoring](../operation/health-monitoring.md).
+
+What the evidence has ruled out for the outages recorded so far:
+
+| Hypothesis | Ruled out by |
+|---|---|
+| Our link or CPE | no carrier transition during any of them; the one genuine 4-second carrier drop correlated with **no** recorded outage |
+| Session reset at the ISP access gear | DHCP renewals metronomic and the address unchanged throughout; the NM device never left `activated` |
+| Our own stack | lease valid, default route present, `FORWARD`/NAT unchanged |
+
+That leaves a forwarding break beyond our NIC — genuinely the ISP — but *which* sort is what the classification exists to answer.
+
 ## Interfaces
 
 | Interface | MAC | Role | Address |
