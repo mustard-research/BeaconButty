@@ -92,6 +92,104 @@
       {% endif %}
     </table>
   {% endif %}
+
+  {# ── Outage history ────────────────────────────────────────────────────────
+     The card above is one instantaneous reading; this is the record over time,
+     reconstructed from watchdog.log by lib/bb_outages.py. The summary line is a
+     link even on a clean day — the point of it is to be the permanent way into
+     the history, not a control that only appears when something is wrong. #}
+  <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border,#333);">
+  {% if not outages %}
+    <span style="font-size:13px;color:var(--text-muted,#888);">
+      Outage history unavailable — <code>/var/log/beaconbutty/watchdog.log</code> could not be read.
+    </span>
+  {% else %}
+    {% set _os = outages.summary %}
+    <a href="#" id="outage-toggle" onclick="toggleOutageHistory(event)"
+       style="font-size:13px;text-decoration:none;color:var(--link,#4a9eff);display:inline-flex;align-items:center;gap:6px;">
+      <span id="outage-chevron" style="display:inline-block;width:9px;font-size:10px;">&#9654;</span>
+      <span style="color:{% if _os.count %}#ff9800{% else %}#4caf50{% endif %};font-weight:600;">{{ outages.line }}</span>
+      {% if _os.history_count %}
+        <span style="color:var(--text-muted,#888);font-weight:400;">
+          · {{ _os.history_count }} recorded since {{ _os.history_from }}</span>
+      {% endif %}
+    </a>
+
+    <div id="outage-history" style="display:none;margin-top:12px;">
+      <p style="font-size:12px;color:var(--text-muted,#888);margin:0 0 10px;line-height:1.5;">
+        Windows are what the <strong>{{ outages.probe_mins }}-minutely</strong> watchdog probe detected, so each
+        start and end is accurate to about &plusmn;{{ outages.probe_mins }} min and an outage shorter than the gap
+        between two probes leaves no trace — a quiet day means &ldquo;none seen&rdquo;, not
+        &ldquo;none happened&rdquo;.
+        {% if outages.last30.count %}
+          Last 30 days: <strong>{{ outages.last30.count }}</strong> outage{{ '' if outages.last30.count == 1 else 's' }},
+          {{ fmt_duration(outages.last30.total_secs) }} of downtime.
+        {% else %}
+          No outages in the last 30 days.
+        {% endif %}
+      </p>
+
+      {% if not outages.by_day %}
+        <p style="font-size:13px;color:var(--text-muted,#888);margin:0;">
+          No ISP outage has been recorded since logging began.</p>
+      {% else %}
+      <table style="width:100%;border-collapse:collapse;font-size:13px;">
+        <thead>
+          <tr style="border-bottom:1px solid var(--border,#333);">
+            <th style="text-align:left;padding:4px 12px 6px 0;color:var(--text-muted,#888);font-weight:600;">Time period</th>
+            <th style="text-align:left;padding:4px 12px 6px 0;color:var(--text-muted,#888);font-weight:600;">Duration</th>
+            <th style="text-align:left;padding:4px 12px 6px 0;color:var(--text-muted,#888);font-weight:600;">Cause</th>
+            <th style="text-align:left;padding:4px 0 6px 0;color:var(--text-muted,#888);font-weight:600;">Failed checks</th>
+          </tr>
+        </thead>
+        <tbody>
+        {% for d in outages.by_day %}
+          <tr style="background:var(--bg-alt,rgba(255,255,255,.03));">
+            <td colspan="4" style="padding:5px 0 5px 6px;font-weight:600;">
+              {{ d.day }}
+              <span style="color:var(--text-muted,#888);font-weight:400;">
+                — {{ d.count }} outage{{ '' if d.count == 1 else 's' }}, {{ fmt_duration(d.total_secs) }} total</span>
+            </td>
+          </tr>
+          {% for o in d.outages %}
+          <tr style="border-bottom:1px solid var(--border,#333);">
+            <td style="padding:5px 12px 5px 6px;font-family:monospace;white-space:nowrap;">
+              {{ o.start[11:16] }}–{% if o.ongoing %}now{% else %}{{ o.end[11:16] }}{% endif %}
+              {%- if o.end and o.end[:10] != o.start[:10] %}
+                <span style="font-family:inherit;color:var(--text-muted,#888);"> (+1d)</span>{% endif %}
+            </td>
+            <td style="padding:5px 12px 5px 0;white-space:nowrap;">
+              {{ fmt_duration(o.duration_secs) }}
+              {%- if o.ongoing %}
+                <span style="color:#f44336;font-weight:600;"> · ongoing</span>
+              {%- elif o.end_estimated %}
+                {# No 'restored' line ever landed — a reboot or a lost log tail.
+                   Say so rather than presenting a guessed end as measured. #}
+                <span class="bb-pop" tabindex="0" style="color:#ff9800;cursor:help;"
+                      data-pop="No recovery was ever logged for this outage — the watchdog stopped reporting mid-outage (reboot, or the log was rotated away). The end time is an estimate of one probe interval after the last failing check.">&nbsp;~</span>
+              {%- endif %}
+            </td>
+            <td style="padding:5px 12px 5px 0;">
+              <span class="bb-pop" tabindex="0" style="cursor:help;"
+                    data-pop="{{ o.verdict }}">{{ outages.labels.get(o['class'], o['class']) }}</span>
+            </td>
+            <td style="padding:5px 0;color:var(--text-muted,#888);">{{ o.checks_failed }}</td>
+          </tr>
+          {% endfor %}
+        {% endfor %}
+        </tbody>
+      </table>
+      {% endif %}
+
+      <p style="font-size:11px;color:var(--text-muted,#888);margin:10px 0 0;">
+        Parsed from <code>/var/log/beaconbutty/watchdog.log</code> and its rotations, merged into
+        <code>/var/lib/beaconbutty/outage-history.json</code> daily so the record outlives the
+        8-week log rotation. DNS-only failures are excluded — the DNS tripwire also trips during
+        a WAN outage, so counting it would double-count the same event.
+      </p>
+    </div>
+  {% endif %}
+  </div>
 </div>
 
 <div class="card" style="margin-bottom:16px;">
@@ -551,6 +649,18 @@
 </div>
 
 <script>
+// Outage history expander. The link stays present and clickable on a clean
+// day — it is the only route to the history, so hiding it when there is
+// nothing to report would hide the archive too.
+function toggleOutageHistory(ev) {
+  ev.preventDefault();
+  var panel = document.getElementById('outage-history');
+  var chev  = document.getElementById('outage-chevron');
+  var shown = panel.style.display !== 'none';
+  panel.style.display = shown ? 'none' : 'block';
+  chev.innerHTML = shown ? '\u25B6' : '\u25BC';
+}
+
 function toggleTeamsBau(ev) {
   ev.preventDefault();
   var tbl = document.getElementById('teams-bau-table');

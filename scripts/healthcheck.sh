@@ -328,6 +328,15 @@ if [[ -n "$RX_STARVED" ]]; then
     echo "$RX_STARVED" > "$RX_STARVED_STATE" 2>/dev/null || true
 fi
 
+# ISP outage history. Deliberately OK, never WARN: an ISP outage is not a bb0
+# fault and nothing here can action it, so a warning would sit amber for the
+# rest of the day and train the eye to skip this section. An outage happening
+# RIGHT NOW already shows up as the WAN connectivity FAIL below.
+if [[ -x /usr/local/lib/beaconbutty/bb_outages.py ]]; then
+    OUTAGE_LINE=$(/usr/local/lib/beaconbutty/bb_outages.py --line 2>/dev/null || true)
+    [[ -n "$OUTAGE_LINE" ]] && OK "$OUTAGE_LINE"
+fi
+
 # WAN connectivity
 if ping -c 1 -W 3 -q 1.1.1.1 &>/dev/null; then
     WAN_IP=$(ip -4 addr show eth0 2>/dev/null | awk '/inet / {print $2}' | head -1)

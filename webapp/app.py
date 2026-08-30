@@ -35,6 +35,7 @@ for _p in (str(Path(__file__).resolve().parent.parent / "lib"),
         sys.path.append(_p)
 import bb_enrich
 import bb_fp
+import bb_outages
 
 app = Flask(__name__)
 
@@ -1706,6 +1707,35 @@ def load_wan_status():
     except (KeyError, ValueError, TypeError):
         pass
     return st
+
+
+def load_outages():
+    """
+    ISP outage history for the /health WAN card.
+
+    Read-only on purpose. The durable history file is written by root from
+    daily housekeeping; the webapp runs as dm and must never race that write,
+    so it unions the stored history with a fresh in-memory parse of the live
+    logs instead. That also means today's outages appear immediately rather
+    than after the next housekeeping run.
+
+    Returns {} on any failure — a broken outage parse must not take the whole
+    health page down with it.
+    """
+    try:
+        outages = bb_outages.collect()
+        summary = bb_outages.summarise(outages)
+        return {
+            "summary":    summary,
+            "line":       bb_outages.summary_line(summary),
+            "by_day":     bb_outages.group_by_day(outages),
+            "last30":     bb_outages.summarise_range(outages, 30),
+            "labels":     bb_outages.CLASS_LABELS,
+            "probe_mins": bb_outages.PROBE_INTERVAL_SECS // 60,
+        }
+    except Exception:
+        return {}
+
 
 
 # ── Temperature data ────────────────────────────────────────────────────────────
@@ -4787,6 +4817,8 @@ def health():
         pass
     return render_template("health.html", report=report, error=error,
                            wan_status=load_wan_status(),
+                           outages=load_outages(),
+                           fmt_duration=bb_outages.fmt_duration,
                            alert_config=load_alert_config(),
                            cert=get_cert_info(),
                            gate_stats=gate_stats,

@@ -159,6 +159,22 @@ done < <(find "$BACKUPS_DIR" \
 
 echo "  Old backups deleted: $BACKUPS_DELETED"
 
+# ── ISP outage history ────────────────────────────────────────────────────────
+# watchdog.log is the only record of a WAN outage, and logrotate keeps just 8
+# weeks of it (weekly, rotate 8). Fold each day's outages into the durable
+# history file here so the record outlives the log it was parsed from. Nothing
+# else in this script touches watchdog.log — logrotate ages it out
+# independently — so this is a daily cadence, not an ordering dependency.
+# Merging is idempotent (keyed on outage start), so a missed or repeated run
+# costs nothing.
+echo ""
+echo "-- ISP outage history --"
+if [[ -x /usr/local/lib/beaconbutty/bb_outages.py ]]; then
+    echo "  $(/usr/local/lib/beaconbutty/bb_outages.py --persist 2>&1 || echo 'failed')"
+else
+    echo "  SKIPPED: /usr/local/lib/beaconbutty/bb_outages.py not installed"
+fi
+
 # ── Disk usage summary ────────────────────────────────────────────────────────
 echo ""
 echo "-- Disk usage after housekeeping --"

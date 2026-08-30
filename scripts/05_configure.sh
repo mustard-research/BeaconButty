@@ -89,6 +89,9 @@ chmod 640 /etc/rita/.env
 echo "Installing shared library..."
 install -d -m 755 /usr/local/lib/beaconbutty
 install -m 644 "$SCRIPT_DIR/lib/bb_enrich.py"          /usr/local/lib/beaconbutty/bb_enrich.py
+# bb_outages is imported by the webapp and executed as a CLI by healthcheck.sh
+# and housekeeping.sh, so it needs the execute bit the other modules don't.
+install -m 755 "$SCRIPT_DIR/lib/bb_outages.py"         /usr/local/lib/beaconbutty/bb_outages.py
 
 # Display-only ASN owner aliases. Seeded once and never overwritten — this file
 # is hand-edited on the box, so a reinstall must not discard local entries.

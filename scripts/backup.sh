@@ -89,6 +89,7 @@ tar -czf "$OUT" \
     /var/lib/beaconbutty/slack-config.json \
     /var/lib/beaconbutty/org-aliases.json \
     /var/lib/beaconbutty/device-names.json \
+    /var/lib/beaconbutty/outage-history.json \
     /home/dm/BeaconButty/ \
     /usr/local/lib/beaconbutty/ \
     /opt/zeek/share/zeek/site/local.zeek \
