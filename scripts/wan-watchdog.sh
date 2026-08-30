@@ -28,14 +28,32 @@ set -euo pipefail
 WAN_IFACE="${WAN_IFACE:-eth0}"
 NM_CONN="${NM_CONN:-bb-wan}"    # NetworkManager connection profile for WAN
 FAIL_THRESHOLD=3
-PROBE_HOSTS="1.1.1.1 8.8.8.8"
+# Overridable so the failure path can be exercised against blackholed addresses
+# without breaking the WAN. Nothing in production sets it.
+PROBE_HOSTS="${PROBE_HOSTS:-1.1.1.1 8.8.8.8}"
 DNS_PROBE_HOST="${DNS_PROBE_HOST:-cloudflare.com}"
 
-STATE_DIR="/var/lib/beaconbutty"
+# Once a check fails, drop to this cadence until we see recovery. Without it,
+# recovery is only ever noticed by the next 5-minutely run, so every outage
+# measures a whole probe interval and a 3-second VRRP failover is
+# indistinguishable from a nine-minute transit break — which is precisely the
+# question the classification is trying to answer. The ceiling leaves ~90s of
+# slack before the timer refires; TimeoutStartSec must exceed it (see the unit).
+ESCALATE_SECS="${ESCALATE_SECS:-210}"
+ESCALATE_INTERVAL="${ESCALATE_INTERVAL:-10}"
+
+# Overridable alongside PROBE_HOSTS so a simulated outage can be run against
+# scratch state and a scratch log instead of production ones. Nothing in
+# production sets either.
+STATE_DIR="${STATE_DIR:-/var/lib/beaconbutty}"
 STATE_FILE="${STATE_DIR}/wan-fails"
 DNS_STATE_FILE="${STATE_DIR}/dns-fails"
 WAN_STATUS_FILE="${STATE_DIR}/wan-status.json"
-LOGFILE="/var/log/beaconbutty/watchdog.log"
+# Start of the outage currently in progress, so every failing check appends its
+# evidence to the same file. Removed on recovery.
+OUTAGE_START_FILE="${STATE_DIR}/wan-outage-start"
+DIAG_BIN="${DIAG_BIN:-/usr/local/lib/beaconbutty/bb_wan_diag.py}"
+LOGFILE="${LOGFILE:-/var/log/beaconbutty/watchdog.log}"
 ALERT_SH="/usr/local/bin/beaconbutty-alert.sh"
 
 mkdir -p "$STATE_DIR" "$(dirname "$LOGFILE")"
@@ -107,6 +125,23 @@ renew_wan_lease() {
     fi
 }
 
+# When did we last see a healthy WAN? wan-status.json records checked_at on
+# every run, healthy ones included, so reading it before we overwrite it brackets
+# the onset: the outage began somewhere between LAST_OK_AT and the first failing
+# check. Escalation can pin recovery to ~10s but nothing can pin the start after
+# the fact, so this bracket is the only honest answer to "how long was it down".
+LAST_OK_AT=""
+if [[ -f "$WAN_STATUS_FILE" ]]; then
+    LAST_OK_AT=$(python3 -c '
+import json, sys
+try:
+    st = json.load(open(sys.argv[1]))
+    print(st.get("checked_at", "") if st.get("state") == "ok" else "")
+except Exception:
+    print("")
+' "$WAN_STATUS_FILE" 2>/dev/null || true)
+fi
+
 # ── Check 1: WAN interface has an IP ──────────────────────────────────────────
 # `|| true` is required, not defensive noise: if $WAN_IFACE does not exist at
 # all (driver crash, NIC renamed, cable-side rename), `ip` exits non-zero and
@@ -142,6 +177,7 @@ if $REACHABLE; then
     PREV_FAILS=$(read_count "$STATE_FILE")
     write_count "$STATE_FILE" 0
     [[ "$PREV_FAILS" -gt 0 ]] && log "WAN connectivity restored (was at ${PREV_FAILS} failures). WAN IP: $WAN_IP"
+    rm -f "$OUTAGE_START_FILE"
     STATE=ok
     VERDICT="WAN reachable"
     GW=$(wan_gateway)            # cheap route lookup, no probe — the externals
@@ -150,25 +186,79 @@ if $REACHABLE; then
 else
     FAILS=$(( $(read_count "$STATE_FILE") + 1 ))
     write_count "$STATE_FILE" "$FAILS"
-
-    # Probe the ISP gateway ONLY here. On the success path it is reachable by
-    # definition, so probing there would just be a wasted round-trip.
     GW=$(wan_gateway)
-    if [[ -z "$GW" ]]; then
-        STATE=no_route; GW_REACH=null
-        VERDICT="no default route via $WAN_IFACE — local routing fault, not the ISP"
-    elif ping -I "$WAN_IFACE" -c 2 -W 3 -q "$GW" &>/dev/null; then
-        STATE=isp_upstream; GW_REACH=true
-        VERDICT="ISP gateway $GW reachable — break is upstream of it, no action (a reboot will not help)"
+
+    # One outage start for the whole event, so every failing check appends its
+    # evidence to the same file and the shape over time is recoverable.
+    if [[ ! -f "$OUTAGE_START_FILE" ]]; then
+        date --iso-8601=seconds > "$OUTAGE_START_FILE"
+        FIRST_CHECK=1
     else
-        STATE=link_fault; GW_REACH=false
-        VERDICT="ISP gateway $GW unreachable too — fault in the link/CPE between us and the ISP"
+        FIRST_CHECK=0
+    fi
+    OUTAGE_START=$(cat "$OUTAGE_START_FILE")
+
+    # Diagnose. The helper arpings the gateway — ARP runs below IP, so it
+    # answers even from a router that is refusing to forward, which is the one
+    # thing a ping cannot tell us. It also reads carrier and lease state, and on
+    # the FIRST failing check of an outage traceroutes to find where packets
+    # die. See lib/bb_wan_diag.py for why the old ICMP-only split was useless.
+    STATE=""; VERDICT=""; GW_REACH=null
+    if [[ -x "$DIAG_BIN" ]]; then
+        DIAG_ARGS=(--iface "$WAN_IFACE" --gateway "$GW"
+                   --outage-start "$OUTAGE_START" --probe-hosts "$PROBE_HOSTS")
+        [[ -n "$LAST_OK_AT"     ]] && DIAG_ARGS+=(--last-ok "$LAST_OK_AT")
+        [[ "$FIRST_CHECK" == 1  ]] && DIAG_ARGS+=(--full)
+        # `|| true` so a broken helper degrades to the fallback below rather
+        # than killing the watchdog under `set -e` in the middle of an outage.
+        DIAG=$("$DIAG_BIN" "${DIAG_ARGS[@]}" 2>/dev/null || true)
+        if [[ -n "$DIAG" ]]; then
+            STATE=$(cut -f1 <<<"$DIAG")
+            VERDICT=$(cut -f2 <<<"$DIAG")
+            GW_REACH=$(cut -f3 <<<"$DIAG")
+        fi
+    fi
+
+    # Fallback: keep working (with the weaker verdict) if the helper is absent
+    # or failed, rather than logging an outage with no classification at all.
+    if [[ -z "$STATE" ]]; then
+        if [[ -z "$GW" ]]; then
+            STATE=no_route; GW_REACH=null
+            VERDICT="no default route via $WAN_IFACE — local routing fault, not the ISP"
+        else
+            STATE=unknown; GW_REACH=null
+            VERDICT="gateway $GW unreachable — cause not established (diagnostic helper unavailable)"
+        fi
     fi
 
     log "WAN unreachable (probed: $PROBE_HOSTS). WAN IP: $WAN_IP. Fail ${FAILS}/${FAIL_THRESHOLD} — $VERDICT"
     # Historic behaviour was to renew DHCP here; that helps nothing when the
     # ISP is down and, worse, ran dhcpcd behind NM's back and wiped
     # /etc/resolv.conf (2026-07-01 incident).
+
+    # ── Escalate: probe every ESCALATE_INTERVAL until recovery ────────────────
+    # Publish the failing state FIRST — the loop below can hold this run for
+    # minutes, and the dashboard must not keep serving the previous healthy
+    # reading for that whole time.
+    write_status "$STATE" "$VERDICT" "$GW" "$GW_REACH" "$FAILS" null
+    ESCALATE_DEADLINE=$(( SECONDS + ESCALATE_SECS ))
+    while (( SECONDS < ESCALATE_DEADLINE )); do
+        sleep "$ESCALATE_INTERVAL"
+        for host in $PROBE_HOSTS; do
+            if ping -c 1 -W 2 -q "$host" &>/dev/null; then
+                log "WAN connectivity restored (was at ${FAILS} failures). WAN IP: $WAN_IP"
+                write_count "$STATE_FILE" 0
+                rm -f "$OUTAGE_START_FILE"
+                # DNS is deliberately not tested on this path: we recovered
+                # seconds ago and the resolver may not have caught up yet, so a
+                # probe now would report a failure that is not one. The next
+                # scheduled run tests it 5 minutes from now.
+                write_status ok "WAN reachable — recovered during fast probe" \
+                             "$GW" true 0 null
+                exit 0
+            fi
+        done
+    done
 fi
 
 # ── Check 3: DNS tripwire ─────────────────────────────────────────────────────

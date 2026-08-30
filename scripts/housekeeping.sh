@@ -171,6 +171,11 @@ echo ""
 echo "-- ISP outage history --"
 if [[ -x /usr/local/lib/beaconbutty/bb_outages.py ]]; then
     echo "  $(/usr/local/lib/beaconbutty/bb_outages.py --persist 2>&1 || echo 'failed')"
+    # Per-outage evidence is ~2 KB a file, but unbounded is unbounded. A year
+    # outlives the summary's usefulness; outage-history.json keeps the record.
+    EVIDENCE_PRUNED=$(find /var/lib/beaconbutty/outage-evidence -maxdepth 1 -name '*.json' \
+        -mtime +365 -print -delete 2>/dev/null | wc -l)
+    echo "  Old evidence files deleted: ${EVIDENCE_PRUNED}"
 else
     echo "  SKIPPED: /usr/local/lib/beaconbutty/bb_outages.py not installed"
 fi

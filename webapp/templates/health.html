@@ -122,6 +122,12 @@
         between two probes leaves no trace — a quiet day means &ldquo;none seen&rdquo;, not
         &ldquo;none happened&rdquo;. Durations are rounded to that cadence — hover one for the
         exact detected span.
+        Since 2026-08-30 a failing check also drops to <strong>10-second</strong> probing until
+        recovery and captures evidence — carrier, gateway ARP, lease, traceroute — so newer
+        outages are measured rather than rounded, and their cause is derived rather than guessed.
+        Rows with no evidence line predate that: they were classified on whether the gateway
+        answered a ping, which cannot tell an absent router from one that is merely not
+        forwarding, so their cause was never established.
         {% if outages.last30.count %}
           Last 30 days: <strong>{{ outages.last30.count }}</strong> outage{{ '' if outages.last30.count == 1 else 's' }},
           {{ fmt_duration(outages.last30.total_secs) }} of downtime.
@@ -161,7 +167,7 @@
             </td>
             <td style="padding:5px 12px 5px 0;white-space:nowrap;">
               <span class="bb-pop" tabindex="0" style="cursor:help;"
-                    data-pop="Detected {{ o.start[11:19] }} → {% if o.ongoing %}still failing{% else %}{{ o.end[11:19] }}{% endif %}: {{ o.duration_secs }}s between log lines, rounded to the {{ outages.probe_mins }}-minute probe cadence. A failing check spends ~12s on dead pings before it logs and a recovering one logs after ~1s, so the raw gap always reads a few seconds short of a whole interval.">{{ fmt_duration(o.duration_secs) }}</span>
+                    data-pop="Detected {{ o.start[11:19] }} → {% if o.ongoing %}still failing{% else %}{{ o.end[11:19] }}{% endif %}: {{ o.duration_secs }}s between log lines.{% if o.evidence and o.evidence.last_ok_at %} Last healthy check was {{ o.evidence.last_ok_at[11:19] }}, so the outage began somewhere in between and lasted at most {{ fmt_duration(o.evidence.duration_max_secs) }}.{% else %} Recovery is only known to the next scheduled check, so this is a whole probe interval.{% endif %}">{{ fmt_duration(o.duration_secs) }}</span>
               {%- if o.ongoing %}
                 <span style="color:#f44336;font-weight:600;"> · ongoing</span>
               {%- elif o.end_estimated %}
@@ -177,6 +183,40 @@
             </td>
             <td style="padding:5px 0;color:var(--text-muted,#888);">{{ o.checks_failed }}</td>
           </tr>
+          {# Evidence captured at the time of the outage. Only rows diagnosed by
+             lib/bb_wan_diag.py have this; older rows carry no sub-row at all,
+             and their "cause not established" label already says why. #}
+          {% if o.evidence %}
+          {% set e = o.evidence %}
+          <tr style="border-bottom:1px solid var(--border,#333);">
+            <td colspan="4" style="padding:0 0 6px 18px;font-size:12px;color:var(--text-muted,#888);line-height:1.6;">
+              <span style="color:{% if e.carrier == 1 %}#4caf50{% else %}#f44336{% endif %};">
+                link {{ 'up' if e.carrier == 1 else 'DOWN' }}</span>
+              · gateway ARP
+              <span style="color:{% if e.gateway_arp %}#4caf50{% else %}#f44336{% endif %};">
+                {{ 'answered' if e.gateway_arp else 'silent' }}</span>
+              {%- if e.gateway_mac %} <code style="font-size:11px;">{{ e.gateway_mac }}</code>{% endif %}
+              · ICMP <span style="color:{% if e.gateway_icmp %}#4caf50{% else %}#f44336{% endif %};">
+                {{ 'answered' if e.gateway_icmp else 'silent' }}</span>
+              {%- if e.dhcp and e.dhcp.address %}
+                · lease <code style="font-size:11px;">{{ e.dhcp.address }}</code>
+                {%- if e.dhcp.device_state %} ({{ e.dhcp.device_state }}){% endif %}
+              {%- endif %}
+              {%- if e.traceroute_last %}
+                · packets died after <code style="font-size:11px;">{{ e.traceroute_last.addr }}</code> (hop {{ e.traceroute_last.hop }})
+              {%- endif %}
+              {%- if e.tailscale and e.tailscale.backend_state %}
+                · Tailscale {{ e.tailscale.backend_state }}{% if e.tailscale.online is not none %},
+                  {{ 'online' if e.tailscale.online else 'offline' }}{% endif %}
+              {%- endif %}
+              {%- if e.samples and e.samples > 1 %} · {{ e.samples }} checks sampled{% endif %}
+              {%- if e.last_ok_at %}
+                <br>began between {{ e.last_ok_at[11:19] }} and {{ o.start[11:19] }} — at most
+                {{ fmt_duration(e.duration_max_secs) }}
+              {%- endif %}
+            </td>
+          </tr>
+          {% endif %}
           {% endfor %}
         {% endfor %}
         </tbody>

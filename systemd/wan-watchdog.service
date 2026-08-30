@@ -9,7 +9,11 @@ ExecStart=/usr/local/bin/wan-watchdog.sh
 User=root
 StandardOutput=journal
 StandardError=journal
-TimeoutStartSec=60
+# Must exceed ESCALATE_SECS (210s) plus the initial diagnostic burst: once a
+# check fails the script keeps probing every 10s until it sees recovery, so that
+# a short outage is measured rather than rounded up to a whole 5-minute probe
+# interval. 300s still lands inside the timer's 5-minute period.
+TimeoutStartSec=300
 
 # Pass the WAN interface name through (override in environment if non-default)
 Environment=WAN_IFACE=eth0

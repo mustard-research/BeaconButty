@@ -92,6 +92,11 @@ install -m 644 "$SCRIPT_DIR/lib/bb_enrich.py"          /usr/local/lib/beaconbutt
 # bb_outages is imported by the webapp and executed as a CLI by healthcheck.sh
 # and housekeeping.sh, so it needs the execute bit the other modules don't.
 install -m 755 "$SCRIPT_DIR/lib/bb_outages.py"         /usr/local/lib/beaconbutty/bb_outages.py
+# bb_wan_diag is executed by wan-watchdog.sh on every failing check. If it goes
+# missing the watchdog still runs but classifies every outage as "unknown", so
+# beaconbutty-health.sh asserts its presence rather than letting the diagnosis
+# quietly degrade to nothing.
+install -m 755 "$SCRIPT_DIR/lib/bb_wan_diag.py"        /usr/local/lib/beaconbutty/bb_wan_diag.py
 
 # Display-only ASN owner aliases. Seeded once and never overwritten — this file
 # is hand-edited on the box, so a reinstall must not discard local entries.
@@ -123,8 +128,12 @@ install -m 755 "$SCRIPT_DIR/scripts/slow-cadence-digest.py" /usr/local/bin/beaco
 install -m 755 "$SCRIPT_DIR/scripts/ip-intel.py"      /usr/local/bin/beaconbutty-ip-intel.py
 install -m 755 "$SCRIPT_DIR/scripts/bb0-led"          /usr/local/bin/bb0-led
 install -m 755 "$SCRIPT_DIR/scripts/bb0-fan"          /usr/local/bin/bb0-fan
+# wan-watchdog.sh had no install line at all and was being deployed by hand —
+# the same gap the three scripts above were fixed for.
+install -m 755 "$SCRIPT_DIR/scripts/wan-watchdog.sh"  /usr/local/bin/wan-watchdog.sh
 
 mkdir -p /var/lib/beaconbutty/reports
+mkdir -p /var/lib/beaconbutty/outage-evidence
 mkdir -p /var/lib/beaconbutty/backups
 mkdir -p /var/log/beaconbutty
 # State dir is written by BOTH root (timer scripts) and dm (webapp: FP

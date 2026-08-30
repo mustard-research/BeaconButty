@@ -337,6 +337,16 @@ if [[ -x /usr/local/lib/beaconbutty/bb_outages.py ]]; then
     [[ -n "$OUTAGE_LINE" ]] && OK "$OUTAGE_LINE"
 fi
 
+# The watchdog's diagnostic helper. Without it wan-watchdog.sh still detects
+# outages but classifies every one as "cause not established" — a silent
+# downgrade with no other symptom, which is exactly the failure mode that made
+# the log2ram tmpfs check disappear. Assert it explicitly.
+if [[ -x /usr/local/lib/beaconbutty/bb_wan_diag.py ]]; then
+    OK "WAN outage diagnostics: bb_wan_diag.py installed"
+else
+    WARN "WAN outage diagnostics: /usr/local/lib/beaconbutty/bb_wan_diag.py missing — outages will be logged but not classified"
+fi
+
 # WAN connectivity
 if ping -c 1 -W 3 -q 1.1.1.1 &>/dev/null; then
     WAN_IP=$(ip -4 addr show eth0 2>/dev/null | awk '/inet / {print $2}' | head -1)

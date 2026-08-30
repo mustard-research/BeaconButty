@@ -47,6 +47,16 @@ WATCHDOG_LOG   = Path(os.environ.get("BB_WATCHDOG_LOG",
                                      "/var/log/beaconbutty/watchdog.log"))
 HISTORY_FILE   = Path(os.environ.get("BB_OUTAGE_HISTORY",
                                      "/var/lib/beaconbutty/outage-history.json"))
+EVIDENCE_DIR   = Path(os.environ.get("BB_OUTAGE_EVIDENCE",
+                                     "/var/lib/beaconbutty/outage-evidence"))
+
+# An evidence file is keyed on when the watchdog ENTERED its failure branch;
+# the outage start we parse here is when it LOGGED, and between the two sits the
+# diagnostic burst (arping, gateway ping, traceroute) — tens of seconds. So the
+# two timestamps never match exactly and we join on proximity instead. Distinct
+# outages are always separated by a recovery, and therefore by at least one
+# probe interval, so a window this size cannot select the wrong file.
+EVIDENCE_MATCH_SECS = 180
 
 # wan-watchdog.timer's period. Used only to bound an outage whose recovery was
 # never logged (the log was rotated or lost mid-outage); we credit it one more
@@ -68,18 +78,46 @@ _LINE_RE = re.compile(
 
 _NO_IP_RE = re.compile(r"^WAN \(\S+\) has no IP address")
 
-# Verdict text → machine class → display label. The first two wordings are the
-# current ones; "likely ISP outage" is the pre-2026-08-28 wording, kept so the
-# backfilled history classifies old events instead of showing them as unknown.
+# Verdict text → machine class → display label.
+#
+# Two generations live here at once, and they must not be conflated.
+#
+# CURRENT (from lib/bb_wan_diag.py): grounded in measurement — carrier state
+# plus an arping of the gateway, which runs below IP and so distinguishes a
+# router that is absent from one that is present but not forwarding.
+#
+# LEGACY (pre-2026-08-30): classified on one bit, "did the gateway answer
+# ICMP", which cannot tell those two apart. Its labels are deliberately
+# rewritten to say what was *observed* rather than what the old code inferred.
+# The old "fault in the link/CPE" wording was measurably wrong on bb0 — every
+# outage it named had an unbroken carrier, an unchanged lease and a device that
+# never left `activated` — so replaying it verbatim would keep asserting a
+# conclusion the evidence contradicts.
 _CLASSES = [
-    ("unreachable too",      "link_fault",   "Link / CPE fault"),
-    ("break is upstream",    "isp_upstream", "ISP outage — upstream"),
-    ("likely ISP outage",    "isp_upstream", "ISP outage — upstream"),
-    ("no default route",     "no_route",     "Local routing fault"),
-    ("no IP address",        "no_ip",        "WAN had no IP"),
+    # Current, most specific first — "answers ARP but not ICMP" contains
+    # "does not answer" as a substring in neither direction, but order still
+    # matters for the legacy wordings below.
+    ("does not answer ARP",     "gateway_absent",   "ISP gateway off the wire"),
+    ("answers ARP but not ICMP", "gateway_silent",  "ISP gateway present, not responding"),
+    ("break is beyond the edge", "upstream_transit", "ISP upstream / transit"),
+    ("carrier is down",         "link_down",        "Physical link down"),
+    # Legacy wordings.
+    ("unreachable too",         "link_fault",   "Gateway unreachable (cause not established)"),
+    ("break is upstream",       "isp_upstream", "Upstream — gateway answered"),
+    ("likely ISP outage",       "isp_upstream", "Upstream — gateway answered"),
+    # Shared by both generations.
+    ("no default route",        "no_route",     "Local routing fault"),
+    ("no IP address",           "no_ip",        "WAN had no IP"),
 ]
 CLASS_LABELS = {c: label for _, c, label in _CLASSES}
-CLASS_LABELS["unknown"] = "Cause not recorded"
+CLASS_LABELS["unknown"] = "Cause not established"
+
+# Classes produced by the evidence-based classifier. Used by the UI to mark
+# which rows carry real diagnosis and which predate it — a legacy row is not
+# "unknown cause", it is "cause never established", and the difference matters
+# when reading the history back.
+EVIDENCE_CLASSES = {"gateway_absent", "gateway_silent", "upstream_transit", "link_down"}
+LEGACY_CLASSES   = {"link_fault", "isp_upstream"}
 
 
 def _classify(message):
@@ -268,13 +306,96 @@ def save_history(outages, path=HISTORY_FILE):
     os.replace(tmp, path)
 
 
+def load_evidence_index():
+    """Every readable evidence file, keyed by the datetime it was opened at."""
+    index = {}
+    try:
+        paths = sorted(EVIDENCE_DIR.glob("*.json"))
+    except OSError:
+        return index
+    for path in paths:
+        try:
+            doc = json.loads(path.read_text())
+            ts = datetime.fromisoformat(doc["outage_start"])
+        except (OSError, json.JSONDecodeError, KeyError, ValueError):
+            continue
+        index[ts] = doc
+    return index
+
+
+def _summarise_evidence(doc, outage):
+    """
+    Flatten an evidence document down to what the history panel shows.
+
+    Takes the FIRST sample for the point-in-time facts: it is the one closest to
+    the onset, and the expensive probes (traceroute, DHCP, tailscale) only run
+    on that check. Sample count is carried separately so a long outage still
+    shows that it was watched throughout.
+    """
+    samples = doc.get("samples") or []
+    if not samples:
+        return None
+    first = samples[0]
+    car = first.get("carrier") or {}
+    arp = first.get("gateway_arp") or {}
+    tr  = first.get("traceroute") or {}
+    out = {
+        "last_ok_at":      doc.get("last_ok_at"),
+        "samples":         len(samples),
+        "carrier":         car.get("carrier"),
+        "carrier_changes": car.get("carrier_changes"),
+        "gateway_arp":     arp.get("reachable"),
+        "gateway_mac":     arp.get("mac"),
+        "gateway_icmp":    first.get("gateway_icmp"),
+        "traceroute_last": tr.get("last_responding"),
+        "traceroute_target": tr.get("target"),
+        "dhcp":            first.get("dhcp") or {},
+        "tailscale":       first.get("tailscale") or {},
+    }
+    # Bracket the onset. Escalation pins recovery to ~10s, but nothing can
+    # recover the moment an outage BEGAN after the fact — it is only known to
+    # lie between the last healthy check and the first failing one. Publishing
+    # the upper bound alongside the measured span is the honest way to say so.
+    if out["last_ok_at"] and outage.get("end"):
+        try:
+            span = (datetime.fromisoformat(outage["end"])
+                    - datetime.fromisoformat(out["last_ok_at"])).total_seconds()
+            out["duration_max_secs"] = max(0, int(span))
+        except (ValueError, TypeError):
+            pass
+    return out
+
+
+def attach_evidence(outages):
+    """Join each outage to its evidence file, nearest-preceding within the window."""
+    index = load_evidence_index()
+    if not index:
+        return outages
+    for o in outages:
+        try:
+            start = datetime.fromisoformat(o["start"])
+        except (KeyError, ValueError):
+            continue
+        best, best_gap = None, None
+        for ts, doc in index.items():
+            gap = (start - ts).total_seconds()
+            if 0 <= gap <= EVIDENCE_MATCH_SECS and (best_gap is None or gap < best_gap):
+                best, best_gap = doc, gap
+        if best:
+            ev = _summarise_evidence(best, o)
+            if ev:
+                o["evidence"] = ev
+    return outages
+
+
 def collect(persist=False, now=None):
     """
     The merged view: everything the history file holds, unioned with a fresh
     parse of whatever logs still exist. Read-only unless persist=True, so the
     webapp can call it on a GET without writing as the wrong user.
     """
-    outages = merge(load_history(), build_outages(parse_events(), now=now))
+    outages = attach_evidence(
+        merge(load_history(), build_outages(parse_events(), now=now)))
     if persist:
         save_history(outages)
     return outages
