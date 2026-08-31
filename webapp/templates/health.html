@@ -119,43 +119,8 @@
       {% endif %}
     </a>
 
-    <div id="outage-history" style="display:none;margin-top:12px;">
-      <p style="font-size:12px;color:var(--text-muted,#888);margin:0 0 10px;line-height:1.5;">
-        Windows are what the watchdog probe detected, not what happened: an outage shorter than
-        the gap between two probes leaves no trace, so a quiet day means &ldquo;none seen&rdquo;,
-        not &ldquo;none happened&rdquo;. Durations are rounded to that cadence — hover one for the
-        exact detected span.
-        <strong>Two resolutions live in this table.</strong> Since 2026-08-30 the check runs
-        every minute instead of every five, a failing check drops to <strong>10-second</strong>
-        probing, and evidence is captured — carrier, gateway ARP, lease, traceroute — so newer
-        outages are measured rather than rounded, carry a real onset bracket, and have a cause
-        derived rather than guessed. Rows with no evidence line predate all of that: sampled
-        5-minutely, and classified on whether the gateway answered a ping, which cannot tell an
-        absent router from one that is merely not forwarding. Their cause was never established
-        and their timings are only good to ±5 min.
-        {% if outages.last30.count %}
-          Last 30 days: <strong>{{ outages.last30.count }}</strong> outage{{ '' if outages.last30.count == 1 else 's' }},
-          {{ fmt_duration(outages.last30.total_secs) }} of downtime.
-        {% else %}
-          No outages in the last 30 days.
-        {% endif %}
-      </p>
-
-      {% if not outages.by_day %}
-        <p style="font-size:13px;color:var(--text-muted,#888);margin:0;">
-          No ISP outage has been recorded since logging began.</p>
-      {% else %}
-      <table style="width:100%;border-collapse:collapse;font-size:13px;">
-        <thead>
-          <tr style="border-bottom:1px solid var(--border,#333);">
-            <th style="text-align:left;padding:4px 12px 6px 0;color:var(--text-muted,#888);font-weight:600;">Time period</th>
-            <th style="text-align:left;padding:4px 12px 6px 0;color:var(--text-muted,#888);font-weight:600;">Duration</th>
-            <th style="text-align:left;padding:4px 12px 6px 0;color:var(--text-muted,#888);font-weight:600;">Cause</th>
-            <th style="text-align:left;padding:4px 0 6px 0;color:var(--text-muted,#888);font-weight:600;">Failed checks</th>
-          </tr>
-        </thead>
-        <tbody>
-        {% for d in outages.by_day %}
+{% macro outage_rows(days, labels, fmt_duration) %}
+        {% for d in days %}
           <tr style="background:var(--bg-alt,rgba(255,255,255,.03));">
             <td colspan="4" style="padding:5px 0 5px 6px;font-weight:600;">
               {{ d.day }}
@@ -184,7 +149,7 @@
             </td>
             <td style="padding:5px 12px 5px 0;">
               <span class="bb-pop" tabindex="0" style="cursor:help;"
-                    data-pop="{{ o.verdict }}">{{ outages.labels.get(o['class'], o['class']) }}</span>
+                    data-pop="{{ o.verdict }}">{{ labels.get(o['class'], o['class']) }}</span>
             </td>
             <td style="padding:5px 0;color:var(--text-muted,#888);">{{ o.checks_failed }}</td>
           </tr>
@@ -214,6 +179,18 @@
                 · Tailscale {{ e.tailscale.backend_state }}{% if e.tailscale.online is not none %},
                   {{ 'online' if e.tailscale.online else 'offline' }}{% endif %}
               {%- endif %}
+              {%- if e.dhcp_issued_at %}
+                · <span style="color:#4caf50;">ISP DHCP served us
+                  {{ e.dhcp_issued_at[11:19] }} mid-outage</span>
+              {%- endif %}
+              {%- if e.l2_frames is not none and e.l2_secs %}
+                · segment
+                <span style="color:{% if e.l2_frames %}#4caf50{% else %}#f44336{% endif %};">
+                  {% if e.l2_frames %}live ({{ e.l2_frames }} foreign broadcast in {{ e.l2_secs }}s){% else %}silent (no foreign broadcast in {{ e.l2_secs }}s){% endif %}</span>
+              {%- endif %}
+              {%- if e.local_health and e.local_health.throttled and e.local_health.throttled != '0x0' %}
+                · <span style="color:#ff9800;">bb0 throttled {{ e.local_health.throttled }}</span>
+              {%- endif %}
               {%- if e.samples and e.samples > 1 %} · {{ e.samples }} checks sampled{% endif %}
               {%- if e.last_ok_at %}
                 <br>began between {{ e.last_ok_at[11:19] }} and {{ o.start[11:19] }} — at most
@@ -224,11 +201,76 @@
           {% endif %}
           {% endfor %}
         {% endfor %}
+{% endmacro %}
+    <div id="outage-history" style="display:none;margin-top:12px;">
+      <p style="font-size:12px;color:var(--text-muted,#888);margin:0 0 10px;line-height:1.5;">
+        Windows are what the watchdog probe detected, not what happened: an outage shorter than
+        the gap between two probes leaves no trace, so a quiet day means &ldquo;none seen&rdquo;,
+        not &ldquo;none happened&rdquo;. Durations are rounded to that cadence — hover one for the
+        exact detected span.
+        <strong>Two resolutions live in this table.</strong> Since 2026-08-30 the check runs
+        every minute instead of every five, a failing check drops to <strong>10-second</strong>
+        probing, and evidence is captured — carrier, gateway ARP, lease, traceroute — so newer
+        outages are measured rather than rounded, carry a real onset bracket, and have a cause
+        derived rather than guessed. Rows with no evidence line predate all of that: sampled
+        5-minutely, and classified on whether the gateway answered a ping, which cannot tell an
+        absent router from one that is merely not forwarding. Their cause was never established
+        and their timings are only good to ±5 min.
+        {% if outages.last30.count %}
+          Last 30 days: <strong>{{ outages.last30.count }}</strong> outage{{ '' if outages.last30.count == 1 else 's' }},
+          {{ fmt_duration(outages.last30.total_secs) }} of downtime.
+        {% else %}
+          No outages in the last 30 days.
+        {% endif %}
+      </p>
+
+      {% if not outages.by_day %}
+        <p style="font-size:13px;color:var(--text-muted,#888);margin:0;">
+          {% if outages.older.count %}
+            No ISP outage in the last {{ outages.window_days }} days.
+          {% else %}
+            No ISP outage has been recorded since logging began.
+          {% endif %}</p>
+      {% else %}
+      <table style="width:100%;border-collapse:collapse;font-size:13px;">
+        <thead>
+          <tr style="border-bottom:1px solid var(--border,#333);">
+            <th style="text-align:left;padding:4px 12px 6px 0;color:var(--text-muted,#888);font-weight:600;">Time period</th>
+            <th style="text-align:left;padding:4px 12px 6px 0;color:var(--text-muted,#888);font-weight:600;">Duration</th>
+            <th style="text-align:left;padding:4px 12px 6px 0;color:var(--text-muted,#888);font-weight:600;">Cause</th>
+            <th style="text-align:left;padding:4px 0 6px 0;color:var(--text-muted,#888);font-weight:600;">Failed checks</th>
+          </tr>
+        </thead>
+        <tbody>
+        {{ outage_rows(outages.by_day, outages.labels, fmt_duration) }}
         </tbody>
       </table>
       {% endif %}
 
+      {% if outages.older.count %}
+      <div style="margin-top:10px;">
+        <a href="#" id="older-toggle" onclick="toggleOlderOutages(event)"
+           style="text-decoration:none;color:var(--text-muted,#888);font-size:12px;">
+          <span id="older-chevron" style="display:inline-block;width:9px;font-size:10px;">&#9654;</span>
+          <span style="border-bottom:1px dotted var(--text-muted,#888);">
+            {{ outages.older.count }} older outage{{ '' if outages.older.count == 1 else 's' }}</span>
+          <span style="color:var(--text-muted,#888);">
+            — {{ outages.older.from }} to {{ outages.older.to }},
+            {{ fmt_duration(outages.older.total_secs) }} of downtime</span>
+        </a>
+        <div id="older-outages" style="display:none;margin-top:8px;">
+          <table style="width:100%;border-collapse:collapse;font-size:13px;">
+            <tbody>
+              {{ outage_rows(outages.older_by_day, outages.labels, fmt_duration) }}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      {% endif %}
+
       <p style="font-size:11px;color:var(--text-muted,#888);margin:10px 0 0;">
+        The table above shows the last <strong>{{ outages.window_days }} days</strong>; older
+        outages are folded away, not discarded — the full record is kept indefinitely.
         Parsed from <code>/var/log/beaconbutty/watchdog.log</code> and its rotations, merged into
         <code>/var/lib/beaconbutty/outage-history.json</code> daily so the record outlives the
         8-week log rotation. DNS-only failures are excluded — the DNS tripwire also trips during
@@ -703,6 +745,15 @@ function toggleOutageHistory(ev) {
   ev.preventDefault();
   var panel = document.getElementById('outage-history');
   var chev  = document.getElementById('outage-chevron');
+  var shown = panel.style.display !== 'none';
+  panel.style.display = shown ? 'none' : 'block';
+  chev.innerHTML = shown ? '\u25B6' : '\u25BC';
+}
+
+function toggleOlderOutages(ev) {
+  ev.preventDefault();
+  var panel = document.getElementById('older-outages');
+  var chev  = document.getElementById('older-chevron');
   var shown = panel.style.display !== 'none';
   panel.style.display = shown ? 'none' : 'block';
   chev.innerHTML = shown ? '\u25B6' : '\u25BC';

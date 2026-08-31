@@ -1728,13 +1728,20 @@ def load_outages():
     try:
         outages = bb_outages.collect()
         summary = bb_outages.summarise(outages)
+        # The panel defaults to a bounded window so the table stays readable as
+        # years of history accrue. Nothing is discarded — the older rows are
+        # rendered behind a second toggle, and outage-history.json is untouched.
+        recent, older = bb_outages.partition_by_age(outages)
         return {
-            "summary":    summary,
-            "line":       bb_outages.summary_line(summary),
-            "by_day":     bb_outages.group_by_day(outages),
-            "last30":     bb_outages.summarise_range(outages, 30),
-            "labels":     bb_outages.CLASS_LABELS,
-            "probe_mins": bb_outages.PROBE_INTERVAL_SECS // 60,
+            "summary":      summary,
+            "line":         bb_outages.summary_line(summary),
+            "by_day":       bb_outages.group_by_day(recent),
+            "older_by_day": bb_outages.group_by_day(older),
+            "older":        bb_outages.summarise_set(older),
+            "window_days":  bb_outages.HISTORY_WINDOW_DAYS,
+            "last30":       bb_outages.summarise_range(outages, 30),
+            "labels":       bb_outages.CLASS_LABELS,
+            "probe_mins":   bb_outages.PROBE_INTERVAL_SECS // 60,
         }
     except Exception:
         return {}

@@ -204,9 +204,26 @@ def parse_events(paths=None):
     return events
 
 
+# Classes that are established by a witness rather than inferred from silence.
+# Ordered most-severe first. These are ONE-WAY: once a check has established
+# one, it is true of the outage, so a plain majority vote across checks is the
+# wrong collapse — an outage whose ninth check finally caught a DHCP renewal
+# would be reported on the strength of the eight checks that had no evidence
+# yet, throwing away the only measurement that settled anything.
+_WITNESSED = ("link_down", "access_segment_down", "gateway_vip_unclaimed")
+
+
+def _collapse_classes(classes):
+    """One class for the outage. Witnessed findings win; otherwise majority."""
+    for cls in _WITNESSED:
+        if cls in classes:
+            return cls
+    counted = Counter(classes)
+    return counted.most_common(1)[0][0] if counted else "unknown"
+
+
 def _finish(cur, end, ongoing, estimated):
-    classes = Counter(cur["classes"])
-    primary = classes.most_common(1)[0][0] if classes else "unknown"
+    primary = _collapse_classes(cur["classes"])
     return {
         "start":         cur["start"].isoformat(),
         "end":           end.isoformat() if end else None,
@@ -338,6 +355,39 @@ def load_evidence_index():
     return index
 
 
+def _witnesses(samples, outage):
+    """
+    Scan every sample for the two things that prove the ISP's access gear was
+    alive while its gateway address answered nobody: a DHCP lease issued during
+    the outage, and foreign broadcast still arriving on the WAN segment.
+    """
+    out = {}
+    try:
+        started = datetime.fromisoformat(outage["start"]).timestamp()
+    except (KeyError, TypeError, ValueError):
+        started = None
+
+    if started is not None:
+        for s in samples:
+            issued = (s.get("dhcp") or {}).get("lease_issued_epoch")
+            if issued and issued >= started:
+                out["dhcp_issued_at"] = (s.get("dhcp") or {}).get("lease_issued_at")
+                break
+
+    # Total foreign broadcast across the whole outage, not per-sample: a single
+    # 60s gap is a thin signal, the sum over a nine-check outage is not.
+    counts = [(s.get("link") or {}).get("rx_broadcast") for s in samples]
+    counts = [c for c in counts if isinstance(c, int)]
+    if len(counts) >= 2 and counts[-1] >= counts[0]:
+        out["l2_frames"] = counts[-1] - counts[0]
+        try:
+            out["l2_secs"] = int((datetime.fromisoformat(samples[-1]["at"])
+                                  - datetime.fromisoformat(samples[0]["at"])).total_seconds())
+        except (KeyError, TypeError, ValueError):
+            pass
+    return out
+
+
 def _summarise_evidence(doc, outage):
     """
     Flatten an evidence document down to what the history panel shows.
@@ -351,6 +401,7 @@ def _summarise_evidence(doc, outage):
     if not samples:
         return None
     first = samples[0]
+    last = samples[-1]
     car = first.get("carrier") or {}
     arp = first.get("gateway_arp") or {}
     tr  = first.get("traceroute") or {}
@@ -366,7 +417,18 @@ def _summarise_evidence(doc, outage):
         "traceroute_target": tr.get("target"),
         "dhcp":            first.get("dhcp") or {},
         "tailscale":       first.get("tailscale") or {},
+        "local_health":    first.get("local_health") or {},
+        # The verdict the evidence itself reached. The log-line class is derived
+        # from what the watchdog printed; this is what the samples support, and
+        # on a witnessed outage the two agree by construction.
+        "class":           doc.get("class"),
     }
+
+    # Witnesses live on LATER samples, never the first — a lease renewed during
+    # the outage can land on any check, and the broadcast delta needs a previous
+    # sample to difference against. Reading only samples[0] (as this function
+    # did until 2026-08-31) would collect the evidence and then never show it.
+    out.update(_witnesses(samples, outage))
     # Bracket the onset. Escalation pins recovery to ~10s, but nothing can
     # recover the moment an outage BEGAN after the fact — it is only known to
     # lie between the last healthy check and the first failing one. Publishing
@@ -495,6 +557,38 @@ def summary_line(summary):
     if summary["ongoing"]:
         line += " — one still ongoing"
     return line
+
+
+# How much history the panel shows before folding the rest away. The record
+# itself is never truncated — outage-history.json keeps everything — this only
+# bounds what renders by default, so the table stays readable as years accrue.
+HISTORY_WINDOW_DAYS = 30
+
+
+def partition_by_age(outages, days=HISTORY_WINDOW_DAYS, today=None):
+    """
+    Split into (recent, older) on whole local days.
+
+    Compared on the date prefix, exactly as summarise_range does, so the two
+    cannot disagree about which side of the boundary an outage falls on and a
+    DST change cannot shift it by an hour.
+    """
+    today = today or date.today()
+    first = (today - timedelta(days=days - 1)).isoformat()
+    recent = [o for o in outages if _local_day(o.get("start")) >= first]
+    older  = [o for o in outages if _local_day(o.get("start")) <  first]
+    return recent, older
+
+
+def summarise_set(outages):
+    """Count, downtime and span for an arbitrary subset."""
+    days = sorted({_local_day(o.get("start")) for o in outages if o.get("start")})
+    return {
+        "count":      len(outages),
+        "total_secs": sum(o.get("duration_secs", 0) for o in outages),
+        "from":       days[0] if days else None,
+        "to":         days[-1] if days else None,
+    }
 
 
 def group_by_day(outages):
