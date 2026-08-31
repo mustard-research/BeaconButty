@@ -382,7 +382,7 @@ Covered in [Reboot Procedure](reboot-procedure.md). Summary: the wrapper at `/us
 > exactly what turned a brief ISP blip into a total DNS outage on 2026-07-01.
 > This page recommended it until 2026-08-30. Use `nmcli` only.
 
-`wan-watchdog.sh` runs every minute. It is **log-and-diagnose only** for reachability: three consecutive failures with a valid WAN IP means the ISP is down, not us, and a reboot will not help. It self-heals only the one case it can — no IP at all — and does so via `nmcli device reapply`.
+`wan-watchdog.sh` runs every minute. It is **log-and-diagnose only** for reachability: sustained failure with a valid WAN IP means the ISP is down, not us, and a reboot will not help. The threshold is **derived from time, never a count of checks** — `FAIL_AFTER_SECS / CHECK_INTERVAL_SECS`, i.e. 15 minutes at either cadence. It read "three consecutive failures" here until 2026-08-31, which stopped being true the moment the timer went from 5-minutely to 1-minutely. It self-heals only the one case it can — no IP at all — and does so via `nmcli device reapply`.
 
 ### First, read the classification
 
@@ -391,12 +391,14 @@ Do not start pulling cables. `/health` → **WAN / ISP** and the outage history 
 | Class shown | Where the fault is | What to do |
 |---|---|---|
 | `link_down` | our link or the CPE | **This one is yours.** Check cable, port, CPE power. |
-| `gateway_absent` | ISP edge is off the wire | Nothing local. Note the duration and report it. |
+| `gateway_vip_unclaimed` | ISP edge is **up**, but nothing is claiming the gateway address | Nothing local, and worth reporting *as such*: the access gear was provably alive (it served DHCP, or kept beaconing) while the gateway went unreachable. |
+| `access_segment_down` | ISP access segment is gone | Nothing local. We stopped seeing even foreign broadcast, so this is an access-side outage. |
+| `gateway_absent` | nothing claims the gateway address; cause not narrowed | Nothing local. Note the duration and report it. The outage was too short for either witness to speak. |
 | `gateway_silent` | ISP edge present, not forwarding | Nothing local. |
 | `upstream_transit` | beyond the ISP edge | Nothing local; the evidence row names the last hop that answered. |
 | `no_route` | local routing fault | Check `ip route show default dev eth0`. |
 
-Only `link_down` and `no_route` are actionable here. The other three are the ISP's, and the evidence sub-row (carrier state, gateway ARP, lease, traceroute) is what you quote when you report it.
+Only `link_down` and `no_route` are actionable here. The rest are the ISP's, and the evidence sub-row (carrier state, gateway ARP, lease, traceroute) is what you quote when you report it.
 
 ### Manual intervention, if genuinely needed
 

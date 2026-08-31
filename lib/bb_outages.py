@@ -104,7 +104,14 @@ _CLASSES = [
     # Current, most specific first — "answers ARP but not ICMP" contains
     # "does not answer" as a substring in neither direction, but order still
     # matters for the legacy wordings below.
-    ("does not answer ARP",     "gateway_absent",   "ISP gateway off the wire"),
+    # These two MUST precede the plain "does not answer ARP" rule: both of
+    # their verdicts contain that phrase, so a first-match scan would collapse
+    # them into gateway_absent and throw away the discrimination.
+    ("access gear is alive",    "gateway_vip_unclaimed",
+                                "ISP gateway address unclaimed (access gear alive)"),
+    ("segment has gone silent", "access_segment_down",
+                                "WAN segment silent (isolated at L2)"),
+    ("does not answer ARP",     "gateway_absent",   "ISP gateway unclaimed (cause not narrowed)"),
     ("answers ARP but not ICMP", "gateway_silent",  "ISP gateway present, not responding"),
     ("break is beyond the edge", "upstream_transit", "ISP upstream / transit"),
     ("carrier is down",         "link_down",        "Physical link down"),
@@ -123,7 +130,8 @@ CLASS_LABELS["unknown"] = "Cause not established"
 # which rows carry real diagnosis and which predate it — a legacy row is not
 # "unknown cause", it is "cause never established", and the difference matters
 # when reading the history back.
-EVIDENCE_CLASSES = {"gateway_absent", "gateway_silent", "upstream_transit", "link_down"}
+EVIDENCE_CLASSES = {"gateway_absent", "gateway_silent", "upstream_transit",
+                    "link_down", "gateway_vip_unclaimed", "access_segment_down"}
 LEGACY_CLASSES   = {"link_fault", "isp_upstream"}
 
 

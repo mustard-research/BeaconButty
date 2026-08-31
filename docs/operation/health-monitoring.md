@@ -108,16 +108,36 @@ Deliberately `OK`, never `WARN`: an ISP outage is not a bb0 fault and nothing he
 | Evidence | Class | Means |
 |---|---|---|
 | carrier down | `link_down` | our link or the CPE — go and look at it |
-| gateway silent to ARP | `gateway_absent` | ISP edge off the wire (VRRP with no master, or an access-side outage) |
+| gateway silent to ARP, access gear provably alive | `gateway_vip_unclaimed` | the gateway *address* is unclaimed while the ISP's kit is up — **not** an access outage |
+| gateway silent to ARP, segment silent too | `access_segment_down` | no foreign broadcast either — we are isolated at layer 2 |
+| gateway silent to ARP, no witness yet | `gateway_absent` | nothing claims the gateway address; cause not narrowed |
 | answers ARP, not ICMP | `gateway_silent` | edge present, not handling our traffic |
 | answers both | `upstream_transit` | break is beyond the edge; traceroute names the last live hop |
 
 It uses `arping`, **not** `ip neigh`: the neighbour cache holds a `REACHABLE` entry for minutes after a router disappears, so reading it would report the gateway present throughout the very outage being diagnosed. A cache is evidence about the past, not the present.
 
-Per-outage evidence — carrier and `carrier_changes`, gateway ARP with MAC, gateway ICMP, per-host external ICMP, traceroute hops, DHCP lease and device state, Tailscale backend — lands in `/var/lib/beaconbutty/outage-evidence/<start>.json` and renders as a sub-row under its outage. Files are pruned at 365 days by housekeeping; both the history and the evidence are in the config backup.
+#### Two witnesses that ARP silence alone cannot supply (2026-08-31)
+
+ARP silence was doing two jobs: it fires both when the ISP's edge is genuinely gone and when the edge is up while its virtual address goes unclaimed. Those need different conversations with the ISP, so two independent witnesses now separate them. Either one alone is sufficient.
+
+**1. A DHCP lease issued *during* the outage.** Derived as `expiry − lease_time` from `nmcli` — the DHCP client is never invoked, because doing that behind NetworkManager's back is what caused the 2026-07-01 resolver incident. On 2026-08-31 a DHCPACK landed at **09:56:50, four minutes into a total blackout**, from a gateway that ignored ARP throughout. Equipment that is off the wire cannot serve DHCP, so the verdict "the edge router is off the wire" was false as written.
+
+**2. Foreign broadcast still arriving**, counted for free by `ethtool -S eth0 → rx_broadcast_frames`. The ISP's access gear beacons a proprietary frame (`aa:bb:cc:dd:ee:e1`, a vendor OUI distinct from anything on our LAN, ethertype `0x9998`) about every five seconds, so the counter climbing proves the segment is live regardless of whether anything answers us at IP. This is deliberately **not** keyed on that MAC or ethertype — pin the probe to today's fingerprint and it silently reports "segment dead" for ever after a kit swap.
+
+Both are **one-way**: they may only ever upgrade a verdict, never downgrade one. Their absence proves nothing — renewals are ~52 minutes apart, and the first check of an outage has no earlier counter to difference against — so the fallback says the cause was not narrowed rather than guessing.
+
+> [!note] VRRP advertisements are not observable, and this is settled
+> The obvious probe here would be to watch for VRRP adverts and see whether a master exists. The ISP filters IP protocol 112 from the customer port: tested 2026-08-31 with a six-second listen, zero packets. Do not spend the run's time budget retrying it.
+
+Both new probes are local reads costing ~20 ms in total, so they run on **every** sample rather than once per outage. That placement is the point: the DHCP renewal that disproved the old verdict was the *fifth* check of the outage, and a first-check-only probe would have missed it in both of that day's outages.
+
+Per-outage evidence — carrier and `carrier_changes`, gateway ARP with MAC, gateway ICMP, per-host external ICMP, traceroute hops, DHCP lease/device state **and derived issue time**, **interface counters (`rx_broadcast_frames`, rx/tx packets)**, **conntrack and throttling state**, Tailscale backend — lands in `/var/lib/beaconbutty/outage-evidence/<start>.json` and renders as a sub-row under its outage. Files are pruned at 365 days by housekeeping; both the history and the evidence are in the config backup.
 
 > [!warning]
 > **The pre-2026-08-30 classifier was measurably wrong, and its rows are relabelled "cause not established" rather than replayed.** It split outages on one bit — did the gateway answer ICMP — which cannot tell an *absent* router from a *blackholing* one. It called five outages a "link/CPE fault" when every one had an unbroken carrier, a metronomic lease and a device that never left `activated`; meanwhile the single genuine 4-second link drop fell between two probes and was never recorded at all. Do not reinstate a cause the probe cannot establish.
+
+> [!warning]
+> **The 2026-08-30 generation overclaimed in its turn.** Its `gateway_absent` verdict asserted "the edge router is off the wire" — a physical state ARP silence cannot establish, and one the box's own journal disproved the next day. When a classifier asserts a physical state, ask what *else* would have to be silent if it were true, then check that it actually was.
 
 ### Resolution, and its limits
 
