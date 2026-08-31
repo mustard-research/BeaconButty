@@ -352,6 +352,44 @@ scratch).
 Window is fixed at 6h. Going longer would mean introducing a pre-aggregated
 store (ClickHouse); not justified for current investigative use.
 
+## WAN outage panel (Health page)
+
+The history table renders the **last 30 days** and folds anything older behind a
+second toggle that names what it is hiding — count, date span, total downtime.
+This is presentation only: `outage-history.json` keeps the full record, the
+summary counts above the table are computed over all of it, and the empty state
+distinguishes "none in the window" from "none ever recorded". The boundary comes
+from `bb_outages.partition_by_age`, which compares date prefixes exactly as
+`summarise_range` does so the two cannot disagree and a DST change cannot shift
+it by an hour.
+
+Both windows render through a single Jinja macro, `outage_rows(days, labels,
+fmt_duration)`. The per-day markup is ~70 lines with four nested conditionals;
+copying it for the second table would have been a mirror guaranteed to drift.
+The macro takes everything it needs as arguments rather than reaching into the
+template context, so it renders identically wherever it is called.
+
+### One-way upgrades are not a poll
+
+The outage classifier's witnesses (a DHCP lease issued mid-outage, foreign
+broadcast still arriving) are **one-way and can fire on any check**: once one is
+established it is true of the whole outage. Two places got this wrong on the
+first pass, and both failed silently rather than loudly:
+
+- `_finish` collapsed the per-check classes by **majority vote**. An outage whose
+  ninth check finally caught a renewal would have been reported on the strength
+  of the eight checks that had no evidence yet — discarding the only measurement
+  that settled anything. A witnessed finding now wins outright, most severe first.
+- `_summarise_evidence` read **`samples[0]`**. That is the one sample that cannot
+  carry either witness: a lease renewal lands on an arbitrary check, and the
+  broadcast delta needs a previous sample to difference against. It would have
+  collected the evidence and then never displayed it.
+
+The general rule: when a signal is monotone — it can only ever strengthen — do
+not aggregate it by frequency, and do not sample it at a fixed position. Ask
+whether *any* observation established it. See [Health Monitoring](../operation/health-monitoring.md) for the classifier
+itself.
+
 ## Beacons page — date picker
 
 The date picker on the Beacons page uses a custom dropdown:

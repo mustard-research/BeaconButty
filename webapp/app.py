@@ -1739,7 +1739,7 @@ def load_outages():
             "older_by_day": bb_outages.group_by_day(older),
             "older":        bb_outages.summarise_set(older),
             "window_days":  bb_outages.HISTORY_WINDOW_DAYS,
-            "last30":       bb_outages.summarise_range(outages, 30),
+            "last30":       bb_outages.summarise_range(outages, bb_outages.HISTORY_WINDOW_DAYS),
             "labels":       bb_outages.CLASS_LABELS,
             "probe_mins":   bb_outages.PROBE_INTERVAL_SECS // 60,
         }

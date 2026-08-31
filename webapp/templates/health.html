@@ -217,10 +217,10 @@
         absent router from one that is merely not forwarding. Their cause was never established
         and their timings are only good to ±5 min.
         {% if outages.last30.count %}
-          Last 30 days: <strong>{{ outages.last30.count }}</strong> outage{{ '' if outages.last30.count == 1 else 's' }},
+          Last {{ outages.window_days }} days: <strong>{{ outages.last30.count }}</strong> outage{{ '' if outages.last30.count == 1 else 's' }},
           {{ fmt_duration(outages.last30.total_secs) }} of downtime.
         {% else %}
-          No outages in the last 30 days.
+          No outages in the last {{ outages.window_days }} days.
         {% endif %}
       </p>
 
