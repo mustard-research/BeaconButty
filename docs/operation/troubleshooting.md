@@ -60,13 +60,23 @@ sudo crontab -l | grep zeekctl
 
 Two recurring warnings are **cosmetic** and not signs of a problem. Don't try to fix them blindly — both are documented choices.
 
-**`Warning: zeekctl netstats and print commands with cluster backend 'ZeroMQ' require UseWebSocket = 1`**
+**`Warning: new zeek version detected (run the zeekctl "deploy" command)`**
 
-Appears on every `zeekctl status` since the 2026-05-13 Zeek 8.1 upgrade. Background: 8.1 made ZeroMQ the default `ClusterBackend`, which requires `UseWebSocket = 1`. We kept `UseWebSocket = 0` because Debian Bookworm's `python3-websockets` is too old (10.x; need ≥12). Zeek currently runs on Broker fallback, which still works fine. The two affected commands (`zeekctl netstats`, `zeekctl print`) aren't used routinely — capture and rotation are unaffected. Long-term decision (pin Broker vs. upgrade websockets + flip ZeroMQ) is tracked in the [main index](../index.md).
+Appears after any Zeek package upgrade until `zeekctl deploy` runs. Expected — deploy reinstalls the site policies against the new binary and restarts capture.
+
+*(The old `UseWebSocket = 1` ZeroMQ warning is gone: resolved 2026-07-06 once trixie shipped `python3-websockets` 15.x. `zeekctl netstats` works and is the quickest proof that capture is healthy — it prints `recvd`/`dropped` counters.)*
 
 **`Error: error running post-terminate for zeek: mv: cannot move '/opt/zeek/spool/zeek' … : Device or resource busy`**
 
 Appears at the start of every `zeekctl deploy`. `/opt/zeek/spool/zeek` is its own 128 MB tmpfs (intentional, to spare NVMe wear), so zeekctl's post-terminate cross-filesystem `mv` can't work. Deploy still completes successfully — policies install, Zeek restarts, capture resumes. Only effect: forensic state from that one deploy cycle isn't preserved in the post-terminate stash. **Don't remove the tmpfs** to "fix" it.
+
+### Zeek 9 opened a Broker port on every interface
+
+On the 2026-09-20 upgrade to 9.0.0, `ss -tlnp` gained a Zeek listener on `*:27762` where 8.2.2 had bound nothing. It is `Broker::default_port`, redef'd by zeekctl's generated `standalone-layout.zeek`; `Broker::default_listen_address` defaults to `""`, i.e. every interface. INPUT accepts anything arriving on `eth1` or `tailscale0`, so that published a cluster port to the whole LAN and the tailnet. Not the internet — `eth0` is DROP'd — but not intended either.
+
+`config/zeek/site/local.zeek` now pins it: `redef Broker::default_listen_address = "127.0.0.1";`. Bound rather than disabled, so any local consumer keeps working. The ZeroMQ endpoints were already loopback-only via `zeekctl-config.zeek`; only Broker's own port was open, and Broker is deprecated in 9.0 anyway.
+
+**After any Zeek upgrade, diff the listener set** — `sudo ss -tlnp | grep zeek` should show nothing outside `127.0.0.1`. A new default in a generated config will not announce itself.
 
 To verify a deploy really succeeded despite the warnings:
 

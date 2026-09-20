@@ -44,3 +44,15 @@
 # ── Tuning for Raspberry Pi ───────────────────────────────────────────────────
 # Increase the connection table expiry delay (default may be low for busy links)
 redef table_expire_delay = 10 secs;
+
+# ── Keep Broker's listener off the wire (Zeek 9, 2026-09-20) ──────────────────
+# zeekctl's generated standalone-layout.zeek redefs Broker::default_port to
+# 27762, and under Zeek 9 that port is actually bound — 8.2.2 never listened on
+# it. Broker::default_listen_address defaults to "", i.e. every interface, and
+# INPUT accepts anything arriving on eth1 or tailscale0, so the upgrade quietly
+# published a cluster port to the whole LAN and the tailnet. (Not the internet:
+# eth0 is DROP'd.) We run the ZeroMQ backend — whose own endpoints are already
+# pinned to 127.0.0.1 by zeekctl-config.zeek — and Broker is deprecated in 9.0,
+# so nothing here needs it reachable. Bound rather than disabled: that keeps any
+# local consumer working while removing the exposure.
+redef Broker::default_listen_address = "127.0.0.1";
