@@ -217,12 +217,36 @@ sudo sysctl -a 2>/dev/null | grep -E 'rp_filter|syncookies|log_martians|accept_r
 
 | CVE | Name | Status | Notes |
 |-----|------|--------|-------|
-| CVE-2026-31431 | "Copy Fail" — kernel LPE via `authencesn` | **Vulnerable, awaiting rpt kernel rebuild** (as of 2026-05-02) | Local-only; bb0 only shell user is `dm`. Mitigation (blacklist `authencesn` module) held in reserve. See *Upgrade Log*. |
+| _(none currently tracked)_ | | | |
 
-The rpt kernel ships through `archive.raspberrypi.com`, **not** Debian-Security — so it will **not** be picked up by `unattended-upgrades`. Watch for it manually:
+### Resolved
+
+| CVE | Name | Resolved | Evidence |
+|-----|------|----------|----------|
+| CVE-2026-31431 | "Copy Fail" — kernel LPE via `authencesn` | **Fixed** — confirmed 2026-09-20 | The patch `crypto: authencesn - reject too-short AAD (assoclen<8) to match ESP/ESN spec` first appears in the kernel changelog at upstream `linux (6.18.8-1)`. bb0 has run `6.18.39+rpt-rpi-2712` since 2026-08-28, so it carried the fix well before this was noticed. The tracking entry sat stale at "Vulnerable, awaiting rpt kernel rebuild (2026-05-02)" for months. |
+
+> The changelog entry carries no CVE number, so the match is on the patch
+> description against the CVE's described mechanism (the `authencesn`
+> template's AAD/`assoclen` handling), not on an ID. It is the only
+> `authencesn` change in the window. Confirm against the CVE's fix commit if
+> you need it airtight.
+
+**Correction (2026-09-20): rpt kernels *are* auto-installed.** This section
+previously said the rpt kernel ships through `archive.raspberrypi.com` and so
+would **not** be picked up by `unattended-upgrades`, and told you to watch for
+it manually. That is wrong, and was wrong when written:
+`/etc/apt/apt.conf.d/52beaconbutty-autoupdate` (provisioned by `harden.sh`)
+allows `"origin=Raspberry Pi Foundation"` precisely so kernel and firmware
+updates auto-apply. Demonstrated 2026-09-17, when unattended-upgrades installed
+`linux-image-6.18.50+rpt-rpi-2712` on its own.
+
+What does *not* happen automatically is the reboot —
+`Automatic-Reboot "false"` in the same file — so a new kernel sits in
+`/var/run/reboot-required.pkgs` until someone reboots. Check that, not the
+package list:
 
 ```bash
-sudo apt update && apt list --upgradable 2>/dev/null | grep linux-image
+cat /var/run/reboot-required.pkgs 2>/dev/null; uname -r
 ```
 
 ## Known benign failure
