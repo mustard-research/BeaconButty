@@ -194,6 +194,27 @@ else
     echo "  SKIPPED: /usr/local/bin/beaconbutty-stash-packages.sh not installed"
 fi
 
+# ── Latest RITA release ───────────────────────────────────────────────────────
+# RITA is built from source and has no apt candidate, so the health check has no
+# local way to know an upgrade exists. Cache it here once a day rather than
+# putting a network call in the health path, the same shape as the ja4db and
+# teams-cidr refreshes. Failure is silent and leaves the previous answer in
+# place: "we could not ask today" must not render as "you are up to date".
+echo ""
+echo "-- Latest RITA release --"
+RITA_LATEST_FILE="/var/lib/beaconbutty/rita-latest"
+RITA_LATEST=$(curl -fsS --max-time 10 \
+    -H "Accept: application/vnd.github+json" \
+    -H "User-Agent: beaconbutty-housekeeping" \
+    https://api.github.com/repos/activecm/rita/releases/latest 2>/dev/null \
+    | grep -oP '"tag_name"\s*:\s*"\K[^"]+' | head -1 || true)
+if [[ -n "$RITA_LATEST" ]]; then
+    printf '%s\n' "$RITA_LATEST" > "$RITA_LATEST_FILE"
+    echo "  Latest upstream release: ${RITA_LATEST}  (installed: $(cat /var/lib/beaconbutty/rita-version 2>/dev/null || echo unknown))"
+else
+    echo "  Lookup failed — keeping previous answer ($(cat "$RITA_LATEST_FILE" 2>/dev/null || echo none))"
+fi
+
 # ── Disk usage summary ────────────────────────────────────────────────────────
 echo ""
 echo "-- Disk usage after housekeeping --"

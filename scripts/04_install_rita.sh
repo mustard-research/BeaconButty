@@ -16,9 +16,36 @@ RITA_BIN="/usr/local/bin/rita"
 GO_ROOT="/usr/local/go"
 GO_INSTALL_VERSION="1.24.1"  # Latest LTS-ish; RITA requires >= 1.22.3
 
+VERSION_FILE="/var/lib/beaconbutty/rita-version"
+INSTALLED_VER=$(cat "$VERSION_FILE" 2>/dev/null || true)
+
+# The old skip printed ${RITA_VERSION} — the *pin* — for whatever binary happened
+# to be on disk, so it claimed the new version the moment the pin moved and the
+# script could never upgrade anything. Compare the recorded build tag instead.
 if [[ -x "$RITA_BIN" ]]; then
-    echo "RITA already installed (${RITA_VERSION})"
-    exit 0
+    if [[ "$INSTALLED_VER" == "$RITA_VERSION" ]]; then
+        echo "RITA already installed (${RITA_VERSION})"
+        exit 0
+    fi
+    if [[ -z "$INSTALLED_VER" ]]; then
+        echo "RITA is installed but its build tag was never recorded."
+        echo "  RITA v5 has no --version flag, so the tag cannot be recovered"
+        echo "  from the binary. If you know it, write it to ${VERSION_FILE}."
+    else
+        echo "RITA ${INSTALLED_VER} is installed; this script pins ${RITA_VERSION}."
+    fi
+    # Not automatic: a rebuild takes 5-15 min on a Pi and swaps the analysis
+    # engine underneath a live pipeline. setup.sh re-runs this script, and that
+    # must not silently become an engine upgrade.
+    if [[ "${RITA_FORCE_REBUILD:-0}" != "1" ]]; then
+        echo "  Not rebuilding. To upgrade deliberately:"
+        echo "    sudo RITA_FORCE_REBUILD=1 ./scripts/04_install_rita.sh"
+        echo "  Pause rita-analyze.timer first, and check the next midnight"
+        echo "  rollover — RITA creates a database per day, so a schema change"
+        echo "  only shows up when the new day's tables are created."
+        exit 0
+    fi
+    echo "RITA_FORCE_REBUILD=1 — rebuilding at ${RITA_VERSION}."
 fi
 
 echo "Installing RITA ${RITA_VERSION} (building from source)..."

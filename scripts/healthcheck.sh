@@ -356,7 +356,20 @@ fi
 # 04_install_rita.sh and read back here.
 RITA_VER=$(cat /var/lib/beaconbutty/rita-version 2>/dev/null || true)
 if [[ -n "$RITA_VER" ]]; then
-    OK "RITA: ${RITA_VER}  (built from source at this tag)"
+    # No apt candidate to compare against — RITA is built from source — so daily
+    # housekeeping caches the newest upstream tag and we read it here. Compared
+    # with sort -V and only reported when it is genuinely NEWER: a merely
+    # different string (a stale cache, a parse glitch) must not read as an
+    # available upgrade. A missing cache says nothing at all.
+    RITA_LATEST=$(cat /var/lib/beaconbutty/rita-latest 2>/dev/null || true)
+    RITA_SUFFIX="  (built from source at this tag)"
+    if [[ -n "$RITA_LATEST" && "$RITA_LATEST" != "$RITA_VER" ]]; then
+        RITA_NEWER=$(printf '%s\n%s\n' "${RITA_VER#v}" "${RITA_LATEST#v}" | sort -V | tail -1)
+        if [[ "$RITA_NEWER" == "${RITA_LATEST#v}" ]]; then
+            RITA_SUFFIX="  (built from source)  — upgradable to ${RITA_LATEST}"
+        fi
+    fi
+    OK "RITA: ${RITA_VER}${RITA_SUFFIX}"
 elif command -v rita &>/dev/null; then
     OK "RITA: installed  (tag unrecorded — predates /var/lib/beaconbutty/rita-version)"
 fi
