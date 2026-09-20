@@ -390,6 +390,9 @@ def _org_suppressed(src, dst):
 # set, and separate only by volume. Gate lives in lib/bb_fp.py — see there for
 # why the byte threshold is what keeps DERP exfil visible.
 _derp_hosts = bb_fp.derp_hosts() if bb_fp else {}
+# The report CSV has no packet column, so the gate's per-packet test is looked
+# up from uconn. {} on failure leaves the bytes-per-connection test alone.
+_derp_bpp = bb_fp.derp_bytes_per_packet() if bb_fp and _derp_hosts else {}
 
 def _derp_probe_suppressed(r):
     if not bb_fp or not _derp_hosts:
@@ -397,10 +400,13 @@ def _derp_probe_suppressed(r):
     def _col(name):
         i = COL.get(name)
         return r[i] if i is not None and len(r) > i else 0
+    _src = r[COL['Source IP']].strip()
+    _dst = r[COL['Destination IP']].strip()
     return bool(bb_fp.is_derp_probe(
-        r[COL['Destination IP']].strip(),
+        _dst,
         _svc_components(r[COL['Port:Proto:Service']].strip()),
-        _col('Connection Count'), _col('Total Bytes'), hosts=_derp_hosts))
+        _col('Connection Count'), _col('Total Bytes'), hosts=_derp_hosts,
+        bytes_per_packet=_derp_bpp.get((_src, _dst))))
 
 fp_domain_count = 0
 fp_proto_count  = 0
@@ -898,7 +904,8 @@ if has_fp:
         # Not a registry rule — a built-in structural gate. Reported anyway so
         # the suppression total above is fully accounted for.
         print(f'  Tailscale DERP netcheck probes: {fp_derp_count} suppressed '
-              f'(< {bb_fp.MAX_PROBE_BYTES_PER_CONN} B/conn; relay traffic stays visible)')
+              f'(< {bb_fp.MAX_PROBE_BYTES_PER_CONN} B/conn or '
+              f'< {bb_fp.MAX_PROBE_BYTES_PER_PACKET} B/packet; relay traffic stays visible)')
     print()
 
 # ── 2. Likely benign ─────────────────────────────────────────────────────────

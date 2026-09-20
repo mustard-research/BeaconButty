@@ -144,6 +144,22 @@ BEACON_COLS = [
 ]
 COL = {name: i for i, name in enumerate(BEACON_COLS)}
 
+def _bytes_per_packet(c) -> float | None:
+    """Mean bytes per packet for a slow-cadence candidate, or None if unknown.
+
+    MIRROR of the same helper in scripts/slow-cadence.py and
+    scripts/slow-cadence-digest.py. The /beacons path cannot use this — RITA's
+    report CSV has no packet column — and goes through
+    bb_fp.derp_bytes_per_packet() instead.
+    """
+    try:
+        pkts = int(c.get("total_packets") or 0)
+        byts = int(c.get("total_bytes") or 0)
+    except (TypeError, ValueError):
+        return None
+    return byts / pkts if pkts > 0 and byts > 0 else None
+
+
 # ── GeoIP ─────────────────────────────────────────────────────────────────────
 
 _GEOIP_ASN  = None
@@ -877,10 +893,16 @@ def get_beacon_data(report_file, mac_to_ip, ip_to_host, assets=None):
     # probe and real relay traffic share a destination AND a port set, and only
     # differ by volume. See lib/bb_fp.py for the derivation.
     _derp_hosts = bb_fp.derp_hosts()
+    # RITA's report CSV carries no packet column, so the per-packet half of the
+    # gate is looked up from uconn instead of read off the row. Cached; {} on
+    # failure, which simply leaves the bytes-per-connection test on its own.
+    _derp_bpp = bb_fp.derp_bytes_per_packet()
 
-    def _derp_probe_hit(dst, svc, conns, total_bytes):
-        return bb_fp.is_derp_probe(dst, _split_service_components(svc),
-                                   conns, total_bytes, hosts=_derp_hosts)
+    def _derp_probe_hit(src, dst, svc, conns, total_bytes):
+        return bb_fp.is_derp_probe(
+            dst, _split_service_components(svc), conns, total_bytes,
+            hosts=_derp_hosts,
+            bytes_per_packet=_derp_bpp.get((src.strip(), dst.strip())))
 
     sev_counts = {"Critical": 0, "High": 0, "Medium": 0, "Low": 0, "None": 0}
     suppressed = 0
@@ -1004,14 +1026,16 @@ def get_beacon_data(report_file, mac_to_ip, ip_to_host, assets=None):
         # DERP netcheck probe — volume-gated, so genuine relay traffic to the
         # same host on the same ports stays visible.
         _derp_host = _derp_probe_hit(
-            dst, svc,
+            src, dst, svc,
             row[COL["Connection Count"]] if len(row) > COL["Connection Count"] else 0,
             row[COL["Total Bytes"]] if len(row) > COL["Total Bytes"] else 0)
         if _derp_host:
             suppressed += 1
             _record_suppression("derp-probe", "Tailscale netcheck",
-                                "DERP latency probe (< %d B/conn)"
-                                % bb_fp.MAX_PROBE_BYTES_PER_CONN,
+                                "DERP netcheck probe or idle keepalive "
+                                "(< %d B/conn, or < %d B/packet)"
+                                % (bb_fp.MAX_PROBE_BYTES_PER_CONN,
+                                   bb_fp.MAX_PROBE_BYTES_PER_PACKET),
                                 row_label, dest, row_score, svc, sev)
             continue
 
@@ -1602,6 +1626,8 @@ def count_beacon_findings_today():
         return _fp_service_match(svc, fp_protocols)[0] is not None
 
     _derp_hosts = bb_fp.derp_hosts()
+    # Packet counts for the gate's duration-proof test; RITA's CSV has none.
+    _derp_bpp = bb_fp.derp_bytes_per_packet()
 
     for path in sorted(REPORTS_DIR.glob("beacon-report-*.txt"), reverse=True):
         _, rows_by_date = parse_beacon_report(path)
@@ -1643,7 +1669,8 @@ def count_beacon_findings_today():
                     dst, _split_service_components(svc),
                     row[COL["Connection Count"]] if len(row) > COL["Connection Count"] else 0,
                     row[COL["Total Bytes"]] if len(row) > COL["Total Bytes"] else 0,
-                    hosts=_derp_hosts):
+                    hosts=_derp_hosts,
+                    bytes_per_packet=_derp_bpp.get((src.strip(), dst.strip()))):
                 continue
             # Org FP — raw MaxMind ASN owner, device-scoped. Mirrors
             # get_beacon_data, which gained this on 2026-08-14; the tile did
@@ -3550,6 +3577,8 @@ def build_new_beacons(ip_to_host, assets=None):
         return _fp_service_match(svc, fp_protocols)[0] is not None
 
     _derp_hosts = bb_fp.derp_hosts()
+    # Packet counts for the gate's duration-proof test; RITA's CSV has none.
+    _derp_bpp = bb_fp.derp_bytes_per_packet()
 
     # Pre-pass: enrich every bare-IP candidate (not already FP'd by IP)
     # so the FP-domain check below can match against the Zeek-recovered
@@ -3585,7 +3614,8 @@ def build_new_beacons(ip_to_host, assets=None):
                 row_dst, _split_service_components(svc),
                 row[COL["Connection Count"]] if len(row) > COL["Connection Count"] else 0,
                 row[COL["Total Bytes"]] if len(row) > COL["Total Bytes"] else 0,
-                hosts=_derp_hosts):
+                hosts=_derp_hosts,
+                bytes_per_packet=_derp_bpp.get((src.strip(), row_dst.strip()))):
             continue
         sc  = current_scores.get((src, dest_key), 0.0)
         fs  = row[COL["First Seen"]]         if len(row) > COL["First Seen"]          else ""
@@ -4187,7 +4217,8 @@ def _load_slow_cadence_filtered():
         # candidate reappears at render time. Volume-gated, so relay traffic
         # still shows. Legacy candidates without `total_bytes` fall through.
         if bb_fp.is_derp_probe(c.get("dst", ""), c.get("services"),
-                               c.get("total_conns"), c.get("total_bytes")):
+                               c.get("total_conns"), c.get("total_bytes"),
+                               bytes_per_packet=_bytes_per_packet(c)):
             continue
         c["src_mac"] = src_mac
         filtered.append(c)

@@ -171,7 +171,35 @@ DERP_PROBE_SERVICES = ("3478:udp", "443:tcp", "80:tcp", "icmp:8/0")
 #: Above this, the row is carrying payload, not probing. See derivation above.
 MAX_PROBE_BYTES_PER_CONN = 2000
 
+#: Above this, a single packet is big enough to carry relayed content.
+#:
+#: Bytes-per-CONNECTION conflates rate with duration, and a long-lived flow
+#: defeats it: an idle DERP session holds one TCP flow open for nine hours and
+#: accumulates a large byte total while never filling a packet. Measured on
+#: bb0 over four days, 504 DERP rows split cleanly —
+#:
+#:     suppressed by the B/conn gate   500 rows    64.0 - 95.7 B/pkt
+#:     escaping, idle keepalive          3 rows    64.0 B/pkt   (418K-1.15M B/conn)
+#:     escaping, genuine light relay     1 row    231.2 B/pkt
+#:
+#: 100 is both above every keepalive observed and below a structural floor:
+#: a relayed WireGuard data frame is >= 32 B (16 B header + 16 B AEAD tag) and
+#: rides on ~80 B of TLS/TCP/IP overhead, so content cannot appear in a packet
+#: averaging under ~112 B. That floor holds however long the flow lives and
+#: however many packets it sends, which is exactly what B/conn does not.
+#:
+#: A RATE test (bytes/sec) was considered and rejected for that reason: rate
+#: multiplied by an unbounded duration hides an unbounded volume. Per-packet
+#: cannot be accumulated around — moving bytes over DERP means filling packets.
+MAX_PROBE_BYTES_PER_PACKET = 100
+
 _DERP_HOSTS_CACHE: dict = {"map": None}
+_DERP_BPP_CACHE: dict = {"map": None, "ts": 0.0}
+
+#: How long derp_bytes_per_packet() reuses a result. The underlying RITA
+#: databases are rebuilt hourly, so anything shorter just re-queries for the
+#: same answer.
+DERP_BPP_TTL_SECS = 900
 
 
 def derp_hosts(refresh: bool = False) -> dict:
@@ -211,7 +239,8 @@ def _is_probe_service(components) -> bool:
 
 
 def is_derp_probe(dst: str, components, conns, total_bytes,
-                  hosts: dict | None = None) -> str:
+                  hosts: dict | None = None,
+                  bytes_per_packet=None) -> str:
     """Hostname of the DERP relay when this row is netcheck probe traffic, else "".
 
     A truthy return means "suppress this row"; the hostname is returned rather
@@ -221,6 +250,22 @@ def is_derp_probe(dst: str, components, conns, total_bytes,
     components, `conns` the connection count and `total_bytes` the byte total
     for the row. Missing or unparseable counts fail OPEN (return "") — an
     unknown volume must never be treated as a probe.
+
+    `bytes_per_packet` is optional because not every caller can reach a packet
+    count: RITA's report CSV has none, so the /beacons path looks it up with
+    derp_bytes_per_packet() while the slow-cadence path carries it on the
+    candidate. Omitted or unusable, only the bytes-per-connection test runs —
+    i.e. exactly the behaviour that predates this argument.
+
+    The two volume tests are INDEPENDENT and either is sufficient. They catch
+    different shapes and neither subsumes the other:
+
+      bytes/conn  the short netcheck burst — many tiny connections
+      bytes/pkt   the long-lived idle session — few connections, hours long,
+                  a large byte total, and not one full packet
+
+    See MAX_PROBE_BYTES_PER_PACKET for why per-packet is the test that cannot
+    be defeated by simply keeping the flow open longer.
     """
     dst = (dst or "").strip().replace("::ffff:", "")
     if not dst:
@@ -238,6 +283,86 @@ def is_derp_probe(dst: str, components, conns, total_bytes,
         return ""
     if n_conns <= 0 or n_bytes < 0:
         return ""
+    # Packets never carried content — true whatever the duration or the totals.
+    # A zero or negative value is missing data, not "infinitely small packets".
+    try:
+        bpp = float(bytes_per_packet) if bytes_per_packet is not None else 0.0
+    except (TypeError, ValueError):
+        bpp = 0.0
+    if 0 < bpp < MAX_PROBE_BYTES_PER_PACKET:
+        return host
     if n_bytes / n_conns >= MAX_PROBE_BYTES_PER_CONN:
         return ""
     return host
+
+
+def derp_bytes_per_packet(days: int = 3, ch_bin: str = "/usr/bin/clickhouse-client",
+                          refresh: bool = False) -> dict:
+    """`{(src, dst): bytes_per_packet}` for LAN→DERP pairs in the last `days`
+    RITA databases, for callers whose row data carries no packet count.
+
+    The value is the **maximum** across the days in the window, never the mean
+    or the pooled total. A pair that filled packets on any single day has
+    carried content and must stay visible; pooling would let a busy hour be
+    averaged away under a week of keepalives, and pooled packets divided by one
+    day's bytes would understate the ratio and over-suppress. Max is the
+    conservative direction, and the only one that fails toward visibility.
+
+    Returns {} on any failure — callers then pass None and the gate falls back
+    to bytes-per-connection alone.
+    """
+    import time  # noqa: PLC0415 - kept local, this is the only user
+    now = time.time()
+    if (_DERP_BPP_CACHE["map"] is not None and not refresh
+            and now - _DERP_BPP_CACHE["ts"] < DERP_BPP_TTL_SECS):
+        return _DERP_BPP_CACHE["map"]
+
+    hosts = derp_hosts()
+    if not hosts:
+        return {}
+    try:
+        import datetime  # noqa: PLC0415
+        import subprocess  # noqa: PLC0415
+        out = subprocess.run([ch_bin, "--query", "SHOW DATABASES"],
+                             capture_output=True, text=True, timeout=5)
+        available = {ln.strip() for ln in out.stdout.splitlines() if ln.strip()}
+        dbs = []
+        for i in range(max(1, days)):
+            d = (datetime.date.today() - datetime.timedelta(days=i)).strftime("%Y%m%d")
+            if f"beaconbutty_{d}" in available:
+                dbs.append(f"beaconbutty_{d}")
+        if not dbs:
+            return {}
+        # One row per (db, src, dst): the per-DAY ratio, so the max below is a
+        # max over days rather than over an already-pooled figure.
+        union = " UNION ALL ".join(
+            f"""SELECT IPv6NumToString(src) AS s, IPv6NumToString(dst) AS d,
+                       sumMerge(total_ip_bytes) AS b,
+                       sumMerge(total_src_packets) + sumMerge(total_dst_packets) AS p
+                FROM {db}.uconn GROUP BY src, dst"""
+            for db in dbs
+        )
+        sql = (f"SELECT s, d, max(b / p) AS bpp FROM ({union}) "
+               f"WHERE p > 0 GROUP BY s, d FORMAT TSV")
+        res = subprocess.run([ch_bin, "--query", sql],
+                             capture_output=True, text=True, timeout=30)
+        if res.returncode != 0:
+            return {}
+        table = {}
+        for line in res.stdout.splitlines():
+            parts = line.split("\t")
+            if len(parts) != 3:
+                continue
+            src = parts[0].replace("::ffff:", "")
+            dst = parts[1].replace("::ffff:", "")
+            if dst not in hosts:
+                continue
+            try:
+                table[(src, dst)] = float(parts[2])
+            except ValueError:
+                continue
+    except Exception:
+        return {}
+    _DERP_BPP_CACHE["map"] = table
+    _DERP_BPP_CACHE["ts"] = now
+    return table

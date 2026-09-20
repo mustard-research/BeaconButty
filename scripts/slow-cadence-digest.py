@@ -53,6 +53,21 @@ ASSETS_HISTORY = "/var/lib/beaconbutty/assets-history.json"
 TOP_N        = 10
 
 
+def _bytes_per_packet(c) -> float | None:
+    """Mean bytes per packet for a candidate, or None when unknown.
+
+    MIRROR of the same helper in slow-cadence.py and webapp/app.py. Candidates
+    written before 2026-09-20 carry no `total_packets`; None keeps the DERP
+    gate on its bytes-per-connection test alone for those.
+    """
+    try:
+        pkts = int(c.get("total_packets") or 0)
+        byts = int(c.get("total_bytes") or 0)
+    except (TypeError, ValueError):
+        return None
+    return byts / pkts if pkts > 0 and byts > 0 else None
+
+
 def fp_filter(cands: list[dict]) -> list[dict]:
     """Drop candidates matching the current FP registry
     (device/domain/protocol/org).
@@ -151,7 +166,8 @@ def fp_filter(cands: list[dict]) -> list[dict]:
         # `total_bytes` fall through (is_derp_probe fails open on a 0 count).
         if bb_fp.is_derp_probe(c.get("dst", ""), c.get("services"),
                                c.get("total_conns"), c.get("total_bytes"),
-                               hosts=derp_hosts):
+                               hosts=derp_hosts,
+                               bytes_per_packet=_bytes_per_packet(c)):
             continue
         kept.append(c)
     return kept

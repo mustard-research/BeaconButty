@@ -251,13 +251,28 @@ def fp_match(host: str, patterns: list[str]) -> bool:
     return False
 
 
+def _bytes_per_packet(row) -> float | None:
+    """Mean bytes per packet for a row, or None when the count is missing.
+
+    None and 0 mean the same thing to the caller — unknown — and the DERP gate
+    must read unknown as "not proven small", never as "infinitely small".
+    """
+    try:
+        pkts = int(row.get("total_packets") or 0)
+        byts = int(row.get("total_bytes") or 0)
+    except (TypeError, ValueError):
+        return None
+    return byts / pkts if pkts > 0 and byts > 0 else None
+
+
 def fetch_pairs(dbs: list[str]) -> list[dict]:
     """Single-pass cross-DB aggregation. We rely on the dst_local=false +
     low-rate prefilter to keep groupArray sizes bounded; cap at MAX_TS_PER_PAIR
     as belt-and-braces."""
     inner = " UNION ALL ".join(
         f"""SELECT src, dst, dst_port, ts, proto, service,
-                   src_ip_bytes, dst_ip_bytes FROM {db}.conn
+                   src_ip_bytes, dst_ip_bytes,
+                   src_packets, dst_packets FROM {db}.conn
             WHERE dst_local = false AND src_local = true
               AND proto IN ('tcp', 'udp')
               AND service NOT IN ('dns', 'ntp')"""
@@ -277,6 +292,12 @@ def fetch_pairs(dbs: list[str]) -> list[dict]:
         -- Feeds the DERP netcheck gate, which separates probe from relay by
         -- bytes-per-connection (see lib/bb_fp.is_derp_probe).
         sum(src_ip_bytes + dst_ip_bytes) AS total_bytes,
+        -- Packets feed the gate's second, duration-proof test: a nine-hour
+        -- idle DERP session piles up bytes without ever filling a packet, so
+        -- bytes-per-connection alone cannot see it. Candidates written before
+        -- 2026-09-20 have no `total_packets` and fall through, as `services`
+        -- did — the gate treats absent counts as unknown, never as low.
+        sum(src_packets + dst_packets)   AS total_packets,
         groupUniqArray(concat(toString(dst_port), ':',
                               toString(proto), ':',
                               toString(service)))      AS services,
@@ -520,7 +541,8 @@ def main() -> int:
         # payload still surfaces. See lib/bb_fp.py.
         if bb_fp.is_derp_probe(dst_ip, r.get("services", []),
                                r["total_conns"], r.get("total_bytes", 0),
-                               hosts=derp_hosts):
+                               hosts=derp_hosts,
+                               bytes_per_packet=_bytes_per_packet(r)):
             continue
 
         dst_org, dst_cc = geoip_lookup(dst_ip)
@@ -560,6 +582,7 @@ def main() -> int:
             # written before this existed have no key; both consumers treat
             # that as "no volume data" and fall through rather than guessing.
             "total_bytes": r.get("total_bytes", 0),
+            "total_packets": r.get("total_packets", 0),
             "conns_per_active_day": round(
                 r["total_conns"] / r["days_seen"], 2
             ),
