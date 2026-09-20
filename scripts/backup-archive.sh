@@ -79,6 +79,13 @@ trap resume_services EXIT
 
 # ── Create archive ───────────────────────────────────────────────────────────
 log "Creating archive (this may take several minutes)..."
+# On the apt-cache exclusion below: that cache only ever holds what the repo
+# can still serve, so it is re-downloadable and not worth the bytes. Do NOT
+# generalise it to all *.deb — /var/lib/beaconbutty/pkg-stash holds the held
+# packages at the versions actually installed, which vendor repos do drop
+# (Zeek 8.2.2 went that way while we were running it). It stays in the
+# archive on purpose: ~283 MB against 8 GB, and it is the only copy of
+# artifacts that may no longer exist anywhere else.
 tar -czf "$OUT" \
     --numeric-owner \
     --xattrs \

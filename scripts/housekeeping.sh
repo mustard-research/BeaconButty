@@ -180,6 +180,20 @@ else
     echo "  SKIPPED: /usr/local/lib/beaconbutty/bb_outages.py not installed"
 fi
 
+# ── Held-package .deb stash ───────────────────────────────────────────────────
+# apt-mark hold stops an unwanted upgrade but preserves nothing to roll back to.
+# Vendor repos age releases out: the openSUSE Zeek repo keeps one build per line,
+# and 8.2.2 vanished from it while we were still running it. Refreshing daily
+# means the stash always holds what is actually installed, and the script says so
+# loudly on the day a version we are running stops being fetchable.
+echo ""
+echo "-- Held-package .deb stash --"
+if [[ -x /usr/local/bin/beaconbutty-stash-packages.sh ]]; then
+    /usr/local/bin/beaconbutty-stash-packages.sh || echo "  WARNING: package stash failed"
+else
+    echo "  SKIPPED: /usr/local/bin/beaconbutty-stash-packages.sh not installed"
+fi
+
 # ── Disk usage summary ────────────────────────────────────────────────────────
 echo ""
 echo "-- Disk usage after housekeeping --"

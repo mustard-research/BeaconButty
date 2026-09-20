@@ -122,6 +122,7 @@ install -m 755 "$SCRIPT_DIR/scripts/assets.sh"        /usr/local/bin/beaconbutty
 install -m 755 "$SCRIPT_DIR/scripts/fp.sh"            /usr/local/bin/beaconbutty-fp.sh
 install -m 755 "$SCRIPT_DIR/scripts/backup.sh"        /usr/local/bin/beaconbutty-backup.sh
 install -m 755 "$SCRIPT_DIR/scripts/alert.sh"         /usr/local/bin/beaconbutty-alert.sh
+install -m 755 "$SCRIPT_DIR/scripts/stash-packages.sh" /usr/local/bin/beaconbutty-stash-packages.sh
 install -m 755 "$SCRIPT_DIR/scripts/suricata-alert-check.sh" /usr/local/bin/beaconbutty-suricata-alert-check.sh
 install -m 755 "$SCRIPT_DIR/scripts/bb-watchdog"      /usr/local/bin/bb-watchdog
 install -m 755 "$SCRIPT_DIR/scripts/bb0-display.py"   /usr/local/bin/bb0-display.py
