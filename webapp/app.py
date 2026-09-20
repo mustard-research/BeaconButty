@@ -4887,6 +4887,7 @@ ALERT_TYPES = [
     "health_check_fail",
     "sustained_high_cpu",
     "teams_relay_anomaly",
+    "new_model",
 ]
 
 def load_alert_config():

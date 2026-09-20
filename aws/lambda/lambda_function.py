@@ -55,6 +55,7 @@ ALERT_TYPE_LABELS = {
     "sustained_high_cpu":   "Sustained High CPU",
     "config_invalid":       "Config File Invalid",
     "config_stray_files":   "Stray Config Files",
+    "new_model":            "New Model",
 }
 
 

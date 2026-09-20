@@ -313,6 +313,7 @@
         ("slow_cadence_beacon", "Slow-cadence beacon pages in real time <small style='color:var(--text-muted,#888);'>(off by default — findings ride the daily digest instead)</small>", "Medium", "Slow-cadence detector — hourly"),
         ("slow_cadence_digest", "Daily roll-up of slow-cadence candidates, flagged ones first", "Low",    "Daily digest — 08:00 UTC"),
         ("teams_relay_anomaly", "Teams TURN flow with new-JA4, long-duration, or low-bandwidth (DragonForce / Backdoor.Turn pattern)", "High", "Teams-relay check — 15 min"),
+        ("new_model",           "Hugging Face build small enough to serve on zgx <small style='color:var(--text-muted,#888);'>(fires once per build, not per scan)</small>", "Low", "Model watch (zgx) — daily"),
       ] %}
       {# Render in severity order (High → Medium → Low) regardless of the
          order rows are defined above. Add new rows wherever convenient;
