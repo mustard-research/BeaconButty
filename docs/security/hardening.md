@@ -45,6 +45,32 @@ Tailscale all reach both services; the public WAN address gets **403** from the 
 > inventory, beacon findings, FP registry. The ingress allowlist limits *where* from, not
 > *who*. Adding real auth remains open.
 
+### A package upgrade can open a port (2026-09-20)
+
+Upgrading Zeek 8.2.2 → 9.0.0 added a listener on **`*:27762`** that 8.2.2 never
+bound: `Broker::default_port`, redef'd by zeekctl's *generated*
+`standalone-layout.zeek`, with `Broker::default_listen_address` defaulting to
+`""` — every interface. INPUT accepts anything arriving on `eth1` or
+`tailscale0`, so that published a cluster port to the whole LAN and the tailnet.
+Not the internet: `eth0` is DROP'd.
+
+Pinned in `config/zeek/site/local.zeek`:
+
+```zeek
+redef Broker::default_listen_address = "127.0.0.1";
+```
+
+Bound rather than disabled — that keeps any local consumer working and is a far
+smaller change than turning the subsystem off. The ZeroMQ endpoints were already
+loopback-only via `zeekctl-config.zeek`; only Broker's own port was open, and
+Broker is deprecated in Zeek 9 anyway.
+
+**Record the listener set in the preflight of any service upgrade and diff it
+afterwards** — `sudo ss -tlnp | grep <service>`. Every functional check passed
+while this port was open. "Is it running" and "is it running with the same
+exposure" are different questions, and only the first was being asked. For Zeek
+nothing should appear outside `127.0.0.1`.
+
 ## Firewall (iptables)
 
 Baseline written by `07_router_mode.sh`, verified + extended by `harden.sh`:

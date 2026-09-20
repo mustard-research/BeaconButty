@@ -36,7 +36,7 @@ import bb_enrich
 
 Deployment happens via `scripts/05_configure.sh` using `install -m 755`. Repo source is the authoritative copy — always edit the repo and re-deploy, never hand-patch `/usr/local/bin/` (see [Data-path alignment](#data-path-alignment)).
 
-**Scripts with no install line are a recurring failure mode.** `slow-cadence.py`, `slow-cadence-digest.py` and `ip-intel.py` were found hand-deployed on 2026-08-14; `wan-watchdog.sh` and `lib/bb_fp.py` on 2026-08-30. All are now installed by `05_configure.sh`.
+**Scripts with no install line are a recurring failure mode.** `slow-cadence.py`, `slow-cadence-digest.py` and `ip-intel.py` were found hand-deployed on 2026-08-14; `wan-watchdog.sh` and `lib/bb_fp.py` on 2026-08-30. On 2026-09-20 a full audit found **eleven more**, plus twelve timers that were never enabled and a Zeek site script whose absence stopped Zeek starting at all. All are now installed by `05_configure.sh` — see *Install-line and enable-line sweeps* below.
 
 `bb_fp.py` was the sharper case: `summarize.sh` and the slow-cadence scripts resolve it **only** from `/usr/local/lib/beaconbutty` with no repo fallback, so a stale hand-deployed copy would leave the daily report running a different FP gate from the webapp — with no error and no symptom beyond a row appearing on one surface and not another. When you add a module to `lib/`, add its install line in the same commit.
 
@@ -49,7 +49,8 @@ The two 2026-08-30 additions (`bb_outages.py`, `bb_wan_diag.py`) install with `-
 | `summarize.sh` | `beaconbutty-summary.sh` | Manual | Human-readable CLI beacon summary |
 | `morning-check.sh` | `beaconbutty-morning.sh` | Manual | Combined health + RITA + report + summary |
 | `healthcheck.sh` | `beaconbutty-health.sh` | `beaconbutty-health.timer` + Health page | Full system health check |
-| `housekeeping.sh` | `beaconbutty-housekeeping.sh` | `beaconbutty-housekeeping.timer` | Zeek dir + RITA dataset + Suricata log cleanup |
+| `housekeeping.sh` | `beaconbutty-housekeeping.sh` | `beaconbutty-housekeeping.timer` | Zeek dir + RITA dataset + Suricata log cleanup; also merges the ISP outage history, refreshes the held-package `.deb` stash and caches the newest RITA release tag |
+| `stash-packages.sh` (2026-09-20) | `beaconbutty-stash-packages.sh` | via housekeeping | Keeps the `.deb` for every apt-held package at its installed version, two deep, in `/var/lib/beaconbutty/pkg-stash`. `apt-mark hold` preserves nothing to roll back to; a vendor repo that carries one build per line (openSUSE's Zeek) drops the release you are on. Reports **UNSTASHABLE** when a running version is in neither the apt cache nor the repo |
 | `assets.sh` | `beaconbutty-assets.sh` | `beaconbutty-assets.timer` | Refresh LAN asset cache |
 | `backup.sh` | `beaconbutty-backup.sh` | `beaconbutty-backup.timer` + webapp | Daily config snapshot (KEEP=14) / webapp Full-Disk Clone page |
 | `backup-archive.sh` | runs direct from repo (no deploy) | `beaconbutty-archive.timer` + webapp | Weekly Sun 03:00 full rootfs tar (~10 GB, KEEP=4) — stops ClickHouse for consistent snapshot |
@@ -88,6 +89,34 @@ The two 2026-08-30 additions (`bb_outages.py`, `bb_wan_diag.py`) install with `-
 | `certbot.timer` | Twice daily | `certbot renew` |
 | `beaconbutty-midsummer-fan-check.timer` | **One-shot 2026-07-15 10:00** | `beaconbutty-midsummer-fan-check.py` (self-disables after firing) |
 | `beaconbutty-ip-intel.timer` | Daily 07:30 | `beaconbutty-ip-intel.py` (Shodan + AbuseIPDB + Spamhaus DROP + Tor exit external IP enrichment) |
+
+## Install-line and enable-line sweeps
+
+A production box that works is not evidence that the installer works — it is
+evidence that *someone* made it work. Run these after adding any script, unit or
+timer:
+
+```sh
+# 1. Deployed files nothing installs
+for f in /usr/local/bin/beaconbutty-* /usr/local/lib/beaconbutty/*; do
+  grep -qr "$(basename "$f")" scripts/0*.sh || echo "no install line: $f"; done
+
+# 2. Unit ExecStart paths nothing installs
+for u in systemd/*.service; do
+  e=$(grep -oP 'ExecStart=\K/usr/local/\S+' "$u" | head -1)
+  [ -n "$e" ] && ! grep -q "$e" scripts/05_configure.sh && echo "$u -> $e"; done
+
+# 3. Timers enabled on the box but not by the installer
+comm -23 <(systemctl list-unit-files --state=enabled | grep -oP '^\S+\.timer' | sort) \
+         <(grep -oP 'systemctl enable (--now )?\K\S+\.timer' scripts/05_configure.sh | sort)
+```
+
+Also re-read every version pin whenever you upgrade the thing it pins — the
+upgrade does not touch it. `ZEEK_VERSION` still said 8.2.0 while the box ran
+9.0.0, so the source-build fallback would have regressed a major version.
+
+> [!warning] `enable --now` is not free on a `Persistent=true` timer
+> With no stamp file it counts its window as missed and fires immediately. Enabling the full set with `--now` at install time would run every catch-up job at once on a fresh Pi, including `beaconbutty-archive`, which stops ClickHouse for ~16 minutes. Use plain `enable` for Persistent timers; they arm at next boot.
 
 ## Data-path alignment
 

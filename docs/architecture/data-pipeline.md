@@ -118,6 +118,9 @@ The Flask webapp reads beacon data two ways:
 | `/var/lib/beaconbutty/reports/` | Beacon report text files |
 | `/var/lib/beaconbutty/false-positives.conf` | FP registry |
 | `/var/lib/beaconbutty/assets.json` | LAN asset cache |
+| `/var/lib/beaconbutty/pkg-stash/` | `.deb` for every apt-held package at its installed version, 2 deep (2026-09-20) |
+| `/var/lib/beaconbutty/rita-version` | RITA tag recorded at build time — the binary has no `--version` |
+| `/var/lib/beaconbutty/rita-latest` | Newest upstream RITA tag, cached daily by housekeeping |
 | `/var/log/dnsmasq.log` | dnsmasq DNS query log (log2ram — lost on hard power loss) |
 | `/var/lib/beaconbutty/logs/` | Rotated dnsmasq .gz archives (NVMe — persistent) |
 | `/var/log/beaconbutty/` | Operational logs (log2ram — lost on hard power loss) |

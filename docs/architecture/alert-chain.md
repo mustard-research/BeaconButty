@@ -90,6 +90,10 @@ Config: `/var/lib/beaconbutty/alert-config.json`.
 
 `alert.sh` reads this file before sending. If the type's key is `false`, the script exits 0 without posting. Missing keys default to `true`.
 
+> [!important] The type vocabulary lives in four places and drifts
+> Adding a type means touching **all** of: the `# Types:` header in `scripts/alert.sh`, `ALERT_TYPES` in `webapp/app.py`, the `rows` list in `webapp/templates/health.html`, and `ALERT_TYPE_LABELS` in the Lambda. Miss the `rows` entry and the type exists with no toggle; miss `ALERT_TYPES` and the API rejects the toggle with a 400.
+> The **Lambda needs no redeploy** for a new type — its fallback is `alert_type.replace("_", " ").title()`, so a type added as `new_model` already renders as "New Model". The map entry is for the record.
+
 > [!note]
 > Disabling a type in the Pi's config is the noise knob. The Lambda dedup is a backup, not the first line of defence.
 

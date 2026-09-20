@@ -18,14 +18,15 @@ The webapp Health page (`/health`) runs `sudo beaconbutty-health.sh --json` and 
 
 ## beaconbutty-health.sh
 
-Run time: approximately 10 seconds. 45 checks across 9 sections. Supports `--json` for structured webapp consumption; default output is colourised text for terminal use.
+Run time: approximately 10 seconds. ~54 checks across 10 sections. Supports `--json` for structured webapp consumption; default output is colourised text for terminal use.
 
 | Section | Checks |
 |---------|--------|
 | System | uptime, memory, disk, load, CPU temp, throttling history (`vcgencmd get_throttled`), **log2ram tmpfs %** (2026-08-28: now reads `PATH_DISK` from `/etc/log2ram.conf` and reports each mounted path — it previously guarded on `mountpoint -q /var/log`, which made the whole check a silent no-op once `/var/log` stopped being a mount), **journal persistence** (FAILs if effective `Storage=` is not `persistent`), **Sustained-high CPU** (rolling 60-min mean reported by bb-watchdog — `ELEVATED` when ≥60%, `normal` otherwise; alert + diagnostic snapshot at `/var/lib/beaconbutty/watchdog/high-cpu-events/<UTC-ts>.json` — see *Upgrade Log*), time sync (`timedatectl`), pending reboot |
-| Network Interfaces | eth0/eth1 link + IP, WAN reachability (ping 1.1.1.1) |
+| **Versions** (2026-09-20) | OS, kernel, Zeek, Suricata, ClickHouse, RITA, dnsmasq, Tailscale, Python — see below |
+| Network Interfaces | eth0/eth1 link + IP, WAN reachability (ping 1.1.1.1), **last ISP outage** named on a clean day |
 | Routing & Firewall | IP forwarding, NAT MASQUERADE, FORWARD rule, IPv4/IPv6 INPUT=DROP, external DNS resolution (flags Tailscale-only resolver), **SSH peer allowlist** (systemd `IPAddressDeny=any`) and **webapp ingress allowlist** (the `_restrict_to_local_networks` guard in `app.py`) — both are second-layer controls that would otherwise vanish silently, leaving iptables as the only thing keeping a public-IP box's unauthenticated console off the internet |
-| Services | clickhouse-server, **ClickHouse version vs apt candidate** (informational; WARN ≥3 ClickHouse releases behind, since CH versions encode YY.M and one release ≈ one month — drives the safe-upgrade flow described in *Upgrade Log*), dnsmasq, bb-graphs, Tailscale, TLS cert expiry (WARN<30d, FAIL<14d), Zeek via zeekctl |
+| Services | clickhouse-server, dnsmasq, bb-graphs, Tailscale, TLS cert expiry (WARN<30d, FAIL<14d), Zeek via zeekctl. **The ClickHouse version line moved to Versions on 2026-09-20**, and Suricata's version left its service label — it had been empty since it was written, see below |
 | Zeek Logging | conn.log / dns.log presence+freshness, completed daily dirs, **capture rate** (new conn rows in last 5 min — catches "up but not capturing") |
 | RITA / ClickHouse | RITA binary, dataset count, **SELECT 1 query probe** (catches a wedged server), data size |
 | Suricata IDS | service status, **capture liveness** (`stats.log` freshness — rewritten every 60s regardless of traffic; threshold 180s), eve.json size + last alert/anomaly age (informational only), today's alerts by priority, rule file age |
@@ -55,6 +56,48 @@ sudo beaconbutty-health.sh --json
   ]
 }
 ```
+
+## Versions (added 2026-09-20)
+
+One place for "what is this system actually running". Previously scattered:
+ClickHouse's version sat in Services, Suricata's was welded into its service
+label, and Zeek, the kernel, RITA, dnsmasq, Tailscale, Python and the OS were
+not reported at all.
+
+```
+Versions
+  ✓  OS: Debian GNU/Linux 13 (trixie)
+  ✓  Kernel: 6.18.50+rpt-rpi-2712
+  ✓  Zeek: 9.0.0  (held)
+  ✓  Suricata: 7.0.10
+  ✓  ClickHouse: 26.8.8.8  (up to date; held)
+  ✓  RITA: v5.1.2  (built from source at this tag)
+  ✓  dnsmasq: 2.91
+  ✓  Tailscale: 1.102.4
+  ✓  Python: 3.13.5
+```
+
+- Each apt-managed component appends **`— upgradable to X`** when the repo
+  candidate differs, and **`(held)`** when pinned. A newer upstream release is
+  information, not a fault, so these stay green.
+- **ClickHouse** keeps its months-behind WARN and its
+  `beaconbutty-clickhouse-upgrade.sh` hint (CH versions encode YY.M, so one
+  release ≈ one month) — see *Upgrade Log*.
+- **Kernel** is the one that warns: rpt kernel packages install themselves and
+  only the reboot is manual, so the actionable signal is a newer image already on
+  disk → `running X — Y installed, reboot to activate`.
+- **RITA** has no apt candidate (built from source) and **no `--version` flag** —
+  `go version -m` reports `(devel)`. The tag is recorded at build time by
+  `04_install_rita.sh` to `/var/lib/beaconbutty/rita-version`; daily housekeeping
+  caches the newest upstream tag to `/var/lib/beaconbutty/rita-latest`, and the
+  check compares them with `sort -V`, reporting only a genuinely newer one. A
+  failed lookup keeps the previous answer — "we could not ask today" must not
+  render as "up to date".
+- **Suricata's version had always been empty.** `suricata --build-info` prints
+  "This is Suricata version 7.0.10 RELEASE", which has no line starting
+  "Version", so `awk '/^Version/'` never matched and the service line read
+  "Suricata : running" with a stray space. Now `suricata -V`. The same broken
+  parse was in `08_install_suricata.sh` twice.
 
 ## Dashboard tiles
 
