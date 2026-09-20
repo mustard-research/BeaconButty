@@ -11,7 +11,7 @@ set -euo pipefail
 #   - Connection count and duration
 #   - Strobe detection (high-frequency port scanners)
 
-RITA_VERSION="v5.1.1"   # Check https://github.com/activecm/rita/releases for latest
+RITA_VERSION="v5.1.2"   # Check https://github.com/activecm/rita/releases for latest
 RITA_BIN="/usr/local/bin/rita"
 GO_ROOT="/usr/local/go"
 GO_INSTALL_VERSION="1.24.1"  # Latest LTS-ish; RITA requires >= 1.22.3

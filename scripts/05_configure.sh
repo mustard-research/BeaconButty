@@ -18,6 +18,10 @@ echo "Configuring Zeek..."
 cp "$SCRIPT_DIR/config/zeek/node.cfg"    "$ZEEK_ETC/node.cfg"
 cp "$SCRIPT_DIR/config/zeek/zeekctl.cfg" "$ZEEK_ETC/zeekctl.cfg"
 cp "$SCRIPT_DIR/config/zeek/site/local.zeek" "$ZEEK_SITE/local.zeek"
+# local.zeek does `@load ./arp-log`, so this is not optional: without it Zeek
+# dies with "fatal error: can't find ./arp-log" and never starts. It had no
+# install line and was only ever deployed by hand.
+cp "$SCRIPT_DIR/config/zeek/site/arp-log.zeek" "$ZEEK_SITE/arp-log.zeek"
 
 # Inject the actual capture interface name into node.cfg
 sed -i "s/__CAPTURE_IFACE__/$CAPTURE_IFACE/" "$ZEEK_ETC/node.cfg"
@@ -137,6 +141,25 @@ install -m 755 "$SCRIPT_DIR/scripts/bb0-fan"          /usr/local/bin/bb0-fan
 # wan-watchdog.sh had no install line at all and was being deployed by hand —
 # the same gap the three scripts above were fixed for.
 install -m 755 "$SCRIPT_DIR/scripts/wan-watchdog.sh"  /usr/local/bin/wan-watchdog.sh
+# Nine more with the same gap, found 2026-09-20 by diffing every deployed file
+# against the install lines. Each is named in a systemd unit's ExecStart, so on a
+# fresh install those units failed with "No such file or directory" — the timers
+# existed and did nothing. Sweep with:
+#   for f in /usr/local/bin/beaconbutty-*; do grep -qr "$(basename "$f")" scripts/0*.sh || echo "$f"; done
+install -m 755 "$SCRIPT_DIR/scripts/clickhouse-upgrade.sh"  /usr/local/bin/beaconbutty-clickhouse-upgrade.sh
+install -m 755 "$SCRIPT_DIR/scripts/ja4db-refresh.sh"       /usr/local/bin/beaconbutty-ja4db-refresh.sh
+install -m 755 "$SCRIPT_DIR/scripts/ja4-history-update.py"  /usr/local/bin/beaconbutty-ja4-history-update.py
+install -m 755 "$SCRIPT_DIR/scripts/ja4-threat-check.py"    /usr/local/bin/beaconbutty-ja4-threat-check.py
+install -m 755 "$SCRIPT_DIR/scripts/l2-alert-check.sh"      /usr/local/bin/beaconbutty-l2-alert-check.sh
+install -m 755 "$SCRIPT_DIR/scripts/midsummer-fan-check.py" /usr/local/bin/beaconbutty-midsummer-fan-check.py
+install -m 755 "$SCRIPT_DIR/scripts/pcap-watch.py"          /usr/local/bin/beaconbutty-pcap-watch.py
+install -m 755 "$SCRIPT_DIR/scripts/teams-cidr-refresh.py"  /usr/local/bin/beaconbutty-teams-cidr-refresh.py
+install -m 755 "$SCRIPT_DIR/scripts/teams-relay-check.py"   /usr/local/bin/beaconbutty-teams-relay-check.py
+# Two more named in unit ExecStart lines with no install line. resolv-conf-guard
+# is the mitigation from the 2026-07-01 blanked-resolv.conf incident, so a fresh
+# install silently shipping without it is exactly the wrong failure.
+install -m 755 "$SCRIPT_DIR/scripts/resolv-conf-guard.sh"   /usr/local/bin/resolv-conf-guard.sh
+install -m 755 "$SCRIPT_DIR/scripts/tailscale-cert-renew.sh" /usr/local/bin/tailscale-cert-renew.sh
 
 mkdir -p /var/lib/beaconbutty/reports
 mkdir -p /var/lib/beaconbutty/outage-evidence
@@ -209,9 +232,39 @@ systemctl enable --now beaconbutty-health.timer
 # Suricata alert check — only enable if Suricata is installed
 if command -v suricata &>/dev/null; then
     systemctl enable --now suricata-alert-check.timer
+    systemctl enable suricata-update.timer
 else
     echo "  Skipping suricata-alert-check.timer — Suricata not installed."
 fi
+
+# These twelve were enabled by hand on bb0 and never added here, so a fresh
+# install copied the units in and left every one of them inert: no IP intel, no
+# JA4 refresh/history/threat checks, no slow-cadence detection, no Teams-relay
+# detection, no weekly archive, no TLS renewal. Found 2026-09-20 by diffing
+# `systemctl is-enabled` against the enable lines in this script.
+#
+# Plain `enable`, NOT `--now`, for everything with Persistent=true: a Persistent
+# timer started with no stamp file treats itself as having missed its window and
+# fires immediately, so `--now` here would kick off every catch-up job at once on
+# a freshly built Pi — including beaconbutty-archive, which stops ClickHouse for
+# ~16 minutes. They arm on the next boot, which a fresh install gets anyway from
+# 07_router_mode.sh.
+systemctl enable beaconbutty-archive.timer
+systemctl enable beaconbutty-ip-intel.timer
+systemctl enable beaconbutty-ja4db-refresh.timer
+systemctl enable beaconbutty-ja4-history.timer
+systemctl enable beaconbutty-slow-cadence.timer
+systemctl enable beaconbutty-slow-cadence-digest.timer
+systemctl enable beaconbutty-teams-cidr-refresh.timer
+systemctl enable beaconbutty-teams-relay-check.timer
+systemctl enable tailscale-cert-renew.timer
+# Persistent=no on these two, so there is no catch-up burst to avoid.
+systemctl enable --now beaconbutty-ja4-threat-check.timer
+systemctl enable --now beaconbutty-l2-alert-check.timer
+#
+# Deliberately NOT enabled: beaconbutty-midsummer-fan-check.timer is a one-shot
+# for 2026-07-15 that has already passed. Persistent=true means enabling it now
+# would fire it immediately on every new install, for an event that is over.
 
 # zeek-cron.timer — supervises Zeek workers (zeek.service is a oneshot
 # wrapper whose "active" state means nothing after boot; zeekctl cron is
@@ -248,6 +301,29 @@ cat > /etc/logrotate.d/beaconbutty <<'EOF'
 EOF
 
 # ── Deploy Zeek ───────────────────────────────────────────────────────────────
+# ── JA4 fingerprinting package ────────────────────────────────────────────────
+# Supplies ja4/ja4s/ja4h/ja4x/ja4ssh/ja4d/ja4l/ja4t. Without it there are no
+# ja4*.log streams, so /network's JA4 panels, beaconbutty-ja4-threat-check and
+# beaconbutty-ja4-history all have nothing to read. Script-only (no compiled
+# plugin), so it survives a Zeek major upgrade untouched.
+#
+# Licensing: the Zeek package is BSD-3. JA4+ carries FoxIO licence terms for
+# commercial redistribution — see docs/development/licensing.md. We install it
+# here, we do not vendor it.
+if command -v "$ZEEK_PREFIX/bin/zkg" &>/dev/null; then
+    echo "Installing the JA4 Zeek package..."
+    "$ZEEK_PREFIX/bin/zkg" autoconfig --force >/dev/null 2>&1 || true
+    if "$ZEEK_PREFIX/bin/zkg" install --force zeek/foxio/ja4; then
+        echo "  JA4 installed."
+    else
+        echo "  WARNING: JA4 install failed — ja4*.log will be absent and the"
+        echo "           JA4 panels and timers will have no data."
+        echo "           Retry: sudo $ZEEK_PREFIX/bin/zkg install zeek/foxio/ja4"
+    fi
+else
+    echo "  WARNING: zkg not found — skipping JA4 package."
+fi
+
 echo "Deploying Zeek (this runs zeekctl deploy)..."
 "$ZEEK_PREFIX/bin/zeekctl" deploy
 

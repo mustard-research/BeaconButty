@@ -8,8 +8,9 @@ set -euo pipefail
 #   2. Fall back to compiling from source if packages unavailable (slow, ~60-90 min on Pi 4)
 
 ZEEK_PREFIX="${ZEEK_PREFIX:-/opt/zeek}"
-ZEEK_VERSION="8.2.0"   # Source-build fallback only. Check https://zeek.org/get-zeek/
-                       # — bb0 runs the 8.x line; a rebuild must not regress to 7.x.
+ZEEK_VERSION="9.0.0"   # Source-build fallback only. Check https://zeek.org/get-zeek/
+                       # — bb0 runs 9.0.0 (the LTS line as of 2026-09); a rebuild
+                       # must not regress the major version.
 
 if [[ -x "$ZEEK_PREFIX/bin/zeek" ]]; then
     echo "Zeek already installed at $ZEEK_PREFIX ($("${ZEEK_PREFIX}/bin/zeek" --version 2>&1 | head -1))"
@@ -36,6 +37,13 @@ install_zeek_packages() {
     # OBS installs to /opt/zeek — check arm64 availability first
     if apt-cache show zeek 2>/dev/null | grep -q "Architecture: arm64\|Architecture: all"; then
         apt-get install -y --reinstall zeek
+        # Hold, as 03_install_clickhouse.sh does. The openSUSE repo carries one
+        # build per line, so an unattended jump is both possible and hard to
+        # undo — 8.2.2 was already unfetchable by the time we moved off it.
+        # beaconbutty-stash-packages.sh keeps a .deb for whatever is held.
+        apt-mark hold zeek zeek-core zeekctl zeek-client zeek-zkg \
+                      zeek-core-dev zeek-spicy-dev zeek-btest zeek-btest-data \
+                      libbroker-dev 2>/dev/null || true
         ln -sf /opt/zeek/bin/zeek    /usr/local/bin/zeek
         ln -sf /opt/zeek/bin/zeekctl /usr/local/bin/zeekctl
         echo "Zeek installed from OBS packages."

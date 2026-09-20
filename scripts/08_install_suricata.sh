@@ -71,7 +71,7 @@ echo ""
 echo -e "${BOLD}Installation${RESET}"
 
 if command -v suricata &>/dev/null; then
-    EXISTING_VER=$(suricata --build-info 2>/dev/null | awk '/^Version/ {print $2}' | head -1 || echo "unknown")
+    EXISTING_VER=$(suricata -V 2>/dev/null | grep -oP 'version \K[0-9][0-9.]*' | head -1 || echo "unknown")
     OK "Suricata already installed: ${EXISTING_VER}"
 else
     INFO "Installing suricata..."
@@ -80,7 +80,7 @@ else
     OK "Suricata installed."
 fi
 
-SURICATA_VER=$(suricata --build-info 2>/dev/null | awk '/^Version/ {print $2}' | head -1 || echo "unknown")
+SURICATA_VER=$(suricata -V 2>/dev/null | grep -oP 'version \K[0-9][0-9.]*' | head -1 || echo "unknown")
 INFO "Version: ${SURICATA_VER}"
 
 # suricata-update is bundled with suricata on Bookworm; guard against older releases
