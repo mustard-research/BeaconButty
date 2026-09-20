@@ -70,4 +70,12 @@ git clone --depth=1 --branch "${RITA_VERSION}" \
     exit 1
 }
 
+# Record the tag we built, because the binary cannot tell you. RITA v5 has no
+# --version flag and `go version -m` reports the module as "(devel)", so the
+# built tag exists nowhere on the system once this script exits. The health
+# check reads this file — the alternative is hard-coding a number in the health
+# check that silently goes stale the next time RITA_VERSION moves.
+install -d -m 755 /var/lib/beaconbutty
+printf '%s\n' "${RITA_VERSION}" > /var/lib/beaconbutty/rita-version
+
 echo "RITA installed: ${RITA_VERSION}"

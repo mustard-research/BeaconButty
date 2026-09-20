@@ -261,6 +261,115 @@ else
     OK "Pending reboot: none"
 fi
 
+# ── 1b. Versions ──────────────────────────────────────────────────────────────
+# One place for "what is this system actually running". These were previously
+# scattered across Services and Suricata IDS, or not reported at all.
+#
+# Each apt-managed component also reports the repo candidate when it differs, so
+# "there is a newer Zeek" shows up here rather than being discovered during an
+# upgrade. A newer upstream release is information, not a fault, so these stay
+# OK; the exceptions are ClickHouse, which keeps its months-behind WARN, and the
+# kernel, where a newer image already on disk is genuinely actionable.
+section "Versions"
+
+# One call, not one per package.
+HELD_PKGS=$(apt-mark showhold 2>/dev/null || true)
+
+# "  (held)  — upgradable to X" for an apt package; empty for anything else.
+apt_suffix() {
+    local pkg="$1" installed candidate suffix=""
+    installed=$(dpkg-query -W -f='${Version}' "$pkg" 2>/dev/null || true)
+    [[ -z "$installed" ]] && { printf ''; return 0; }
+    candidate=$(LC_ALL=C apt-cache policy "$pkg" 2>/dev/null | awk '/Candidate:/ {print $2}')
+    grep -qx "$pkg" <<< "$HELD_PKGS" && suffix="  (held)"
+    if [[ -n "$candidate" && "$candidate" != "(none)" && "$candidate" != "$installed" ]]; then
+        suffix="${suffix}  — upgradable to ${candidate}"
+    fi
+    printf '%s' "$suffix"
+}
+
+OK "OS: $(. /etc/os-release 2>/dev/null && echo "$PRETTY_NAME")"
+
+# The rpt kernel packages install themselves; only the reboot is manual, so the
+# actionable signal is a newer image already on disk, not the package version.
+KERNEL_RUNNING=$(uname -r)
+KERNEL_FLAVOUR="${KERNEL_RUNNING##*-}"
+KERNEL_NEWEST=$(dpkg-query -W -f='${binary:Package}\n' "linux-image-*-${KERNEL_FLAVOUR}" 2>/dev/null \
+    | sed 's/^linux-image-//' | grep -v '^rpi-' | sort -V | tail -1)
+if [[ -n "$KERNEL_NEWEST" && "$KERNEL_NEWEST" != "$KERNEL_RUNNING" ]]; then
+    WARN "Kernel: ${KERNEL_RUNNING} running — ${KERNEL_NEWEST} installed, reboot to activate"
+else
+    OK "Kernel: ${KERNEL_RUNNING}"
+fi
+
+ZEEK_VER=$("${ZEEK_PREFIX}/bin/zeek" --version 2>/dev/null | awk '{print $NF}')
+[[ -n "$ZEEK_VER" ]] && OK "Zeek: ${ZEEK_VER}$(apt_suffix zeek)"
+
+# `suricata -V`, not `--build-info`: the latter prints "This is Suricata version
+# 7.0.10 RELEASE", which has no line starting "Version" for awk to match, so the
+# old parse returned empty and the service label read "Suricata : running".
+if command -v suricata &>/dev/null; then
+    SURICATA_VER=$(suricata -V 2>/dev/null | grep -oP 'version \K[0-9][0-9.]*' | head -1)
+    OK "Suricata: ${SURICATA_VER:-unknown}$(apt_suffix suricata)"
+fi
+
+# ClickHouse version staleness — informational unless very far behind.
+# Versions encode YY.M.patch.build, so we measure "months behind" from
+# the year+month components (no need for a date table). Packages are
+# apt-mark hold'd to prevent surprise upgrades — see Upgrade Log
+# 2026-06-16 for the latent-regression incident that led to the hold.
+CH_INSTALLED=$(dpkg-query -W -f='${Version}' clickhouse-server 2>/dev/null || true)
+CH_CANDIDATE=$(LC_ALL=C apt-cache policy clickhouse-server 2>/dev/null \
+    | awk '/Candidate:/ {print $2}')
+CH_HELD=""
+if apt-mark showhold 2>/dev/null | grep -qx "clickhouse-server"; then
+    CH_HELD="; held"
+fi
+if [[ -n "$CH_INSTALLED" && -n "$CH_CANDIDATE" && "$CH_CANDIDATE" != "(none)" ]]; then
+    if [[ "$CH_INSTALLED" == "$CH_CANDIDATE" ]]; then
+        OK "ClickHouse: ${CH_INSTALLED}  (up to date${CH_HELD})"
+    else
+        # Parse YY.M from each version (first two dotted components)
+        inst_y=$(echo "$CH_INSTALLED" | cut -d. -f1)
+        inst_m=$(echo "$CH_INSTALLED" | cut -d. -f2)
+        cand_y=$(echo "$CH_CANDIDATE" | cut -d. -f1)
+        cand_m=$(echo "$CH_CANDIDATE" | cut -d. -f2)
+        BEHIND_MONTHS="?"
+        if [[ "$inst_y" =~ ^[0-9]+$ && "$cand_y" =~ ^[0-9]+$ ]]; then
+            BEHIND_MONTHS=$(( (cand_y - inst_y) * 12 + (cand_m - inst_m) ))
+        fi
+        # "release" vs "releases" pluralisation
+        REL_WORD="releases"
+        [[ "$BEHIND_MONTHS" == "1" ]] && REL_WORD="release"
+        VERSION_STR="${CH_INSTALLED}  (latest: ${CH_CANDIDATE}, ${BEHIND_MONTHS} ${REL_WORD} behind${CH_HELD})"
+        UPGRADE_HINT="run: sudo beaconbutty-clickhouse-upgrade.sh"
+        if [[ "$BEHIND_MONTHS" =~ ^[0-9]+$ ]] && (( BEHIND_MONTHS >= 3 )); then
+            WARN "ClickHouse: ${VERSION_STR} — ${UPGRADE_HINT}"
+        else
+            OK "ClickHouse: ${VERSION_STR} — ${UPGRADE_HINT}"
+        fi
+    fi
+fi
+
+# RITA v5 has no --version flag and `go version -m` reports the module as
+# "(devel)", so the tag it was built from is recorded at install time by
+# 04_install_rita.sh and read back here.
+RITA_VER=$(cat /var/lib/beaconbutty/rita-version 2>/dev/null || true)
+if [[ -n "$RITA_VER" ]]; then
+    OK "RITA: ${RITA_VER}  (built from source at this tag)"
+elif command -v rita &>/dev/null; then
+    OK "RITA: installed  (tag unrecorded — predates /var/lib/beaconbutty/rita-version)"
+fi
+
+DNSMASQ_VER=$(dnsmasq --version 2>/dev/null | head -1 | awk '{print $3}')
+[[ -n "$DNSMASQ_VER" ]] && OK "dnsmasq: ${DNSMASQ_VER}$(apt_suffix dnsmasq)"
+
+TS_VER=$(tailscale version 2>/dev/null | head -1)
+[[ -n "$TS_VER" ]] && OK "Tailscale: ${TS_VER}$(apt_suffix tailscale)"
+
+PY_VER=$(python3 --version 2>&1 | awk '{print $2}')
+[[ -n "$PY_VER" ]] && OK "Python: ${PY_VER}"
+
 # ── 2. Network interfaces ─────────────────────────────────────────────────────
 section "Network Interfaces"
 
@@ -453,44 +562,6 @@ else
     check_service clickhouse-server  "ClickHouse"  alert
 fi
 
-# ClickHouse version staleness — informational unless very far behind.
-# Versions encode YY.M.patch.build, so we measure "months behind" from
-# the year+month components (no need for a date table). Packages are
-# apt-mark hold'd to prevent surprise upgrades — see Upgrade Log
-# 2026-06-16 for the latent-regression incident that led to the hold.
-CH_INSTALLED=$(dpkg-query -W -f='${Version}' clickhouse-server 2>/dev/null || true)
-CH_CANDIDATE=$(LC_ALL=C apt-cache policy clickhouse-server 2>/dev/null \
-    | awk '/Candidate:/ {print $2}')
-CH_HELD=""
-if apt-mark showhold 2>/dev/null | grep -qx "clickhouse-server"; then
-    CH_HELD="; held"
-fi
-if [[ -n "$CH_INSTALLED" && -n "$CH_CANDIDATE" && "$CH_CANDIDATE" != "(none)" ]]; then
-    if [[ "$CH_INSTALLED" == "$CH_CANDIDATE" ]]; then
-        OK "ClickHouse version: ${CH_INSTALLED}  (up to date${CH_HELD})"
-    else
-        # Parse YY.M from each version (first two dotted components)
-        inst_y=$(echo "$CH_INSTALLED" | cut -d. -f1)
-        inst_m=$(echo "$CH_INSTALLED" | cut -d. -f2)
-        cand_y=$(echo "$CH_CANDIDATE" | cut -d. -f1)
-        cand_m=$(echo "$CH_CANDIDATE" | cut -d. -f2)
-        BEHIND_MONTHS="?"
-        if [[ "$inst_y" =~ ^[0-9]+$ && "$cand_y" =~ ^[0-9]+$ ]]; then
-            BEHIND_MONTHS=$(( (cand_y - inst_y) * 12 + (cand_m - inst_m) ))
-        fi
-        # "release" vs "releases" pluralisation
-        REL_WORD="releases"
-        [[ "$BEHIND_MONTHS" == "1" ]] && REL_WORD="release"
-        VERSION_STR="${CH_INSTALLED}  (latest: ${CH_CANDIDATE}, ${BEHIND_MONTHS} ${REL_WORD} behind${CH_HELD})"
-        UPGRADE_HINT="run: sudo beaconbutty-clickhouse-upgrade.sh"
-        if [[ "$BEHIND_MONTHS" =~ ^[0-9]+$ ]] && (( BEHIND_MONTHS >= 3 )); then
-            WARN "ClickHouse version: ${VERSION_STR} — ${UPGRADE_HINT}"
-        else
-            OK "ClickHouse version: ${VERSION_STR} — ${UPGRADE_HINT}"
-        fi
-    fi
-fi
-
 check_service dnsmasq             "dnsmasq (DHCP/DNS)"  alert
 check_service bb-graphs           "Webapp (bb-graphs)"  alert
 
@@ -673,8 +744,7 @@ if ! command -v suricata &>/dev/null; then
         WARN "Suricata: not installed  (run: sudo ./scripts/08_install_suricata.sh)"
     fi
 else
-    SURICATA_VER=$(suricata --build-info 2>/dev/null | awk '/^Version/ {print $2}' | head -1 || echo "unknown")
-    check_service suricata "Suricata ${SURICATA_VER}" alert
+    check_service suricata "Suricata" alert
 
     # stats.log is rewritten every 60s regardless of traffic — the reliable capture-liveness
     # signal. eve.json now carries only alert/anomaly events (trimmed 2026-05-15), so a stale
