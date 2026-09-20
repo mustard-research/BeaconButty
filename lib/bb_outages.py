@@ -512,10 +512,19 @@ def _local_day(iso):
 
 
 def summarise(outages, day=None):
-    """Counts for one local day, plus the coverage the history can vouch for."""
+    """Counts for one local day, plus the coverage the history can vouch for.
+
+    Also carries the most recent outage of any day, so a clean day can say when
+    the last one was instead of only that there were none. `days_since` is
+    measured against `day`, the same anchor the rest of the summary uses, so the
+    two cannot disagree about where "today" starts.
+    """
     day = day or date.today().isoformat()
     today = [o for o in outages if _local_day(o.get("start")) == day]
     durations = [o.get("duration_secs", 0) for o in today]
+    # collect() returns oldest first, so the last entry is the most recent.
+    last = outages[-1] if outages else None
+    last_day = _local_day(last["start"]) if last else None
     return {
         "day":            day,
         "count":          len(today),
@@ -524,7 +533,22 @@ def summarise(outages, day=None):
         "ongoing":        any(o.get("ongoing") for o in today),
         "history_count":  len(outages),
         "history_from":   _local_day(outages[0]["start"]) if outages else None,
+        "last_start":     last_day,
+        "last_ongoing":   bool(last.get("ongoing")) if last else False,
+        "days_since":     _days_between(last_day, day) if last_day else None,
     }
+
+
+def _days_between(then, now):
+    """Whole local days from ISO date `then` to ISO date `now`, or None.
+
+    Whole days rather than elapsed seconds: the history is presented in local
+    days everywhere else, and a DST change must not turn 8 days into 7.9.
+    """
+    try:
+        return (date.fromisoformat(now) - date.fromisoformat(then)).days
+    except Exception:
+        return None
 
 
 def summarise_range(outages, days, today=None):
@@ -545,10 +569,31 @@ def summarise_range(outages, days, today=None):
     }
 
 
+def _ago(days):
+    """'today' / 'yesterday' / 'N days ago' — never the bare '1 days ago'."""
+    if days is None:
+        return None
+    if days <= 0:
+        return "today"
+    return "yesterday" if days == 1 else f"{days} days ago"
+
+
 def summary_line(summary):
     """The one-liner shown in the CLI health check and as the web card's link."""
     if summary["count"] == 0:
-        return "No ISP outages today"
+        line = "No ISP outages today"
+        # A clean day is more useful with the last outage named than without:
+        # "none today" reads the same on day 2 and day 200. Still "none seen",
+        # never "none happened" — the probe cadence bounds what we can claim.
+        if summary.get("last_start"):
+            if summary.get("last_ongoing"):
+                line += f" — one ongoing since {summary['last_start']}"
+            else:
+                line += f" — last was {summary['last_start']}"
+                ago = _ago(summary.get("days_since"))
+                if ago and ago != "today":
+                    line += f", {ago}"
+        return line
     n = summary["count"]
     line = f"{n} ISP outage{'s' if n != 1 else ''} today"
     line += f", longest {fmt_duration(summary['longest_secs'])}"

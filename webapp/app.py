@@ -4798,19 +4798,63 @@ def fps_remove_org():
 
 # ── API routes ──────────────────────────────────────────────────────────────────
 
+# certbot's own default when renewal.conf does not say otherwise.
+CERTBOT_DEFAULT_RENEW_DAYS = 30
+
+
+def _renew_before_days():
+    """Days before expiry at which certbot renews this cert, or None if the
+    configured value cannot be read as whole days.
+
+    Parsed rather than assumed: it is a per-certificate setting, and hard-coding
+    30 would quietly print a wrong date for any site that tunes it. The line
+    ships commented out, so falling back to certbot's default is the normal
+    case, not an error path. An explicit value we cannot parse returns None and
+    the card omits the row — better to say nothing than to guess a date.
+    """
+    conf = Path(BB_TLS_CERT_DIR).parent / "renewal" / f"{BB_HOST}.conf"
+    try:
+        for line in conf.read_text().splitlines():
+            line = line.strip()
+            if line.startswith("#") or not line.startswith("renew_before_expiry"):
+                continue
+            m = re.match(r"(\d+)\s*([a-z]*)", line.partition("=")[2].strip().lower())
+            if not m:
+                return None
+            n, unit = int(m.group(1)), m.group(2).rstrip("s")
+            if unit in ("", "day"):
+                return n
+            if unit == "week":
+                return n * 7
+            if unit == "hour":
+                return n // 24
+            return None                      # a unit we do not model
+    except Exception:
+        pass
+    return CERTBOT_DEFAULT_RENEW_DAYS
+
+
 def get_cert_info():
-    """Read TLS cert and return subject, issue date, expiry date, days remaining."""
+    """Read TLS cert and return subject, issue date, expiry date, days remaining,
+    and the earliest date certbot will renew it."""
     try:
         with open(TLS_FULLCHAIN, "rb") as f:
             cert = x509.load_pem_x509_certificate(f.read(), default_backend())
         now = datetime.now(cert.not_valid_after_utc.tzinfo)
         days_remaining = (cert.not_valid_after_utc - now).days
-        return {
+        info = {
             "subject":        cert.subject.get_attributes_for_oid(x509.NameOID.COMMON_NAME)[0].value,
             "issued":         cert.not_valid_before_utc.strftime("%Y-%m-%d"),
             "expires":        cert.not_valid_after_utc.strftime("%Y-%m-%d"),
             "days_remaining": days_remaining,
         }
+        renew_days = _renew_before_days()
+        if renew_days is not None:
+            renews_from = cert.not_valid_after_utc - timedelta(days=renew_days)
+            info["renews_from"]       = renews_from.strftime("%Y-%m-%d")
+            info["renews_in_days"]    = (renews_from - now).days
+            info["renew_before_days"] = renew_days
+        return info
     except Exception as e:
         return {"error": str(e)}
 

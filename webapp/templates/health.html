@@ -572,6 +572,21 @@
         <td style="color:var(--text-muted,#888);padding:3px 20px 3px 0;">Expires</td>
         <td>{{ cert.expires }} &nbsp;<span style="color:{{ cert_color }};">{{ cert.days_remaining }} days remaining — {{ cert_status }}</span></td>
       </tr>
+      {# Omitted rather than guessed when renewal.conf holds a value we cannot
+         read as whole days — see _renew_before_days() in app.py. #}
+      {% if cert.renews_from is defined %}
+      <tr>
+        <td style="color:var(--text-muted,#888);padding:3px 20px 3px 0;">Renews</td>
+        <td>{{ cert.renews_from }} &nbsp;<span style="color:var(--text-muted,#888);">
+          {%- if cert.renews_in_days > 1 %}in {{ cert.renews_in_days }} days
+          {%- elif cert.renews_in_days == 1 %}tomorrow
+          {%- elif cert.renews_in_days == 0 %}today
+          {%- else %}due now — {{ -cert.renews_in_days }} days into the window
+          {%- endif %}
+          · earliest date, at {{ cert.renew_before_days }} days before expiry;
+          certbot.timer runs twice daily</span></td>
+      </tr>
+      {% endif %}
     </table>
   {% endif %}
 </div>
