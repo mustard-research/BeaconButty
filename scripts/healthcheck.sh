@@ -210,6 +210,32 @@ else
     WARN "Webapp ingress allowlist: MISSING from app.py — unauthenticated UI protected only by iptables"
 fi
 
+# The state dir is written by BOTH root (timer scripts) and dm (webapp: the FP
+# registry via fp.sh, alert-config, domain-watch). Every writer uses atomic
+# tmp+rename, which needs DIRECTORY write permission — so if the group-write
+# bit goes, root keeps working and only dm's writes fail. Test the actual
+# capability as dm rather than comparing the mode string: that is the thing
+# that broke, and it stays true however the dir is owned.
+# (2026-09-20: `install -d -m 755` in 04_install_rita.sh reset this to 2755 and
+# every FP add failed silently for three days.)
+BB_STATE_DIR="/var/lib/beaconbutty"
+if [[ "$(id -un)" == "dm" ]]; then
+    test -w "$BB_STATE_DIR"; BB_STATE_WRITABLE=$?
+elif [[ $EUID -eq 0 ]]; then
+    sudo -n -u dm test -w "$BB_STATE_DIR" 2>/dev/null; BB_STATE_WRITABLE=$?
+else
+    # Neither root nor dm: can't test the capability, so read the bits that
+    # grant it. Must not report a clean dir as broken just because of who ran us.
+    BB_STATE_MODE=$(stat -c '%a' "$BB_STATE_DIR" 2>/dev/null)
+    [[ "$(stat -c '%G' "$BB_STATE_DIR" 2>/dev/null)" == "dm" \
+       && "${BB_STATE_MODE: -2:1}" =~ ^[2367]$ ]]; BB_STATE_WRITABLE=$?
+fi
+if [[ $BB_STATE_WRITABLE -eq 0 ]]; then
+    OK "State dir writable by dm: yes  ($(stat -c '%A %U:%G' "$BB_STATE_DIR") $BB_STATE_DIR)"
+else
+    FAIL "State dir NOT writable by dm — FP adds and other webapp writes will fail: chmod 2775 $BB_STATE_DIR"
+fi
+
 # The journal must be persistent, or an unclean reboot leaves no forensic trail.
 # Raspberry Pi OS ships a 40- drop-in with Storage=volatile; ours must sort after it.
 JRNL_STORAGE=$(systemd-analyze cat-config systemd/journald.conf 2>/dev/null | grep '^Storage=' | tail -1 | cut -d= -f2)

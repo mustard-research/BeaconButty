@@ -20,6 +20,7 @@ import psutil
 from datetime import datetime, date, timedelta
 from glob import glob
 from pathlib import Path
+from urllib.parse import quote, urlsplit
 
 from cryptography import x509
 from cryptography.hazmat.backends import default_backend
@@ -2304,6 +2305,25 @@ def _run_fp_script(*args):
     _invalidate_network_cache()
     _suricata_cache["ts"] = 0  # the /suricata page cache must not outlive an FP edit
     return True, ""
+
+
+def _fp_redirect(result, nxt=""):
+    """Redirect after an FP edit, carrying any fp.sh failure into the banner.
+
+    _run_fp_script() reports failures, but a bare redirect renders identically
+    whether the registry write landed or not — so a failed add looks exactly
+    like a successful one and the operator only finds out when the row is still
+    there. (A clobbered state-dir mode did precisely this on 2026-09-20: every
+    add died on PermissionError and the UI said nothing for three days.)
+    The message travels in the query string because the app has no session
+    secret, so flash() is not available."""
+    ok, msg = result
+    target = nxt if (nxt.startswith("/") and not nxt.startswith("//")) \
+             else url_for("fps")
+    if not ok:
+        sep = "&" if urlsplit(target).query else "?"
+        target = f"{target}{sep}fp_error={quote(msg)}"
+    return redirect(target)
 
 
 def _domain_entropy(query):
@@ -4709,17 +4729,14 @@ def fps_add():
     if not (_MAC_RE.match(addr) or _IP_RE.match(addr)):
         return redirect(url_for("fps"))
 
-    _run_fp_script("add", addr, reason)
-    if nxt.startswith("/") and not nxt.startswith("//"):
-        return redirect(nxt)
-    return redirect(url_for("fps"))
+    return _fp_redirect(_run_fp_script("add", addr, reason), nxt)
 
 
 @app.route("/fps/remove", methods=["POST"])
 def fps_remove():
     mac = request.form.get("mac", "").strip()
     if _MAC_RE.match(mac):
-        _run_fp_script("remove", mac)
+        return _fp_redirect(_run_fp_script("remove", mac))
     return redirect(url_for("fps"))
 
 
@@ -4731,8 +4748,8 @@ def fps_add_domain():
     if pattern and reason:
         if len(reason) > 50:
             reason = reason[:50]
-        _run_fp_script("add-domain", pattern, reason)
-    # Only honour same-origin paths to prevent open-redirect.
+        # _fp_redirect only honours same-origin paths (open-redirect guard).
+        return _fp_redirect(_run_fp_script("add-domain", pattern, reason), nxt)
     if nxt.startswith("/") and not nxt.startswith("//"):
         return redirect(nxt)
     return redirect(url_for("fps"))
@@ -4742,7 +4759,7 @@ def fps_add_domain():
 def fps_remove_domain():
     pattern = request.form.get("pattern", "").strip()
     if pattern:
-        _run_fp_script("remove-domain", pattern)
+        return _fp_redirect(_run_fp_script("remove-domain", pattern))
     return redirect(url_for("fps"))
 
 
@@ -4753,7 +4770,7 @@ def fps_add_protocol():
     if svc and reason:
         if len(reason) > 50:
             reason = reason[:50]
-        _run_fp_script("add-protocol", svc, reason)
+        return _fp_redirect(_run_fp_script("add-protocol", svc, reason))
     return redirect(url_for("fps"))
 
 
@@ -4761,7 +4778,7 @@ def fps_add_protocol():
 def fps_remove_protocol():
     svc = request.form.get("svc", "").strip()
     if svc:
-        _run_fp_script("remove-protocol", svc)
+        return _fp_redirect(_run_fp_script("remove-protocol", svc))
     return redirect(url_for("fps"))
 
 
@@ -4779,10 +4796,9 @@ def fps_add_org():
     if pattern and reason:
         if len(reason) > 50:
             reason = reason[:50]
-        if device:
-            _run_fp_script("add-org", pattern, reason, "--device", device)
-        else:
-            _run_fp_script("add-org", pattern, reason)
+        args = ("add-org", pattern, reason) + \
+               (("--device", device) if device else ())
+        return _fp_redirect(_run_fp_script(*args), nxt)
     if nxt.startswith("/") and not nxt.startswith("//"):
         return redirect(nxt)
     return redirect(url_for("fps"))
@@ -4792,7 +4808,7 @@ def fps_add_org():
 def fps_remove_org():
     pattern = request.form.get("pattern", "").strip()
     if pattern:
-        _run_fp_script("remove-org", pattern)
+        return _fp_redirect(_run_fp_script("remove-org", pattern))
     return redirect(url_for("fps"))
 
 

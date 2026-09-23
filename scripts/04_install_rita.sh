@@ -102,7 +102,12 @@ git clone --depth=1 --branch "${RITA_VERSION}" \
 # built tag exists nowhere on the system once this script exits. The health
 # check reads this file — the alternative is hard-coding a number in the health
 # check that silently goes stale the next time RITA_VERSION moves.
-install -d -m 755 /var/lib/beaconbutty
+# mkdir -p, NOT `install -d -m`: install resets the mode of an EXISTING
+# directory. 05_configure.sh makes this dir 2775 root:dm because both root
+# and dm (the webapp) do atomic tmp+rename writes in it, which need
+# directory write permission. Re-running this script alone once clobbered
+# that back to 755 and silently broke every FP registry write (2026-09-20).
+mkdir -p /var/lib/beaconbutty
 printf '%s\n' "${RITA_VERSION}" > /var/lib/beaconbutty/rita-version
 
 echo "RITA installed: ${RITA_VERSION}"

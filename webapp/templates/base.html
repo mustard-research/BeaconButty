@@ -85,6 +85,16 @@
 </nav>
 
 <main>
+  {# FP registry write failures. Every /fps/* route redirects through
+     _fp_redirect(), which appends ?fp_error= when fp.sh reported a failure.
+     Rendered here rather than on /fps because those redirects land back on
+     whichever page carried the button (/beacons/slow, /network, ...). #}
+  {% if request.args.get('fp_error') %}
+  <div class="fp-error-banner">
+    <strong>False positive not saved.</strong>
+    {{ request.args.get('fp_error') }}
+  </div>
+  {% endif %}
   {% block content %}{% endblock %}
 </main>
 

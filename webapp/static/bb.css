@@ -553,3 +553,14 @@ ul.issue-list.warn li::before {
   box-shadow: 0 4px 14px rgba(0,0,0,0.4);
   pointer-events: none;
 }
+
+/* FP registry write failure — shown by base.html when a /fps/* redirect
+   carries ?fp_error=. Uses the same red as the other error affordances. */
+.fp-error-banner {
+  background: rgba(248, 81, 73, 0.12);
+  border: 1px solid var(--red);
+  border-radius: 6px;
+  color: var(--red);
+  margin-bottom: 16px;
+  padding: 10px 14px;
+}
