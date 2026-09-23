@@ -77,7 +77,17 @@ Domain matching uses an apex-aware helper (`_fp_domain_match(q, patterns)`) so t
 
 Protocol matching uses `_fp_service_match(svc, fp_protocols)`, which suppresses a row only when **every** service component is FP'd (2026-08-13) — a protocol FP asserts that a protocol is boring, not that a destination is. Split components with `_split_service_components()`, never `svc.split(",")`: Zeek's own service subfield contains commas, so `443:udp:quic,ssl` is one component. There are five implementations of this contract across the webapp and scripts — the [mirror table](../investigation/false-positive-workflow.md#protocol-fp-mirrors) lists them, and they must change together.
 
-After any webapp write to `false-positives.conf`, call `_invalidate_network_cache()` (all 7 FP routes do). It does **not** null the cache — it signals the warmer to rebuild in the background (see [Network Intel cache warmer (2026-05-15)](#network-intel-cache-warmer-2026-05-15)). The cache is not automatically invalidated by external CLI writes to the FP file.
+After any webapp write to `false-positives.conf`, call `_invalidate_network_cache()` (all 8 FP routes do). It does **not** null the cache — it signals the warmer to rebuild in the background (see [Network Intel cache warmer (2026-05-15)](#network-intel-cache-warmer-2026-05-15)). The cache is not automatically invalidated by external CLI writes to the FP file.
+
+**A logged failure is not a reported one (2026-09-23).** All FP mutations run through `_run_fp_script()`, which shells out to `fp.sh` and returns `(ok, msg)`. Every one of the 8 routes used to discard that tuple and redirect regardless, so a failed registry write rendered identically to a successful one — the error reached the application log and nowhere the operator would look. Two false positives were added from a page, appeared to save, and silently never did; they were only noticed because the rows kept coming back.
+
+Routes now return through `_fp_redirect(result, nxt)`, which appends `?fp_error=<msg>` on failure, and the base template renders it as a banner. Three details that are easy to get wrong:
+
+- **Query string, not `flash()`** — the app has no session secret, so Flask's flash machinery is unavailable.
+- **The banner belongs in the base template, not the FP admin page** — these redirects land on whichever page carried the button, which is usually a findings page, not `/fps`.
+- `_fp_redirect()` also owns the same-origin guard on the `next` parameter, which several routes previously each re-implemented.
+
+The underlying write failure was a permissions one; see [Health Monitoring → State-dir writability](../operation/health-monitoring.md#state-dir-writability-added-2026-09-23). The general rule: if a helper reports failures by return value, grep every call site before believing the docstring.
 
 ### Data attributes (not onclick)
 
