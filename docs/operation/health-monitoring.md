@@ -18,11 +18,11 @@ The webapp Health page (`/health`) runs `sudo beaconbutty-health.sh --json` and 
 
 ## beaconbutty-health.sh
 
-Run time: approximately 10 seconds. ~54 checks across 10 sections. Supports `--json` for structured webapp consumption; default output is colourised text for terminal use.
+Run time: approximately 10 seconds. ~55 checks across 10 sections. Supports `--json` for structured webapp consumption; default output is colourised text for terminal use.
 
 | Section | Checks |
 |---------|--------|
-| System | uptime, memory, disk, load, CPU temp, throttling history (`vcgencmd get_throttled`), **log2ram tmpfs %** (2026-08-28: now reads `PATH_DISK` from `/etc/log2ram.conf` and reports each mounted path — it previously guarded on `mountpoint -q /var/log`, which made the whole check a silent no-op once `/var/log` stopped being a mount), **journal persistence** (FAILs if effective `Storage=` is not `persistent`), **Sustained-high CPU** (rolling 60-min mean reported by bb-watchdog — `ELEVATED` when ≥60%, `normal` otherwise; alert + diagnostic snapshot at `/var/lib/beaconbutty/watchdog/high-cpu-events/<UTC-ts>.json` — see *Upgrade Log*), time sync (`timedatectl`), pending reboot |
+| System | uptime, memory, disk, load, CPU temp, throttling history (`vcgencmd get_throttled`), **log2ram tmpfs %** (2026-08-28: now reads `PATH_DISK` from `/etc/log2ram.conf` and reports each mounted path — it previously guarded on `mountpoint -q /var/log`, which made the whole check a silent no-op once `/var/log` stopped being a mount), **journal persistence** (FAILs if effective `Storage=` is not `persistent`), **state-dir writable by the webapp user** (2026-09-23 — see below), **Sustained-high CPU** (rolling 60-min mean reported by bb-watchdog — `ELEVATED` when ≥60%, `normal` otherwise; alert + diagnostic snapshot at `/var/lib/beaconbutty/watchdog/high-cpu-events/<UTC-ts>.json` — see *Upgrade Log*), time sync (`timedatectl`), pending reboot |
 | **Versions** (2026-09-20) | OS, kernel, Zeek, Suricata, ClickHouse, RITA, dnsmasq, Tailscale, Python — see below |
 | Network Interfaces | eth0/eth1 link + IP, WAN reachability (ping 1.1.1.1), **last ISP outage** named on a clean day |
 | Routing & Firewall | IP forwarding, NAT MASQUERADE, FORWARD rule, IPv4/IPv6 INPUT=DROP, external DNS resolution (flags Tailscale-only resolver), **SSH peer allowlist** (systemd `IPAddressDeny=any`) and **webapp ingress allowlist** (the `_restrict_to_local_networks` guard in `app.py`) — both are second-layer controls that would otherwise vanish silently, leaving iptables as the only thing keeping a public-IP box's unauthenticated console off the internet |
@@ -266,6 +266,22 @@ sudo chmod g+s /var/log/zeek/*/
 
 > [!note]
 > The root cause is that after a log2ram tmpfs remount, the mount point is recreated as `root:root` unless the systemd unit or tmpfiles.d enforces otherwise. This bit us on 2026-04-17.
+
+## State-dir writability (added 2026-09-23)
+
+`/var/lib/beaconbutty` is written by **both** root (timer scripts) and the webapp user (the FP registry via `fp.sh`, `alert-config.json`, `domain-watch.json`). Every writer uses atomic tmp+rename, which needs write permission on the **directory**, not the file — so if the group-write bit goes, root keeps working and only the webapp's writes fail. Nothing else in the health check would notice.
+
+```bash
+stat -c '%A %U:%G %n' /var/lib/beaconbutty
+# expected: drwxrwsr-x  (2775 — setgid, group owned by the webapp user's group)
+```
+
+Fix: `sudo chmod 2775 /var/lib/beaconbutty`.
+
+The check tests the **capability** rather than comparing the mode string, so it stays correct however the dir is owned, and falls back to reading group + mode bits when run by a user that can do neither — it must not FAIL merely because of who invoked it.
+
+> **Warning**
+> This has broken twice: once when the writes were converted to atomic while the dir was still `root:root 755`, and again on 2026-09-20 when `install -d -m 755` in `04_install_rita.sh` reverted the mode as a side effect of re-running that script alone for a RITA upgrade. `install -d -m` applies the mode to an **already-existing** directory; use `mkdir -p` when you only need the directory to exist. Every webapp FP add failed silently for three days.
 
 ## Useful diagnostic commands
 

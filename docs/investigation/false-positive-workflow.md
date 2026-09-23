@@ -110,6 +110,18 @@ beaconbutty-fp.sh add 192.168.50.50  "Smart exercise bike — hourly telemetry"
 
 The webapp uses a branded confirmation modal (not browser `confirm()`) for all destructive/significant actions. FP additions and removals route through this modal.
 
+### If an FP "does not take"
+
+**First check it actually saved**, before assuming the pattern is wrong:
+
+```bash
+grep -c '<pattern>' /var/lib/beaconbutty/false-positives.conf
+```
+
+A failed registry write shows a red **"False positive not saved"** banner on the page you added it from (2026-09-23). Before that the route redirected silently and a failed add looked exactly like a successful one — the error only ever reached the journal. Two FPs were lost that way for three days after the state dir lost group write; see *Health Monitoring → State-dir writability*.
+
+If it *did* save and the row still shows, it is a matching problem — work through the domain-pattern matching rules below and the per-page FP button coverage.
+
 ## FP registry format
 
 `/var/lib/beaconbutty/false-positives.conf` — **JSON** (v2), four maps:
