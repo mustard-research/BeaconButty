@@ -1431,7 +1431,9 @@ function sendTestAlert() {
 }
 
 // ── OLED display toggle ────────────────────────────────────────────────────────
-function setDisplayUI(active) {
+var _displayService = null;  // last bb0-display.service state from /api/display
+function setDisplayUI(active, service) {
+  if (service !== undefined) _displayService = service;
   var toggle = document.getElementById('display-toggle');
   var track  = document.getElementById('display-track');
   var thumb  = document.getElementById('display-thumb');
@@ -1441,7 +1443,15 @@ function setDisplayUI(active) {
   track.style.background = active ? '#4caf50' : '#555';
   thumb.style.left       = active ? '20px' : '2px';
   label.textContent      = active ? 'On' : 'Off';
-  status.textContent     = active ? 'Running — bb0-display.service active' : 'Stopped — bb0-display.service inactive';
+  // The toggle blanks the screen; it does not stop the service. Report both.
+  var screen = active ? 'Screen on' : 'Screen blanked';
+  if (_displayService === null) {
+    status.textContent = screen;
+  } else if (_displayService === 'active') {
+    status.textContent = screen + ' — bb0-display.service running';
+  } else {
+    status.textContent = screen + ' — bb0-display.service ' + _displayService + ' (OLED not driven)';
+  }
 }
 
 function toggleDisplay(checkbox) {
@@ -1466,7 +1476,7 @@ function toggleDisplay(checkbox) {
 // Load initial display state on page load
 fetch('/api/display')
   .then(function(r) { return r.json(); })
-  .then(function(d) { setDisplayUI(d.active); })
+  .then(function(d) { setDisplayUI(d.active, d.service); })
   .catch(function() {
     document.getElementById('display-status-text').textContent = 'Status unavailable';
   });

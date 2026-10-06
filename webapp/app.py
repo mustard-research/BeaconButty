@@ -5445,7 +5445,16 @@ def api_display_get():
         active = _DISPLAY_OFF_FLAG.read_text().strip() != "1"
     except Exception:
         active = True
-    return {"active": active}
+    # The flag only blanks the screen; the service keeps running either way,
+    # so report its liveness separately rather than inferring it from the flag.
+    try:
+        service = subprocess.run(
+            ["systemctl", "is-active", "bb0-display.service"],
+            capture_output=True, text=True, timeout=3,
+        ).stdout.strip() or "unknown"
+    except Exception:
+        service = "unknown"
+    return {"active": active, "service": service}
 
 
 @app.route("/api/display", methods=["POST"])
