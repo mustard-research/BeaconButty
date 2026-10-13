@@ -697,10 +697,27 @@ def _fp_service_match(svc, fp_protocols):
 
 
 def get_wan_ip():
-    """Parse WAN IP from 'ip addr show eth0'."""
+    """WAN IP of the interface carrying the default route.
+
+    bb0 is multi-homed (eth0/ppp0 WAN + wlan0 on the LAN, both with a default
+    route), so pick the non-wlan0 default-route device: eth0 on a DHCP ISP, ppp0
+    once PPPoE owns the line (2026-10-13 cutover). Falls back to eth0.
+    """
     try:
+        routes = subprocess.run(
+            ["ip", "-4", "route", "show", "default"],
+            capture_output=True, text=True, timeout=5
+        ).stdout
+        iface = "eth0"
+        for line in routes.splitlines():
+            if "wlan0" in line:
+                continue
+            m = re.search(r'\bdev (\S+)', line)
+            if m:
+                iface = m.group(1)
+                break
         out = subprocess.run(
-            ["ip", "addr", "show", "eth0"],
+            ["ip", "addr", "show", iface],
             capture_output=True, text=True, timeout=5
         ).stdout
         m = re.search(r'inet (\d+\.\d+\.\d+\.\d+)', out)

@@ -412,23 +412,36 @@ PY_VER=$(python3 --version 2>&1 | awk '{print $2}')
 # ── 2. Network interfaces ─────────────────────────────────────────────────────
 section "Network Interfaces"
 
-for iface in eth0 eth1; do
+# Logical WAN interface = the device carrying the default route that is not
+# wlan0 (bb0 is multi-homed; wlan0 also holds a default route on the LAN). This
+# is eth0 on a DHCP ISP, and ppp0 once PPPoE owns the line (2026-10-13 cutover).
+# The physical NIC stays eth0 either way — the RX-ring checks below key on it.
+WAN_IFACE=$(ip -4 route show default 2>/dev/null \
+    | awk '$0 !~ /wlan0/ {for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
+WAN_IFACE="${WAN_IFACE:-eth0}"
+PPPOE=0; [[ "$WAN_IFACE" == ppp* ]] && PPPOE=1
+
+# eth0 + eth1 always; ppp0 too when PPPoE is the WAN (so a dropped session shows).
+IFACES="eth0 eth1"; [[ "$PPPOE" == 1 ]] && IFACES="eth0 eth1 $WAN_IFACE"
+for iface in $IFACES; do
     if ip link show "$iface" &>/dev/null; then
         STATE=$(ip link show "$iface" | grep -oP '(?<=state )\w+')
         IP=$(ip -4 addr show "$iface" 2>/dev/null | awk '/inet / {print $2}' | head -1)
-        if [[ "$STATE" == "UP" ]]; then
+        if [[ "$STATE" == "UP" || "$STATE" == "UNKNOWN" ]]; then   # ppp links report UNKNOWN
             if [[ -n "$IP" ]]; then
                 OK "${iface}: UP  ($IP)"
+            elif [[ "$iface" == "eth1" ]]; then
+                OK "${iface}: UP  (no IP — correct for capture interface)"
+            elif [[ "$iface" == "eth0" && "$PPPOE" == 1 ]]; then
+                OK "${iface}: UP  (no IP — correct; carries PPPoE $WAN_IFACE)"
             else
-                if [[ "$iface" == "eth1" ]]; then
-                    OK "${iface}: UP  (no IP — correct for capture interface)"
-                else
-                    WARN "${iface}: UP but no IP address"
-                fi
+                WARN "${iface}: UP but no IP address"
             fi
         else
             FAIL "${iface}: $STATE"
         fi
+    elif [[ "$iface" == "$WAN_IFACE" && "$PPPOE" == 1 ]]; then
+        FAIL "${iface}: PPPoE WAN interface not present — session is down"
     else
         FAIL "${iface}: interface not found"
     fi
@@ -497,8 +510,8 @@ fi
 
 # WAN connectivity
 if ping -c 1 -W 3 -q 1.1.1.1 &>/dev/null; then
-    WAN_IP=$(ip -4 addr show eth0 2>/dev/null | awk '/inet / {print $2}' | head -1)
-    OK "WAN reachable  (eth0: $WAN_IP)"
+    WAN_IP=$(ip -4 addr show "$WAN_IFACE" 2>/dev/null | awk '/inet / {print $2}' | head -1)
+    OK "WAN reachable  (${WAN_IFACE}: $WAN_IP)"
 else
     FAIL "WAN unreachable — cannot ping 1.1.1.1"
     send_alert service_down high bb0 "WAN unreachable (cannot ping 1.1.1.1)"
@@ -514,19 +527,30 @@ else
     FAIL "IP forwarding: disabled — LAN clients cannot reach WAN"
 fi
 
-# NAT MASQUERADE on eth0
-if iptables -t nat -C POSTROUTING -o eth0 -j MASQUERADE &>/dev/null 2>&1; then
-    OK "NAT MASQUERADE: present on eth0"
+# NAT MASQUERADE on the WAN interface (eth0 on DHCP, ppp0 on PPPoE)
+if iptables -t nat -C POSTROUTING -o "$WAN_IFACE" -j MASQUERADE &>/dev/null 2>&1; then
+    OK "NAT MASQUERADE: present on $WAN_IFACE"
 else
-    WARN "NAT MASQUERADE: no rule for -o eth0 — LAN clients may lack internet"
+    WARN "NAT MASQUERADE: no rule for -o $WAN_IFACE — LAN clients may lack internet"
 fi
 
 # FORWARD rule LAN→WAN
-if iptables -C FORWARD -i eth1 -o eth0 -m conntrack --ctstate NEW,RELATED,ESTABLISHED \
+if iptables -C FORWARD -i eth1 -o "$WAN_IFACE" -m conntrack --ctstate NEW,RELATED,ESTABLISHED \
         -j ACCEPT &>/dev/null 2>&1; then
-    OK "FORWARD rule: eth1 → eth0 present"
+    OK "FORWARD rule: eth1 → $WAN_IFACE present"
 else
-    WARN "FORWARD rule: eth1 → eth0 missing — check iptables"
+    WARN "FORWARD rule: eth1 → $WAN_IFACE missing — check iptables"
+fi
+
+# PPPoE MTU is 1492, so WAN-bound TCP needs an MSS clamp or large segments
+# blackhole for PMTUD-broken peers. Only assert it when PPPoE is the WAN.
+if [[ "$PPPOE" == 1 ]]; then
+    if iptables -t mangle -C FORWARD -o "$WAN_IFACE" -p tcp --tcp-flags SYN,RST SYN \
+            -j TCPMSS --clamp-mss-to-pmtu &>/dev/null 2>&1; then
+        OK "MSS clamp: present on $WAN_IFACE (PPPoE MTU 1492)"
+    else
+        WARN "MSS clamp: missing on $WAN_IFACE — large TCP over the 1492 PPPoE link may stall"
+    fi
 fi
 
 # IPv4 INPUT default policy — must be DROP
