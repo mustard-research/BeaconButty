@@ -104,6 +104,12 @@ switch(){   # $1 target: new|old
   # Deterministic boot: selected conn autoconnects, the other does not.
   nmcli con modify "$conn_to"   connection.autoconnect yes 2>/dev/null
   nmcli con modify "$conn_from" connection.autoconnect no  2>/dev/null
+  # Hint for the watchdog's runtime WAN detection when the WAN is fully down and
+  # it cannot read the default route: new -> pppoe (ppp0), old -> dhcp (eth0).
+  mkdir -p /var/lib/beaconbutty
+  [ "$target" = new ] && echo pppoe > /var/lib/beaconbutty/wan-mode \
+                      || echo dhcp  > /var/lib/beaconbutty/wan-mode
+  say "wan-mode hint -> $([ "$target" = new ] && echo pppoe || echo dhcp)"
 
   # Watchdog: the DHCP/eth0 model works on 'old'; it is paused on 'new' until the
   # ppp0 diagnostic rework lands (tasks/todo.md step 6).

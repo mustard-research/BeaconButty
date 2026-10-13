@@ -111,6 +111,15 @@ _CLASSES = [
                                 "ISP gateway address unclaimed (access gear alive)"),
     ("segment has gone silent", "access_segment_down",
                                 "WAN segment silent (isolated at L2)"),
+    # PPPoE-mode verdicts (2026-10-13 cutover). classify_pppoe() wordings; placed
+    # high so their specific phrases win before the generic ARP/route rules.
+    ("access segment is alive", "pppoe_down_segment_alive",
+                                "PPPoE session down, access segment alive"),
+    ("not completing our session", "pppoe_down",
+                                "PPPoE session down (ISP broadband platform)"),
+    ("is not forwarding our traffic", "gateway_silent",
+                                "ISP gateway present, not responding"),
+    ("break is beyond the BNG", "upstream_transit", "ISP upstream / transit"),
     ("does not answer ARP",     "gateway_absent",   "ISP gateway unclaimed (cause not narrowed)"),
     ("answers ARP but not ICMP", "gateway_silent",  "ISP gateway present, not responding"),
     ("break is beyond the edge", "upstream_transit", "ISP upstream / transit"),
@@ -131,7 +140,8 @@ CLASS_LABELS["unknown"] = "Cause not established"
 # "unknown cause", it is "cause never established", and the difference matters
 # when reading the history back.
 EVIDENCE_CLASSES = {"gateway_absent", "gateway_silent", "upstream_transit",
-                    "link_down", "gateway_vip_unclaimed", "access_segment_down"}
+                    "link_down", "gateway_vip_unclaimed", "access_segment_down",
+                    "pppoe_down", "pppoe_down_segment_alive"}
 LEGACY_CLASSES   = {"link_fault", "isp_upstream"}
 
 
@@ -210,7 +220,8 @@ def parse_events(paths=None):
 # wrong collapse — an outage whose ninth check finally caught a DHCP renewal
 # would be reported on the strength of the eight checks that had no evidence
 # yet, throwing away the only measurement that settled anything.
-_WITNESSED = ("link_down", "access_segment_down", "gateway_vip_unclaimed")
+_WITNESSED = ("link_down", "access_segment_down", "gateway_vip_unclaimed",
+              "pppoe_down_segment_alive")
 
 
 def _collapse_classes(classes):

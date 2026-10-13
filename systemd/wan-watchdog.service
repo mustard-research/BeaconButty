@@ -21,5 +21,8 @@ TimeoutStartSec=90
 # so the "act after 15 minutes" behaviour survives any change to the cadence.
 Environment=CHECK_INTERVAL_SECS=60
 
-# Pass the WAN interface name through (override in environment if non-default)
-Environment=WAN_IFACE=eth0
+# WAN_IFACE / WAN_MODE are intentionally NOT set here: the script detects them at
+# runtime from the default route (eth0+dhcp or ppp0+pppoe), falling back to the
+# /var/lib/beaconbutty/wan-mode hint isp-select leaves. Hard-coding eth0 here
+# would override that detection and misread a PPPoE WAN. Set them only to force a
+# value for testing.

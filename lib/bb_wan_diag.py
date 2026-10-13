@@ -79,6 +79,13 @@ CLASSES = {
     "gateway_silent":  "ISP gateway present, not responding",
     "upstream_transit": "ISP upstream / transit",
     "unknown":         "Cause not established",
+    # PPPoE-mode classes (2026-10-13 Vodafone cutover). On a point-to-point PPP
+    # link there is no ARP and no DHCP lease, so the discriminators change: the
+    # PPPoE *session state* replaces the ARP probe, and the physical NIC (eth0)
+    # supplies carrier + the L2-broadcast witness while the logical ppp0 supplies
+    # IP/route/transit. See classify_pppoe().
+    "pppoe_down":          "PPPoE session down (ISP broadband platform)",
+    "pppoe_down_segment_alive": "PPPoE session down, access segment alive",
 }
 
 
@@ -415,6 +422,65 @@ def classify(ev, outage_start=None, prev=None):
         f"in the ISP's network{where}. A reboot will not help")
 
 
+def classify_pppoe(ev, prev=None):
+    """
+    Classify a WAN outage on a PPPoE link (ppp0 over a physical NIC).
+
+    PPPoE has no ARP and no DHCP lease, so the DHCP-era discriminators do not
+    apply. The chain here is: physical carrier (read from the NIC) → PPPoE
+    *session* established (the logical iface has an IP, which on CHAP means auth
+    and therefore the access gear + BNG are all up) → peer (BNG) reachability.
+
+        phy carrier down        → our link / the ONT / the cable
+        session down            → PPPoE/LCP/auth/BNG — use the L2-broadcast
+                                   witness (on the NIC) to say whether the access
+                                   segment is still alive or we are isolated
+        session up, peer silent → BNG holds the session but is not forwarding
+        session up, peer answers→ break is beyond the BNG, in transit
+
+    The L2-broadcast witness is the same free counter as in DHCP mode, read from
+    the physical NIC where the ISP's foreign broadcast still arrives regardless
+    of the PPPoE encapsulation. It may only ever upgrade a verdict.
+    """
+    car = ev.get("carrier", {})
+    phy = ev.get("phy_iface") or ev["iface"]
+    if car.get("carrier") == 0 or car.get("operstate") == "down":
+        return "link_down", (
+            f"physical WAN link {phy} carrier is down — the fault is our link, "
+            "the ONT or the cable, not the ISP's broadband platform")
+
+    if not ev.get("session_up"):
+        # The PPPoE session is not established. Is the access segment still there?
+        l2 = _l2_witness(ev, prev)
+        if l2 and l2[0] > 0:
+            return "pppoe_down_segment_alive", (
+                f"PPPoE session is down, but the access segment is alive — "
+                f"{l2[0]} foreign broadcast frame(s) still arrived on {phy} in "
+                f"the last {int(l2[1])}s. The ISP's broadband platform (PPPoE/"
+                "auth/BNG) dropped our session; our link is fine")
+        if l2 and l2[0] == 0 and l2[1] >= L2_SILENCE_SECS:
+            return "access_segment_down", (
+                f"PPPoE session is down and the WAN segment has gone silent — no "
+                f"foreign broadcast on {phy} for {int(l2[1])}s. We are isolated "
+                "at layer 2; this is an access-side outage")
+        return "pppoe_down", (
+            f"PPPoE session is down while {phy} carrier is up — the ISP broadband "
+            "platform is not completing our session. No independent witness yet "
+            "to say whether the access segment is still alive")
+
+    # Session is up (so auth, access gear and BNG are all proven up this instant).
+    gw = ev.get("gateway")
+    if not ev.get("gateway_icmp"):
+        return "gateway_silent", (
+            f"PPPoE session is up but the peer {gw or '(BNG)'} does not answer "
+            "ICMP — the BNG holds our session but is not forwarding our traffic")
+    tr = (ev.get("traceroute") or {}).get("last_responding")
+    where = f", last hop to answer was {tr['addr']} at hop {tr['hop']}" if tr else ""
+    return "upstream_transit", (
+        f"PPPoE session is up and the peer {gw} answers — the break is beyond "
+        f"the BNG, in the ISP's network{where}. A reboot will not help")
+
+
 # ── Evidence file ────────────────────────────────────────────────────────────
 
 def _evidence_path(outage_start):
@@ -460,22 +526,42 @@ def append_sample(outage_start, sample, last_ok_at=None):
     return path
 
 
+def probe_session_up(iface):
+    """Is the logical WAN interface established (has an IPv4 address)?
+
+    On PPPoE the interface exists only while the session is up, and an address
+    on it means IPCP completed — which on a CHAP link means authentication
+    succeeded, so the physical link, the access gear and the BNG are all proven
+    up at this instant. That makes 'session up' the PPPoE analogue of the DHCP
+    lease witness, but stronger and available on every check."""
+    _, out = _run(["ip", "-4", "addr", "show", iface], 5)
+    return bool(re.search(r"\binet \d", out))
+
+
 def gather(iface, gateway, full=False, probe_hosts=(), externals_down=False,
-           outage_start=None, prev=None):
+           outage_start=None, prev=None, mode="dhcp", phy_iface=None):
+    phy = phy_iface or iface          # PPPoE: carrier/L2 live on the physical NIC
     ev = {
         "at":      datetime.now().astimezone().isoformat(timespec="seconds"),
         "iface":   iface,
         "gateway": gateway or None,
-        "carrier": probe_carrier(iface),
-        # Both are local reads — no network, no measurable cost — so they run on
-        # every sample rather than once per outage. That matters: the DHCP
-        # renewal that disproved "edge off the wire" on 2026-08-31 landed on the
-        # fifth check of the outage, not the first, and a first-check-only probe
-        # would have missed it in both of that day's outages.
-        "link":    probe_link_counters(iface),
-        "dhcp":    probe_dhcp(iface),
+        # carrier + link counters come from the physical NIC: a ppp link has no
+        # meaningful carrier of its own, and the ISP's L2 broadcast arrives on
+        # the NIC regardless of PPPoE encapsulation.
+        "carrier": probe_carrier(phy),
+        "link":    probe_link_counters(phy),
     }
-    ev["gateway_arp"]  = probe_gateway_arp(iface, gateway) if gateway else None
+    if mode == "pppoe":
+        ev["phy_iface"]  = phy
+        ev["session_up"] = probe_session_up(iface)
+        ev["gateway_arp"] = None       # no ARP on a point-to-point link
+        ev["dhcp"]        = None       # no DHCP lease on PPPoE
+    else:
+        # DHCP mode: both are local reads (no network cost), so they run on every
+        # sample — the renewal that disproved "edge off the wire" on 2026-08-31
+        # landed on check five, which a first-check-only probe would have missed.
+        ev["dhcp"]        = probe_dhcp(iface)
+        ev["gateway_arp"] = probe_gateway_arp(iface, gateway) if gateway else None
     ev["gateway_icmp"] = probe_icmp(iface, gateway) if gateway else False
     # The watchdog only calls this AFTER every external probe has already
     # failed, so re-pinging them costs ~6s per dead host to learn what the
@@ -492,14 +578,23 @@ def gather(iface, gateway, full=False, probe_hosts=(), externals_down=False,
         ev["traceroute"]   = probe_traceroute(iface, next(iter(probe_hosts), "1.1.1.1"))
         ev["tailscale"]    = probe_tailscale()
         ev["local_health"] = probe_local_health()
-    cls, verdict = classify(ev, outage_start=outage_start, prev=prev)
+    if mode == "pppoe":
+        cls, verdict = classify_pppoe(ev, prev=prev)
+    else:
+        cls, verdict = classify(ev, outage_start=outage_start, prev=prev)
     ev["class"], ev["verdict"] = cls, verdict
     return ev
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--iface", required=True)
+    ap.add_argument("--iface", required=True,
+                    help="logical WAN interface (eth0 on DHCP, ppp0 on PPPoE)")
+    ap.add_argument("--phy-iface", default="",
+                    help="physical WAN NIC for carrier/L2 reads (PPPoE: eth0). "
+                         "Defaults to --iface.")
+    ap.add_argument("--mode", choices=("dhcp", "pppoe"), default="dhcp",
+                    help="WAN type — selects the discriminator set")
     ap.add_argument("--gateway", default="")
     ap.add_argument("--outage-start", required=True)
     ap.add_argument("--last-ok", default="")
@@ -516,7 +611,8 @@ def main(argv=None):
                 probe_hosts=tuple(a.probe_hosts.split()),
                 externals_down=a.externals_down,
                 outage_start=a.outage_start,
-                prev=previous_sample(a.outage_start))
+                prev=previous_sample(a.outage_start),
+                mode=a.mode, phy_iface=a.phy_iface or None)
     append_sample(a.outage_start, ev, last_ok_at=a.last_ok or None)
     # The shell reads this: class TAB verdict TAB gateway-ICMP.
     # The third field feeds wan-status.json's existing `gateway_reachable`, so

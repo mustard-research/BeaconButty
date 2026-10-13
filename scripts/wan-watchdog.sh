@@ -27,8 +27,32 @@ set -euo pipefail
 #   /var/lib/beaconbutty/wan-status.json — machine-readable state for /health
 #   /var/log/beaconbutty/watchdog.log    — human-readable log
 
-WAN_IFACE="${WAN_IFACE:-eth0}"
-NM_CONN="${NM_CONN:-bb-wan}"    # NetworkManager connection profile for WAN
+# WAN topology is detected at runtime so the watchdog follows isp-select without
+# a unit edit. The logical WAN is the non-wlan0 default-route device; a ppp* name
+# means PPPoE (physical NIC eth0, NM profile bb-wan-pppoe), anything else is DHCP
+# Ethernet (eth0, bb-wan). When the WAN is fully down there is no default route to
+# read, so fall back to the hint isp-select/cutover leave in wan-mode. All three
+# stay overridable so the failure path can be exercised against scratch values.
+WAN_IFACE="${WAN_IFACE:-}"
+WAN_MODE="${WAN_MODE:-}"
+if [[ -z "$WAN_IFACE" ]]; then
+    WAN_IFACE=$(ip -4 route show default 2>/dev/null \
+        | awk '$0 !~ /wlan0/ {for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
+fi
+if [[ -z "$WAN_IFACE" ]]; then
+    case "$(cat /var/lib/beaconbutty/wan-mode 2>/dev/null)" in
+        pppoe) WAN_IFACE=ppp0 ;;
+        *)     WAN_IFACE=eth0 ;;
+    esac
+fi
+[[ -z "$WAN_MODE" ]] && { [[ "$WAN_IFACE" == ppp* ]] && WAN_MODE=pppoe || WAN_MODE=dhcp; }
+if [[ "$WAN_MODE" == pppoe ]]; then
+    WAN_PHY_IFACE="${WAN_PHY_IFACE:-eth0}"   # carrier + L2 witness live here
+    NM_CONN="${NM_CONN:-bb-wan-pppoe}"
+else
+    WAN_PHY_IFACE="${WAN_PHY_IFACE:-$WAN_IFACE}"
+    NM_CONN="${NM_CONN:-bb-wan}"
+fi
 # The threshold is a DURATION, not a number of checks. It gates two actions —
 # re-applying the NM connection when the WAN has no IP, and firing the DNS
 # service_down alert — and both mean "this has been broken for a quarter of an
@@ -141,15 +165,27 @@ EOF
 # transitive dep but running the daemon behind NM's back releases NM's lease
 # and its 20-resolv.conf hook overwrites /etc/resolv.conf with an empty file.
 renew_wan_lease() {
-    if command -v nmcli >/dev/null 2>&1 \
-       && nmcli -t -f NAME con show --active 2>/dev/null | grep -qx "$NM_CONN"; then
+    if ! command -v nmcli >/dev/null 2>&1; then
+        log "SKIPPED: nmcli absent — refusing to invoke dhcpcd/dhclient (would wipe /etc/resolv.conf)"
+        return
+    fi
+    if [[ "$WAN_MODE" == pppoe ]]; then
+        # A dropped PPPoE session is not "active", so gate on the profile EXISTING
+        # and bring it up — that is the safe redial, and there is no dhcpcd here.
+        if nmcli -t -f NAME con show 2>/dev/null | grep -qx "$NM_CONN"; then
+            log "Redialling $NM_CONN via nmcli (PPPoE session up)"
+            nmcli connection up "$NM_CONN" 2>/dev/null || true
+        else
+            log "SKIPPED: no NetworkManager connection '$NM_CONN' to bring up"
+        fi
+    elif nmcli -t -f NAME con show --active 2>/dev/null | grep -qx "$NM_CONN"; then
         log "Renewing $NM_CONN via nmcli (device reapply $WAN_IFACE)"
         nmcli device reapply "$WAN_IFACE" 2>/dev/null || \
             { nmcli connection down "$NM_CONN" 2>/dev/null || true;
               sleep 1;
               nmcli connection up   "$NM_CONN" 2>/dev/null || true; }
     else
-        log "SKIPPED: no NetworkManager connection '$NM_CONN' active — refusing to invoke dhcpcd/dhclient (would wipe /etc/resolv.conf)"
+        log "SKIPPED: no active NetworkManager connection '$NM_CONN' — refusing to invoke dhcpcd/dhclient (would wipe /etc/resolv.conf)"
     fi
 }
 
@@ -170,36 +206,26 @@ except Exception:
 ' "$WAN_STATUS_FILE" 2>/dev/null || true)
 fi
 
-# ── Check 1: WAN interface has an IP ──────────────────────────────────────────
-# `|| true` is required, not defensive noise: if $WAN_IFACE does not exist at
-# all (driver crash, NIC renamed, cable-side rename), `ip` exits non-zero and
-# `set -o pipefail` + `set -e` would kill the script HERE — silently skipping
-# the very recovery branch below that exists to handle a missing interface.
+# ── WAN state: does the logical WAN have an IP, then can we reach upstream? ───
+# On DHCP this is eth0's lease; on PPPoE it is ppp0's address, i.e. whether the
+# session is established at all. `|| true` is required, not defensive noise: if
+# $WAN_IFACE does not exist (a torn-down PPPoE session, driver crash, rename)
+# `ip` exits non-zero and `set -o pipefail` + `set -e` would kill the script
+# HERE — silently skipping the failure handling below that exists for exactly
+# that case.
 WAN_IP=$(ip -4 addr show "$WAN_IFACE" 2>/dev/null | awk '/inet / {print $2}' | head -1 || true)
 
-if [[ -z "$WAN_IP" ]]; then
-    FAILS=$(( $(read_count "$STATE_FILE") + 1 ))
-    write_count "$STATE_FILE" "$FAILS"
-    log "WAN ($WAN_IFACE) has no IP address. Fail ${FAILS}/${FAIL_THRESHOLD}"
-
-    if [[ "$FAILS" -ge "$FAIL_THRESHOLD" ]]; then
-        renew_wan_lease
-        write_count "$STATE_FILE" 0
-    fi
-    # DNS is untestable without an IP, so report unknown rather than guessing.
-    write_status "no_ip" "WAN interface $WAN_IFACE has no IP address" \
-                 "" null "$FAILS" null
-    exit 0
-fi
-
-# ── Check 2: Can we reach upstream hosts? ─────────────────────────────────────
+# Externals are only worth probing if the WAN has an IP to send from. No IP
+# (DHCP lost / PPPoE session down) is itself an outage — handled in the else.
 REACHABLE=false
-for host in $PROBE_HOSTS; do
-    if ping -c 2 -W 3 -q "$host" &>/dev/null; then
-        REACHABLE=true
-        break
-    fi
-done
+if [[ -n "$WAN_IP" ]]; then
+    for host in $PROBE_HOSTS; do
+        if ping -c 2 -W 3 -q "$host" &>/dev/null; then
+            REACHABLE=true
+            break
+        fi
+    done
+fi
 
 if $REACHABLE; then
     PREV_FAILS=$(read_count "$STATE_FILE")
@@ -226,15 +252,17 @@ else
     fi
     OUTAGE_START=$(cat "$OUTAGE_START_FILE")
 
-    # Diagnose. The helper arpings the gateway — ARP runs below IP, so it
-    # answers even from a router that is refusing to forward, which is the one
-    # thing a ping cannot tell us. It also reads carrier and lease state, and on
-    # the FIRST failing check of an outage traceroutes to find where packets
-    # die. See lib/bb_wan_diag.py for why the old ICMP-only split was useless.
+    # Diagnose. --mode selects the discriminator set: for DHCP the helper arpings
+    # the gateway (ARP runs below IP, so it answers even from a router refusing to
+    # forward — the one thing a ping cannot tell us) and reads the lease; for
+    # PPPoE there is no ARP or lease, so it uses the session state plus the
+    # physical NIC's carrier and L2-broadcast witness. First failing check also
+    # traceroutes. See lib/bb_wan_diag.py.
     STATE=""; VERDICT=""; GW_REACH=null
     if [[ -x "$DIAG_BIN" ]]; then
-        DIAG_ARGS=(--iface "$WAN_IFACE" --gateway "$GW" --externals-down
-                   --outage-start "$OUTAGE_START" --probe-hosts "$PROBE_HOSTS")
+        DIAG_ARGS=(--iface "$WAN_IFACE" --mode "$WAN_MODE" --gateway "$GW"
+                   --externals-down --outage-start "$OUTAGE_START" --probe-hosts "$PROBE_HOSTS")
+        [[ "$WAN_MODE" == pppoe ]] && DIAG_ARGS+=(--phy-iface "$WAN_PHY_IFACE")
         [[ -n "$LAST_OK_AT"     ]] && DIAG_ARGS+=(--last-ok "$LAST_OK_AT")
         [[ "$FIRST_CHECK" == 1  ]] && DIAG_ARGS+=(--full)
         # `|| true` so a broken helper degrades to the fallback below rather
@@ -250,7 +278,14 @@ else
     # Fallback: keep working (with the weaker verdict) if the helper is absent
     # or failed, rather than logging an outage with no classification at all.
     if [[ -z "$STATE" ]]; then
-        if [[ -z "$GW" ]]; then
+        if [[ -z "$WAN_IP" ]]; then
+            if [[ "$WAN_MODE" == pppoe ]]; then
+                STATE=pppoe_down; VERDICT="PPPoE session down on $WAN_IFACE (diagnostic helper unavailable)"
+            else
+                STATE=no_ip;      VERDICT="WAN interface $WAN_IFACE has no IP address (diagnostic helper unavailable)"
+            fi
+            GW_REACH=null
+        elif [[ -z "$GW" ]]; then
             STATE=no_route; GW_REACH=null
             VERDICT="no default route via $WAN_IFACE — local routing fault, not the ISP"
         else
@@ -259,10 +294,16 @@ else
         fi
     fi
 
-    log "WAN unreachable (probed: $PROBE_HOSTS). WAN IP: $WAN_IP. Fail ${FAILS}/${FAIL_THRESHOLD} — $VERDICT"
-    # Historic behaviour was to renew DHCP here; that helps nothing when the
-    # ISP is down and, worse, ran dhcpcd behind NM's back and wiped
-    # /etc/resolv.conf (2026-07-01 incident).
+    log "WAN unreachable (iface $WAN_IFACE, mode $WAN_MODE, probed: $PROBE_HOSTS). WAN IP: ${WAN_IP:-none}. Fail ${FAILS}/${FAIL_THRESHOLD} — $VERDICT"
+
+    # Self-recovery ONLY when our own session/IP is missing. The ISP being down
+    # is not ours to fix, and renewing then historically ran dhcpcd behind NM's
+    # back and wiped /etc/resolv.conf (2026-07-01). renew_wan_lease is NM-only
+    # and redials PPPoE / reapplies DHCP as appropriate.
+    if [[ -z "$WAN_IP" && "$FAILS" -ge "$FAIL_THRESHOLD" ]]; then
+        renew_wan_lease
+        write_count "$STATE_FILE" 0
+    fi
 
     # ── Escalate: probe every ESCALATE_INTERVAL until recovery ────────────────
     # Publish the failing state FIRST — the loop below can hold this run for
