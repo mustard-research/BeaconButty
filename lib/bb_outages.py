@@ -54,6 +54,13 @@ HISTORY_FILE   = Path(os.environ.get("BB_OUTAGE_HISTORY",
                                      "/var/lib/beaconbutty/outage-history.json"))
 EVIDENCE_DIR   = Path(os.environ.get("BB_OUTAGE_EVIDENCE",
                                      "/var/lib/beaconbutty/outage-evidence"))
+# Planned-maintenance windows (our own ISP/network work, e.g. the 2026-10-13
+# PPPoE cutover) to exclude from the outage history — an outage whose start
+# falls inside one is dropped from the counted view, exactly as DNS-only
+# failures are. The raw watchdog.log is never touched, so removing a window
+# brings the event back; this only annotates what counts as an ISP fault.
+PLANNED_FILE   = Path(os.environ.get("BB_OUTAGE_PLANNED",
+                                     "/var/lib/beaconbutty/outage-planned.json"))
 
 # An evidence file is keyed on when the watchdog ENTERED its failure branch;
 # the outage start we parse here is when it LOGGED, and between the two sits the
@@ -476,14 +483,53 @@ def attach_evidence(outages):
     return outages
 
 
+def load_planned(path=PLANNED_FILE):
+    """Planned-maintenance windows as (start, end, reason) tuples. Malformed or
+    missing file → no exclusions (the history stays complete rather than hiding
+    real outages on a parse error)."""
+    try:
+        with open(path) as fh:
+            data = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return []
+    windows = data.get("windows") if isinstance(data, dict) else data
+    out = []
+    for w in windows if isinstance(windows, list) else []:
+        try:
+            out.append((datetime.fromisoformat(w["start"]),
+                        datetime.fromisoformat(w["end"]),
+                        w.get("reason", "")))
+        except (KeyError, TypeError, ValueError):
+            continue
+    return out
+
+
+def _is_planned(outage, planned):
+    """True if the outage STARTED inside a planned window. Start, not overlap:
+    a planned swap that triggers a brief real outage either side still brackets
+    the event by when it began, and starts are what merge() keys on."""
+    try:
+        start = datetime.fromisoformat(outage.get("start", ""))
+    except (TypeError, ValueError):
+        return False
+    return any(ws <= start <= we for ws, we, _ in planned)
+
+
 def collect(persist=False, now=None):
     """
     The merged view: everything the history file holds, unioned with a fresh
     parse of whatever logs still exist. Read-only unless persist=True, so the
     webapp can call it on a GET without writing as the wrong user.
+
+    Planned-maintenance windows are dropped here, so they never reach the counted
+    history or the persisted file — but the raw log still has them, so removing a
+    window restores the event on the next parse.
     """
-    outages = attach_evidence(
-        merge(load_history(), build_outages(parse_events(), now=now)))
+    merged = merge(load_history(), build_outages(parse_events(), now=now))
+    planned = load_planned()
+    if planned:
+        merged = [o for o in merged if not _is_planned(o, planned)]
+    outages = attach_evidence(merged)
     if persist:
         save_history(outages)
     return outages
