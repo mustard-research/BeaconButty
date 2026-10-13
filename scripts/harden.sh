@@ -35,6 +35,12 @@ INFO() { echo -e "  ${BOLD}→${RESET}  $*"; }
 FAILURES=0
 WARNINGS=0
 
+# WAN interface = the non-wlan0 default-route device: eth0 on a DHCP ISP, ppp0
+# once PPPoE owns the line (2026-10-13 cutover). bb0 is multi-homed, so wlan0
+# also carries a default route and must be excluded. Falls back to eth0 if the
+# WAN is down at run time. Still overridable via the environment.
+WAN_IFACE="${WAN_IFACE:-$(ip -4 route show default 2>/dev/null \
+    | awk '$0 !~ /wlan0/ {for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')}"
 WAN_IFACE="${WAN_IFACE:-eth0}"
 LAN_IFACE="${LAN_IFACE:-eth1}"
 TAILSCALE_IFACE="tailscale0"

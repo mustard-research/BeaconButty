@@ -29,7 +29,17 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # ── Configuration ─────────────────────────────────────────────────────────────
-WAN_IFACE="${WAN_IFACE:-eth0}"          # Faces ISP, gets DHCP
+WAN_IFACE="${WAN_IFACE:-eth0}"          # Physical NIC facing the ISP
+# WAN_MODE=dhcp  → eth0 gets a DHCP lease (original ISP).
+# WAN_MODE=pppoe → PPPoE session over WAN_IFACE, logical iface ppp0, credentials
+#                  from PPP_ENV (BB_PPP_USER/BB_PPP_PASS). 2026-10-13 Vodafone
+#                  Business cutover. The firewall/NAT then key on ppp0, not eth0.
+WAN_MODE="${WAN_MODE:-dhcp}"
+PPP_ENV="${PPP_ENV:-/etc/beaconbutty/ppp.env}"
+PPP_CONN="bb-wan-pppoe"
+# The interface the firewall/NAT masquerade act on: the PPP link under PPPoE,
+# else the physical WAN NIC.
+if [[ "$WAN_MODE" == "pppoe" ]]; then FW_IFACE="ppp0"; else FW_IFACE="$WAN_IFACE"; fi
 LAN_IFACE="${LAN_IFACE:-eth1}"          # Faces internal switch, static IP
 LAN_IP="${LAN_IP:-192.168.50.1}"        # Pi's LAN address; also DHCP gateway & DNS
 LAN_PREFIX="${LAN_PREFIX:-24}"          # /24 = 255.255.255.0
@@ -67,7 +77,7 @@ echo ""
 echo "╔══════════════════════════════════════════════════════════╗"
 echo "║   BeaconButty — Router Mode Setup                       ║"
 echo "╠══════════════════════════════════════════════════════════╣"
-printf "║  WAN interface  : %-38s║\n" "$WAN_IFACE  (faces ISP, DHCP)"
+printf "║  WAN interface  : %-38s║\n" "$WAN_IFACE  (ISP, $WAN_MODE)"
 printf "║  LAN interface  : %-38s║\n" "$LAN_IFACE  (faces switch, static)"
 printf "║  LAN gateway IP : %-38s║\n" "$LAN_IP/$LAN_PREFIX"
 printf "║  DHCP pool      : %-38s║\n" "$DHCP_START – $DHCP_END"
@@ -108,14 +118,31 @@ if systemctl is-active --quiet NetworkManager; then
         '$2==wan || $2==lan {print $1}' \
         | xargs -r -I{} nmcli con del {} 2>/dev/null || true
 
-    # WAN: DHCP from ISP, is the default route
-    nmcli con add type ethernet \
-        ifname "$WAN_IFACE" \
-        con-name "bb-wan" \
-        ipv4.method auto \
-        ipv6.method ignore \
-        connection.autoconnect yes \
-        ipv4.route-metric 100
+    # WAN: default route. DHCP (eth0) or PPPoE (ppp0 over eth0) per WAN_MODE.
+    if [[ "$WAN_MODE" == "pppoe" ]]; then
+        [[ -r "$PPP_ENV" ]] || { echo "Error: WAN_MODE=pppoe but $PPP_ENV is unreadable (needs BB_PPP_USER/BB_PPP_PASS)."; exit 1; }
+        # shellcheck disable=SC1090
+        source "$PPP_ENV"
+        : "${BB_PPP_USER:?BB_PPP_USER missing from $PPP_ENV}" "${BB_PPP_PASS:?BB_PPP_PASS missing from $PPP_ENV}"
+        nmcli con add type pppoe \
+            ifname "$WAN_IFACE" \
+            con-name "$PPP_CONN" \
+            pppoe.username "$BB_PPP_USER" \
+            connection.autoconnect yes
+        # Set the secret and WAN policy separately so the password never appears
+        # in the `con add` argv (it is stored in the connection file, 0600 root).
+        nmcli con modify "$PPP_CONN" \
+            pppoe.password "$BB_PPP_PASS" pppoe.password-flags 0 \
+            ipv6.method ignore ipv4.route-metric 100 ipv4.ignore-auto-dns yes
+    else
+        nmcli con add type ethernet \
+            ifname "$WAN_IFACE" \
+            con-name "bb-wan" \
+            ipv4.method auto \
+            ipv6.method ignore \
+            connection.autoconnect yes \
+            ipv4.route-metric 100
+    fi
 
     # LAN: static IP, NOT the default route (WAN carries the default route)
     nmcli con add type ethernet \
@@ -209,20 +236,28 @@ iptables -A INPUT -i "$LAN_IFACE" -j ACCEPT
 # ICMP from LAN only — prevents pinging the Pi's WAN IP from the internet
 iptables -A INPUT -i "$LAN_IFACE" -p icmp --icmp-type echo-request -j ACCEPT
 
-# Drop everything else inbound on WAN
-iptables -A INPUT -i "$WAN_IFACE" -j DROP
+# Drop everything else inbound on WAN. FW_IFACE is ppp0 under PPPoE, else the
+# physical WAN NIC — the logical WAN is what carries hostile inbound traffic.
+iptables -A INPUT -i "$FW_IFACE" -j DROP
 
 # ── FORWARD: LAN ↔ WAN ───────────────────────────────────────────────────────
 # LAN → WAN: allow all outbound connections
-iptables -A FORWARD -i "$LAN_IFACE" -o "$WAN_IFACE" \
+iptables -A FORWARD -i "$LAN_IFACE" -o "$FW_IFACE" \
     -m conntrack --ctstate NEW,ESTABLISHED,RELATED -j ACCEPT
 
 # WAN → LAN: only allow responses to established connections
-iptables -A FORWARD -i "$WAN_IFACE" -o "$LAN_IFACE" \
+iptables -A FORWARD -i "$FW_IFACE" -o "$LAN_IFACE" \
     -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 
-# ── NAT: masquerade LAN traffic as Pi's WAN IP ───────────────────────────────
-iptables -t nat -A POSTROUTING -o "$WAN_IFACE" -j MASQUERADE
+# ── NAT: masquerade LAN traffic as the Pi's WAN IP ───────────────────────────
+iptables -t nat -A POSTROUTING -o "$FW_IFACE" -j MASQUERADE
+
+# PPPoE's 1492 MTU needs an MSS clamp or large TCP blackholes for PMTUD-broken
+# peers. Harmless on Ethernet but only meaningful on PPPoE, so scope it.
+if [[ "$WAN_MODE" == "pppoe" ]]; then
+    iptables -t mangle -A FORWARD -o "$FW_IFACE" -p tcp --tcp-flags SYN,RST SYN \
+        -j TCPMSS --clamp-mss-to-pmtu
+fi
 
 # ── Save rules ────────────────────────────────────────────────────────────────
 mkdir -p /etc/iptables
@@ -372,9 +407,21 @@ install -m 755 "$SCRIPT_DIR/scripts/wan-watchdog.sh" /usr/local/bin/wan-watchdog
 cp "$SCRIPT_DIR/systemd/wan-watchdog.service" /etc/systemd/system/
 cp "$SCRIPT_DIR/systemd/wan-watchdog.timer"   /etc/systemd/system/
 
+# Two-way ISP selector (new⇄old, with auto-revert). Lets a rebuilt box switch
+# WAN back to DHCP, or forward to PPPoE, without hand-editing NM/iptables.
+install -m 755 "$SCRIPT_DIR/scripts/isp-select.sh" /usr/local/sbin/isp-select.sh
+
 systemctl daemon-reload
-systemctl enable wan-watchdog.timer
-echo "  WAN watchdog enabled (runs every minute after reboot)."
+# Under PPPoE the watchdog's DHCP/ARP diagnostics don't apply yet; enable the
+# timer only on DHCP, and leave it stopped on PPPoE (see tasks/todo.md step 6).
+if [[ "$WAN_MODE" == "pppoe" ]]; then
+    systemctl enable wan-watchdog.timer
+    systemctl stop   wan-watchdog.timer 2>/dev/null || true
+    echo "  WAN watchdog installed but STOPPED (PPPoE: pending ppp0 rework)."
+else
+    systemctl enable wan-watchdog.timer
+    echo "  WAN watchdog enabled (runs every minute after reboot)."
+fi
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 8: Reboot

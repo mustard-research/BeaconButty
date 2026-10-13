@@ -55,8 +55,7 @@ tar -czf "$OUT" \
     /usr/local/sbin/reboot \
     /etc/systemd/system/ \
     /etc/systemd/journald.conf.d/ \
-    /etc/NetworkManager/system-connections/bb-lan.nmconnection \
-    /etc/NetworkManager/system-connections/bb-wan.nmconnection \
+    /etc/NetworkManager/system-connections/bb-*.nmconnection \
     /etc/NetworkManager/dispatcher.d/99-bb-capture-offload \
     /etc/NetworkManager/dispatcher.d/99-bb-wan-ring \
     /etc/beaconbutty/ \

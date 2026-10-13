@@ -17,7 +17,9 @@ Also download the matching `packages-YYYY-MM-DD.txt` file.
 - All of `/etc/systemd/system/` (units, timers, and the `.wants/` enablement symlinks)
 - Full webapp source (`/home/dm/BeaconButty/`)
 - **Site config `/etc/beaconbutty/local.env`** — BB_HOST, LAN subnet/gateway MAC, alert Lambda URL + shared secret. Without this the alert pipeline and gateway-impersonation check are dead; restore it before enabling services.
-- Network config: NetworkManager profiles (eth0 WAN / eth1 LAN), the dispatcher hooks (`/etc/NetworkManager/dispatcher.d/99-bb-capture-offload` for capture offloads, `99-bb-wan-ring` for the eth0 RX ring depth), dnsmasq, iptables rules, sysctl tweaks
+- Network config: NetworkManager profiles — `bb-lan` (eth1 LAN) plus the WAN profile(s): `bb-wan` (DHCP on eth0) and, since the 2026-10-13 Vodafone cutover, `bb-wan-pppoe` (**PPPoE on eth0 → logical `ppp0`**, with the credentials from `/etc/beaconbutty/ppp.env`). The backup globs `bb-*.nmconnection`, so both WAN profiles come back. The dispatcher hooks (`99-bb-capture-offload`, `99-bb-wan-ring` — the RX ring stays on the physical **eth0** even under PPPoE), dnsmasq, iptables rules (`rules.v4` already keys NAT/forward on `ppp0`), sysctl tweaks
+
+  > **WAN restore:** the snapshot carries the live WAN. If you need to rebuild the WAN from the repo instead, `WAN_MODE=pppoe sudo -E ./scripts/07_router_mode.sh` creates the PPPoE profile from `ppp.env` and builds the `ppp0` firewall + MSS clamp; plain `./07_router_mode.sh` still does DHCP/eth0. Afterwards `sudo isp-select.sh {new|old|status}` switches WAN either way (auto-reverts if the target doesn't come up).
 - App config: RITA (`/etc/rita/`), Suricata, ClickHouse `config.d/` overrides (memory cap, log path, TTLs, **MergeTree schema compat**), Zeek site policy
 
   > All four ClickHouse overrides must be restored: `logs.xml`, `memory.xml`, `system-log-ttl.xml`, `merge-tree-compat.xml`. Repo copies live in `config/clickhouse/config.d/`; own them `clickhouse:clickhouse` and restart. **Omitting `merge-tree-compat.xml` breaks RITA silently on ClickHouse 26.7+** — the current day's import keeps working and the failure only appears at the next midnight rollover, when RITA cannot create the new day's database. See *Troubleshooting → RITA fails to create a new day's database*.
@@ -26,7 +28,7 @@ Also download the matching `packages-YYYY-MM-DD.txt` file.
 - Journal persistence (`/etc/systemd/journald.conf.d/`)
 - Second-layer network controls: `/etc/systemd/system/ssh.service.d/10-bb-ipaddress-allow.conf` (restored with `/etc/systemd/system/`) and the `_restrict_to_local_networks` guard in `webapp/app.py` (restored with the repo)
 
-  > **Both must come back or a public-IP box is left with iptables as its only control.** eth0 holds a routable IP and `sshd` + the webapp bind `0.0.0.0`; the webapp has **no authentication at all**. `harden.sh` re-creates the SSH drop-in, and `beaconbutty-health.sh` asserts both — but a partial restore that skips `/etc/systemd/system/` or reverts `app.py` silently removes them.
+  > **Both must come back or a public-IP box is left with iptables as its only control.** The WAN (eth0 on DHCP, `ppp0` on PPPoE) holds a routable public IP and `sshd` + the webapp bind `0.0.0.0`; the webapp has **no authentication at all**. Both second controls are address-based, so they protect the box regardless of which interface the WAN is on. `harden.sh` re-creates the SSH drop-in, and `beaconbutty-health.sh` asserts both — but a partial restore that skips `/etc/systemd/system/` or reverts `app.py` silently removes them.
 
   > **Restore `99-beaconbutty-persistent.conf` or the journal silently goes volatile.** Raspberry Pi OS ships `/usr/lib/systemd/journald.conf.d/40-rpi-volatile-storage.conf` with `Storage=volatile`; drop-ins apply in lexical order, so our file must keep a `99-` prefix to win. Without it the system looks healthy but keeps no journal across an unclean reboot — the failure is invisible until you actually need the logs. Verify with `systemd-analyze cat-config systemd/journald.conf | grep '^Storage='` (last line wins), not by reading our file alone. Related: log2ram now RAMs only `/var/log/zeek` and `/var/log/suricata` (`PATH_DISK`, semicolon-separated), so everything else in `/var/log` is durable on NVMe.
 - root's crontab (now normally empty — Zeek supervision moved to `zeek-cron.timer` 2026-07-06)
@@ -249,7 +251,7 @@ sudo apt update && sudo apt -f install
 After any of the restore options, verify these items:
 
 ### Network
-- [ ] `ip addr show eth0` — WAN interface has an IP from the ISP
+- [ ] WAN has a public IP: `ip addr show ppp0` (PPPoE) or `ip addr show eth0` (DHCP). On PPPoE, eth0 correctly has **no** IP — it carries the session; check `ppp0`.
 - [ ] `ip addr show eth1` — shows `192.168.50.1/24`
 - [ ] LAN clients can reach the internet (NAT/iptables working)
 - [ ] `sudo systemctl status dnsmasq` — running, no errors
