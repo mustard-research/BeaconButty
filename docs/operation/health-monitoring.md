@@ -80,9 +80,11 @@ Versions
 - Each apt-managed component appends **`— upgradable to X`** when the repo
   candidate differs, and **`(held)`** when pinned. A newer upstream release is
   information, not a fault, so these stay green.
-- **ClickHouse** keeps its months-behind WARN and its
-  `beaconbutty-clickhouse-upgrade.sh` hint (CH versions encode YY.M, so one
-  release ≈ one month) — see *Upgrade Log*.
+- **ClickHouse** is judged against **its own release line**, not apt's candidate
+  (changed 2026-10-26; policy: stay on an LTS line, YY.3 / YY.8). OK with a
+  `--version=<latest patch>` hint when a patch is available on the line; **WARN**
+  when the installed line is not LTS, or is ≥12 months old (≈ LTS support) and a
+  newer LTS exists. It never suggests an older LTS, because that would be a downgrade.
 - **Kernel** is the one that warns: rpt kernel packages install themselves and
   only the reboot is manual, so the actionable signal is a newer image already on
   disk → `running X — Y installed, reboot to activate`.

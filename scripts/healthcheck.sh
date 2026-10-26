@@ -294,7 +294,7 @@ fi
 # Each apt-managed component also reports the repo candidate when it differs, so
 # "there is a newer Zeek" shows up here rather than being discovered during an
 # upgrade. A newer upstream release is information, not a fault, so these stay
-# OK; the exceptions are ClickHouse, which keeps its months-behind WARN, and the
+# OK; the exceptions are ClickHouse, which WARNs off an LTS line or past its ~12-month support, and the
 # kernel, where a newer image already on disk is genuinely actionable.
 section "Versions"
 
@@ -339,41 +339,44 @@ if command -v suricata &>/dev/null; then
     OK "Suricata: ${SURICATA_VER:-unknown}$(apt_suffix suricata)"
 fi
 
-# ClickHouse version staleness — informational unless very far behind.
-# Versions encode YY.M.patch.build, so we measure "months behind" from
-# the year+month components (no need for a date table). Packages are
-# apt-mark hold'd to prevent surprise upgrades — see Upgrade Log
-# 2026-06-16 for the latent-regression incident that led to the hold.
+# ClickHouse version — judged against its own release line, not apt's candidate.
+# Policy (2026-10-26): stay on an LTS line (YY.3 / YY.8) and take only the
+# latest patch on it; apt's candidate is often a short-lived regular release,
+# and comparing against it nudged toward exactly the upgrade we don't want.
+# Versions encode YY.M.patch.build, so the line is the first two components.
+# LTS lines get ~12 months of support, hence the age WARN. Packages are
+# apt-mark hold'd — see Upgrade Log 2026-06-16 and 2026-10-26.
 CH_INSTALLED=$(dpkg-query -W -f='${Version}' clickhouse-server 2>/dev/null || true)
-CH_CANDIDATE=$(LC_ALL=C apt-cache policy clickhouse-server 2>/dev/null \
-    | awk '/Candidate:/ {print $2}')
-CH_HELD=""
-if apt-mark showhold 2>/dev/null | grep -qx "clickhouse-server"; then
-    CH_HELD="; held"
-fi
-if [[ -n "$CH_INSTALLED" && -n "$CH_CANDIDATE" && "$CH_CANDIDATE" != "(none)" ]]; then
-    if [[ "$CH_INSTALLED" == "$CH_CANDIDATE" ]]; then
-        OK "ClickHouse: ${CH_INSTALLED}  (up to date${CH_HELD})"
+if [[ "$CH_INSTALLED" =~ ^([0-9]+)\.([0-9]+)\. ]]; then
+    ch_y=${BASH_REMATCH[1]}; ch_m=${BASH_REMATCH[2]}
+    CH_LINE="${ch_y}.${ch_m}"
+    CH_ALL=$(apt-cache madison clickhouse-server 2>/dev/null | awk '{print $3}')
+    CH_LINE_LATEST=$(grep -E "^${ch_y}\.${ch_m}\." <<<"$CH_ALL" | sort -V | tail -1)
+    CH_NEWEST_LTS=$(grep -E '^[0-9]+\.(3|8)\.' <<<"$CH_ALL" | sort -V | tail -1)
+    CH_HELD=""
+    apt-mark showhold 2>/dev/null | grep -qx "clickhouse-server" && CH_HELD="; held"
+    CH_LTS="LTS"
+    [[ "$ch_m" == "3" || "$ch_m" == "8" ]] || CH_LTS="non-LTS"
+    CH_AGE=$(( (10#$(date +%y) - ch_y) * 12 + 10#$(date +%m) - ch_m ))
+    CH_DESC="${CH_INSTALLED}  (${CH_LINE} ${CH_LTS}${CH_HELD}"
+    CH_HINT=""
+    if [[ -n "$CH_LINE_LATEST" && "$CH_LINE_LATEST" != "$CH_INSTALLED" ]]; then
+        CH_DESC+="; patch ${CH_LINE_LATEST} available)"
+        CH_HINT=" — run: sudo beaconbutty-clickhouse-upgrade.sh --version=${CH_LINE_LATEST}"
     else
-        # Parse YY.M from each version (first two dotted components)
-        inst_y=$(echo "$CH_INSTALLED" | cut -d. -f1)
-        inst_m=$(echo "$CH_INSTALLED" | cut -d. -f2)
-        cand_y=$(echo "$CH_CANDIDATE" | cut -d. -f1)
-        cand_m=$(echo "$CH_CANDIDATE" | cut -d. -f2)
-        BEHIND_MONTHS="?"
-        if [[ "$inst_y" =~ ^[0-9]+$ && "$cand_y" =~ ^[0-9]+$ ]]; then
-            BEHIND_MONTHS=$(( (cand_y - inst_y) * 12 + (cand_m - inst_m) ))
-        fi
-        # "release" vs "releases" pluralisation
-        REL_WORD="releases"
-        [[ "$BEHIND_MONTHS" == "1" ]] && REL_WORD="release"
-        VERSION_STR="${CH_INSTALLED}  (latest: ${CH_CANDIDATE}, ${BEHIND_MONTHS} ${REL_WORD} behind${CH_HELD})"
-        UPGRADE_HINT="run: sudo beaconbutty-clickhouse-upgrade.sh"
-        if [[ "$BEHIND_MONTHS" =~ ^[0-9]+$ ]] && (( BEHIND_MONTHS >= 3 )); then
-            WARN "ClickHouse: ${VERSION_STR} — ${UPGRADE_HINT}"
+        CH_DESC+="; latest patch on its line)"
+    fi
+    if [[ "$CH_LTS" == "non-LTS" ]]; then
+        # An older LTS is a downgrade, which CH storage doesn't support — wait for the next one.
+        if [[ -n "$CH_NEWEST_LTS" && "$(printf '%s\n' "$CH_NEWEST_LTS" "$CH_INSTALLED" | sort -V | tail -1)" == "$CH_NEWEST_LTS" ]]; then
+            WARN "ClickHouse: ${CH_DESC} — not an LTS line; move to ${CH_NEWEST_LTS}"
         else
-            OK "ClickHouse: ${VERSION_STR} — ${UPGRADE_HINT}"
+            WARN "ClickHouse: ${CH_DESC} — not an LTS line; move to the next LTS (YY.3 / YY.8) when it ships"
         fi
+    elif (( CH_AGE >= 12 )) && [[ -n "$CH_NEWEST_LTS" && "$CH_NEWEST_LTS" != "${CH_LINE}."* ]]; then
+        WARN "ClickHouse: ${CH_DESC} — ${CH_LINE} LTS is ${CH_AGE} months old (support ≈12); plan a move to ${CH_NEWEST_LTS}"
+    else
+        OK "ClickHouse: ${CH_DESC}${CH_HINT}"
     fi
 fi
 
