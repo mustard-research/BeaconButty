@@ -34,3 +34,4 @@ aws/lambda/function.zip
 
 # Internal Claude Code task tracking — not part of the public release
 /tasks/
+graphify-out/
