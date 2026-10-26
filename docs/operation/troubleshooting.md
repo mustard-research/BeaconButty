@@ -189,11 +189,12 @@ sudo systemctl restart clickhouse-server
 
 ### Upgrading ClickHouse
 
-Don't `apt upgrade` ClickHouse by hand. Use the wrapper:
+Don't `apt upgrade` ClickHouse by hand. Use the wrapper. **Stay on an LTS line (YY.3 / YY.8)** and pin the latest patch on it with `--version`; apt's candidate is often a non-LTS release:
 
 ```bash
 sudo beaconbutty-clickhouse-upgrade.sh        # interactive
 sudo beaconbutty-clickhouse-upgrade.sh --yes  # skip confirmation
+sudo beaconbutty-clickhouse-upgrade.sh --version=26.8.35.10  # pin: latest patch on the LTS line
 ```
 
 It preflights (health check green, no in-flight RITA import, disk free), snapshots `/etc/clickhouse-server/` to `/var/lib/beaconbutty/ch-upgrade/<UTC-ts>/`, pauses the RITA timer, runs `apt-get install` with `--force-confold`, then verifies:
