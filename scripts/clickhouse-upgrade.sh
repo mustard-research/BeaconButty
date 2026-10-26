@@ -14,8 +14,10 @@
 # snapshot dir available for manual recovery. No auto-rollback (CH
 # storage formats may not downgrade cleanly).
 #
-# Usage: sudo /usr/local/bin/beaconbutty-clickhouse-upgrade.sh [--yes]
-#   --yes : skip interactive confirmation (still aborts on preflight failures)
+# Usage: sudo /usr/local/bin/beaconbutty-clickhouse-upgrade.sh [--yes] [--version=X]
+#   --yes       : skip interactive confirmation (still aborts on preflight failures)
+#   --version=X : install exactly X (e.g. a newer patch on the current LTS line)
+#                 instead of apt's candidate, which may be a non-LTS release
 
 set -euo pipefail
 
@@ -33,7 +35,14 @@ die()  { echo -e "  ${RED}✗${RESET} $*" >&2; exit 1; }
 
 # ── Args ─────────────────────────────────────────────────────────────────────
 ASSUME_YES=0
-[[ "${1:-}" == "--yes" ]] && ASSUME_YES=1
+TARGET=""
+for arg in "$@"; do
+    case "$arg" in
+        --yes)       ASSUME_YES=1 ;;
+        --version=*) TARGET="${arg#--version=}" ;;
+        *)           echo "Unknown argument: $arg" >&2; exit 1 ;;
+    esac
+done
 
 if [[ "$EUID" -ne 0 ]]; then
     die "Run as root (sudo)."
@@ -60,6 +69,11 @@ CANDIDATE=$(LC_ALL=C apt-cache policy clickhouse-server 2>/dev/null \
     | awk '/Candidate:/ {print $2}')
 [[ -z "$CANDIDATE" || "$CANDIDATE" == "(none)" ]] \
     && die "No candidate version found (apt update first?)"
+if [[ -n "$TARGET" ]]; then
+    apt-cache madison clickhouse-server | awk '{print $3}' | grep -qxF "$TARGET" \
+        || die "Version ${TARGET} is not available from the repo"
+    CANDIDATE="$TARGET"
+fi
 
 if [[ "$CURRENT" == "$CANDIDATE" ]]; then
     ok "Already on the latest version (${CURRENT}). Nothing to do."
@@ -130,7 +144,7 @@ ok "Recorded: $(cat "${SNAPSHOT_DIR}/dataset_count") datasets, max_memory=$(cat 
 # ── 3. Pause RITA ─────────────────────────────────────────────────────────────
 log "Pause RITA"
 systemctl stop rita-analyze.timer
-ok "rita-analyze.timer stopped (the package upgrade itself will restart clickhouse-server)"
+ok "rita-analyze.timer stopped"
 
 # ── 4. Upgrade ───────────────────────────────────────────────────────────────
 log "Upgrade"
@@ -143,7 +157,8 @@ ok "Hold released"
 if ! DEBIAN_FRONTEND=noninteractive apt-get install -y \
         -o Dpkg::Options::="--force-confdef" \
         -o Dpkg::Options::="--force-confold" \
-        clickhouse-server clickhouse-client clickhouse-common-static; then
+        "clickhouse-server=${CANDIDATE}" "clickhouse-client=${CANDIDATE}" \
+        "clickhouse-common-static=${CANDIDATE}"; then
     apt-mark hold clickhouse-server clickhouse-client clickhouse-common-static >/dev/null
     die "apt-get install failed — packages left unheld for inspection. Snapshot at ${SNAPSHOT_DIR}"
 fi
@@ -151,7 +166,12 @@ apt-mark hold clickhouse-server clickhouse-client clickhouse-common-static >/dev
 ok "Upgrade complete; packages re-held"
 
 NEW_VERSION=$(dpkg-query -W -f='${Version}' clickhouse-server)
-ok "Now running: ${NEW_VERSION}"
+ok "Installed: ${NEW_VERSION}"
+
+# The package does NOT restart the server (2026-10-26: every check below
+# passed against the old binary), so restart explicitly and assert version().
+systemctl restart clickhouse-server
+ok "clickhouse-server restarted"
 
 # ── 5. Verify ────────────────────────────────────────────────────────────────
 log "Verify"
@@ -185,6 +205,10 @@ done
 clickhouse-client --query "SELECT 1" >/dev/null 2>&1 \
     || die "VERIFY FAIL: SELECT 1 not responding"
 ok "SELECT 1 responsive"
+RUNNING=$(clickhouse-client --query "SELECT version()")
+[[ "$RUNNING" == "$NEW_VERSION" ]] \
+    || die "VERIFY FAIL: server reports ${RUNNING}, package is ${NEW_VERSION} — old binary still running"
+ok "Server version(): ${RUNNING}"
 
 # (d) Memory cap still bounded by our configured ceiling (catches a maintainer
 #     config.xml taking precedence over config.d/memory.xml).
