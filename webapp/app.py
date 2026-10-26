@@ -4246,8 +4246,10 @@ def _load_slow_cadence_filtered():
         # Protocol FP — reuses the /beacons matcher, so "3478:udp" means the
         # same thing on both pages. `services` is absent from reports written
         # before the detector emitted it; those simply skip this check.
-        if any(_fp_service_match(s, fp_protos)[0]
-               for s in (c.get("services") or [])):
+        # EVERY component must be FP'd (all(), not any()), matching the
+        # detector and digest — else a keepalive FP hides the bulk TLS beside it.
+        svcs = c.get("services") or []
+        if svcs and all(_fp_service_match(s, fp_protos)[0] for s in svcs):
             continue
         # DERP netcheck probe — third of the three mirrored slow-cadence
         # filters (detector, digest, here); all must carry it or a suppressed
