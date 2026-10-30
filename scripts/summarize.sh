@@ -372,9 +372,12 @@ for _mac, _ips in mac_ips_hist.items():
     for _ip in _ips:
         _ip_to_mac[_ip] = _mac
 
-def _org_suppressed(src, dst):
+def _org_suppressed(src, dst, fqdn=''):
     # NB: reads _asn_reader directly rather than asn_org_for(), which is
     # defined further down the file than this loop runs.
+    # RITA keys an HTTP beacon to a bare IP as dst "::" with the IP in FQDN.
+    if dst in ('', '::') and re.fullmatch(r'(\d{1,3}\.){3}\d{1,3}', fqdn):
+        dst = fqdn
     if not fp_org_ents or not bb_fp or not _asn_reader or not dst or dst == '::':
         return False
     try:
@@ -422,7 +425,7 @@ for r in rows:
         fp_domain_count += 1
     elif _proto_suppressed(svc):
         fp_proto_count += 1
-    elif _org_suppressed(src, dst):
+    elif _org_suppressed(src, dst, fqdn):
         fp_org_count += 1
     elif _derp_probe_suppressed(r):
         fp_derp_count += 1

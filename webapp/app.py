@@ -886,7 +886,7 @@ def get_beacon_data(report_file, mac_to_ip, ip_to_host, assets=None):
     # suppressed on /beacons/slow and did nothing here. Reverse the MAC map so
     # a device-scoped entry only suppresses the device it was scoped to.
     fp_org_ents  = _fp_org_entries(fp_all)
-    _ip_to_mac   = {ip: mac for mac, ip in mac_to_ip.items() if ip}
+    _ip_to_mac   = _ip_to_mac_map(mac_to_ip)
 
     def _fp_domain_hit(fqdn, dst, enrich_name=""):
         # FQDN if RITA had one, the literal dst as fallback, AND the
@@ -991,6 +991,10 @@ def get_beacon_data(report_file, mac_to_ip, ip_to_host, assets=None):
         e_name = (emap.get((src.strip(), dst.strip())) or {}).get("name", "")
         dest = _annotate_dest(fqdn if fqdn else dst, "" if fqdn else e_name)
         _dst_is_ip = bool(_IP_RE.match(dst.strip()))
+        # RITA keys an HTTP beacon to a bare IP as dst "::" with the IP in
+        # FQDN — the org FP must look the ASN up on that literal.
+        _org_ip = dst.strip() if _dst_is_ip else (
+            fqdn.strip() if _IP_RE.match(fqdn.strip()) else "")
 
         # Skip non-IPv4 source IPs
         if not _IP_RE.match(src.strip()):
@@ -1030,8 +1034,8 @@ def get_beacon_data(report_file, mac_to_ip, ip_to_host, assets=None):
             continue
         # Org FP — matched on the RAW MaxMind ASN owner, never the friendly
         # label org_label() renders, which no pattern is written against.
-        if fp_org_ents and _dst_is_ip:
-            _, _, _row_org = _geoip_info(dst.strip())
+        if fp_org_ents and _org_ip:
+            _, _, _row_org = _geoip_info(_org_ip)
             if _fp_org_match(_row_org or "", _ip_to_mac.get(src.strip(), ""),
                              fp_org_ents):
                 suppressed += 1
@@ -1638,7 +1642,7 @@ def count_beacon_findings_today():
     fp_domains   = fp_all["domains"]
     fp_protocols = fp_all["protocols"]
     fp_org_ents  = _fp_org_entries(fp_all)
-    _ip_to_mac   = {ip: mac for mac, ip in mac_to_ip.items() if ip}
+    _ip_to_mac   = _ip_to_mac_map(mac_to_ip)
 
     def _fp_proto_hit(svc):
         return _fp_service_match(svc, fp_protocols)[0] is not None
@@ -1693,8 +1697,10 @@ def count_beacon_findings_today():
             # Org FP — raw MaxMind ASN owner, device-scoped. Mirrors
             # get_beacon_data, which gained this on 2026-08-14; the tile did
             # not, so any org-suppressed device was still counted here.
-            if fp_org_ents and _IP_RE.match(dst):
-                _, _, _row_org = _geoip_info(dst)
+            _org_ip = dst if _IP_RE.match(dst) else (
+                fqdn if _IP_RE.match(fqdn) else "")
+            if fp_org_ents and _org_ip:
+                _, _, _row_org = _geoip_info(_org_ip)
                 if _fp_org_match(_row_org or "", _ip_to_mac.get(src, ""),
                                  fp_org_ents):
                     continue
@@ -2302,6 +2308,17 @@ def _fp_device_ips(fp_devices, mac_to_ip):
             ips.add(mac_to_ip[mac])
         ips.update(hist.get(mac, ()))
     return ips
+
+
+def _ip_to_mac_map(mac_to_ip):
+    """IP → MAC for scoping device-limited FPs. History first, live leases
+    last: the 14-day window covers IPs a device no longer holds (a visitor
+    who has left), but a reassigned IP must resolve to its current owner."""
+    ip_to_mac = {ip: mac
+                 for mac, ips in _history_mac_to_ips().items()
+                 for ip in ips}
+    ip_to_mac.update({ip: mac for mac, ip in mac_to_ip.items() if ip})
+    return ip_to_mac
 
 
 def _run_fp_script(*args):
@@ -4209,12 +4226,7 @@ def _load_slow_cadence_filtered():
         pass
 
     mac_to_ip, _ = load_leases()
-    # History first, live leases last: the 14-day window covers IPs a device
-    # no longer holds, but a reassigned IP must resolve to its current owner.
-    ip_to_mac    = {ip: mac
-                    for mac, ips in _history_mac_to_ips().items()
-                    for ip in ips}
-    ip_to_mac.update({ip: mac for mac, ip in mac_to_ip.items()})
+    ip_to_mac    = _ip_to_mac_map(mac_to_ip)
     fp_all       = load_fp_all()
     fp_doms      = list(fp_all.get("domains", {}).keys())
     fp_org_ents  = _fp_org_entries(fp_all)
