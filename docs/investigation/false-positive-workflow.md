@@ -415,6 +415,17 @@ On `/beacons` an org-suppressed row is **recorded into an `org` suppression
 group rather than dropped**, so it stays inspectable with its reason and its
 resolved hostname.
 
+### Bare-IP Host rows and departed devices (fixed 2026-10-30, 349c81d)
+
+Two gaps let a correctly scoped org FP do nothing:
+
+1. **RITA keys an HTTP beacon to a bare IP as dst `::` with the IP literal in the FQDN column** (the Host header was an IP). Every org check gated on `dst` being an IP, so the row was never looked up. Real case: Tencent DNSPod HTTPDNS, `GET http://119.29.29.90/d?dn=<DES>&id=8713` every 300 s from a Chinese app SDK, which RITA scores 1.0 and which paged `high_score_beacon` daily despite a scoped `*Tencent*` entry. All three call sites (`summarize.sh` `_org_suppressed`, `get_beacon_data`, the tile) now fall back to the FQDN when `dst` is `::` and the FQDN is an IPv4 literal.
+2. **The webapp's IP→MAC map was lease-only** on `/beacons` and the tile, so once a device's lease expired (a visitor who had left) its rows no longer resolved to the scoped MAC. `/beacons/slow` already used 14-day DHCP history plus live leases; that is now `_ip_to_mac_map()`, shared by all three webapp consumers. `summarize.sh` already used DHCP history.
+
+**Accepted trade-off:** the FQDN fallback trusts the client-supplied Host header, so malware on a *scoped* device could hide behind `Host: <Tencent IP>`. Accepted 2026-10-30 because domain FPs already trust Host/SNI the same way, and LAN-wide; closing it means cross-checking Zeek's `resp_h` per row.
+
+**Verify an FP change on the page, not the matcher:** `curl -sk https://127.0.0.1/beacons | grep <dst>`. A unit check of `org_match()` passed while the row was still shown.
+
 The CLI header's rule count also omitted org FPs entirely, so it disagreed with
 the webapp (375 vs 387). Both now count all four dimensions.
 
