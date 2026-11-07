@@ -30,7 +30,9 @@ WAN_RX_RING="4096"
 WAN_IFACE="${BB_WAN_IFACE:-$WAN_IFACE}"
 WAN_RX_RING="${BB_WAN_RX_RING:-$WAN_RX_RING}"
 
-[ "$1" = "$WAN_IFACE" ] || exit 0
+# Under a PPPoE profile NM passes the IP interface (ppp0) as $1; the physical
+# NIC is only in DEVICE_IFACE. Match either so the hook still fires.
+[ "$1" = "$WAN_IFACE" ] || [ "$DEVICE_IFACE" = "$WAN_IFACE" ] || exit 0
 
 case "$2" in
     up)
