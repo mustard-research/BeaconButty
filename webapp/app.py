@@ -1383,56 +1383,55 @@ def _is_lan(ip):
 
 
 # Flood guard. One decoder rule wrote 1.16M lines in 28 min (2026-11-10); parsing that
-# per request is what hung bb0. Stop after this many lines and say so on the page.
+# per request is what hung bb0. Budget is spent newest-first so a flood in an older
+# archive can never hide today's alerts, counted on in-window lines only, with a hard
+# ceiling on lines scanned so out-of-window bulk still bounds the time.
 _FAST_LOG_LINE_CAP = 250_000
-_fast_log_flood: dict = {"truncated": False, "lines": 0, "top": None}
+_FAST_LOG_SCAN_CAP = 4 * _FAST_LOG_LINE_CAP
 
 
-def parse_fast_log(days=1):
+def _parse_fast_log(days=1):
     """
-    Parse Suricata fast.log entries from the last `days` days (including today).
-    Reads the current fast.log plus rotated .gz files (fast.log.1.gz etc.).
-    Returns list of parsed alert dicts, newest entries last. Stops at
-    _FAST_LOG_LINE_CAP lines and records the fact in _fast_log_flood.
+    Parse Suricata fast.log entries from the last `days` days (including today):
+    the current fast.log first, then rotated archives newest-to-oldest.
+    Returns (alerts sorted oldest→newest, flood) where flood is
+    {"truncated": bool, "lines": in-window lines kept, "top": busiest rule or None}.
     """
     cutoff = (date.today() - timedelta(days=days - 1))
-    alerts = []
-    lines_seen = 0
-    rule_counts: Counter = Counter()
-
-    # Collect files to read: current log + rotated gz files, oldest first
-    # Rotated archives land in /var/lib/suricata/archive/ via logrotate lastaction
     archive_dir = Path("/var/lib/suricata/archive")
-    log_files = []
-    i = days  # only look back as many rotated files as we need
-    while i >= 1:
-        gz = archive_dir / f"{FAST_LOG.name}.{i}.gz"
-        if gz.exists():
-            log_files.append(gz)
-        i -= 1
-    log_files.append(FAST_LOG)  # current file last (chronological order)
+    log_files = [FAST_LOG] + [archive_dir / f"{FAST_LOG.name}.{i}.gz" for i in range(1, days + 1)]
 
+    alerts = []
+    scanned = 0
+    rule_counts: Counter = Counter()
+    flood = {"truncated": False, "lines": 0, "top": None}
     for path in log_files:
         try:
             opener = gzip.open if str(path).endswith(".gz") else open
             with opener(path, "rt", errors="replace") as f:
                 for line in f:
-                    lines_seen += 1
-                    if lines_seen > _FAST_LOG_LINE_CAP:
+                    scanned += 1
+                    if len(alerts) >= _FAST_LOG_LINE_CAP or scanned > _FAST_LOG_SCAN_CAP:
                         top = rule_counts.most_common(1)
-                        _fast_log_flood.update(truncated=True, lines=lines_seen - 1,
-                                               top=top[0][0] if top else None)
-                        app.logger.warning("fast.log flood: stopped parsing at %d lines, top rule %s",
-                                           lines_seen - 1, _fast_log_flood["top"])
-                        return alerts
+                        flood.update(truncated=True, lines=len(alerts), top=top[0][0] if top else None)
+                        app.logger.warning("fast.log flood: stopped at %d kept / %d scanned lines, top rule %s",
+                                           len(alerts), scanned, flood["top"])
+                        alerts.sort(key=lambda a: a["ts"])
+                        return alerts, flood
                     parsed = _parse_fast_log_line(line)
                     if parsed and parsed["ts"] and parsed["ts"].date() >= cutoff:
                         alerts.append(parsed)
                         rule_counts[parsed.get("rule")] += 1
         except (FileNotFoundError, OSError):
             pass
-    _fast_log_flood.update(truncated=False, lines=lines_seen, top=None)
-    return alerts
+    flood["lines"] = len(alerts)
+    alerts.sort(key=lambda a: a["ts"])
+    return alerts, flood
+
+
+def parse_fast_log(days=1):
+    """parse_fast_log without the flood status — for callers that only want rows."""
+    return _parse_fast_log(days)[0]
 
 
 def parse_fast_log_today():
@@ -1645,7 +1644,9 @@ def count_alerts_by_priority():
         now = time.time()
         if _dash_counts_cache["payload"] is not None and now - _dash_counts_cache["ts"] < _DASH_COUNTS_TTL:
             return _dash_counts_cache["payload"]
-        alerts = filter_infra_noise(parse_fast_log_today())
+        today = date.today()
+        alerts, flood = _parse_fast_log(days=1)
+        alerts = filter_infra_noise([a for a in alerts if a["ts"].date() == today])
         fp_all = load_fp_all()
         mac_to_ip, _ = load_leases()
         fp_ips = _fp_device_ips(fp_all["devices"], mac_to_ip)
@@ -1655,8 +1656,8 @@ def count_alerts_by_priority():
                 continue
             p = a.get("priority", 4)
             counts[p] = counts.get(p, 0) + 1
-        _dash_counts_cache.update(ts=now, payload=counts)
-        return counts
+        _dash_counts_cache.update(ts=now, payload=(counts, flood))
+        return counts, flood
 
 
 def count_beacon_findings_today():
@@ -4119,7 +4120,7 @@ def dashboard():
     stats  = get_system_stats()
     health = load_health()
     beacon_count    = count_beacon_findings_today()
-    suricata_counts = count_alerts_by_priority()
+    suricata_counts, suricata_flood = count_alerts_by_priority()
     network         = network_alert_summary()
     slow            = slow_beacon_summary()
     pcap_active     = len(load_domain_watch_config()["domains"])
@@ -4132,7 +4133,7 @@ def dashboard():
         wan_status=load_wan_status(),
         beacon_count=beacon_count,
         suricata_counts=suricata_counts,
-        suricata_flood=dict(_fast_log_flood),
+        suricata_flood=suricata_flood,
         network=network,
         slow=slow,
         pcap_active=pcap_active,
@@ -4409,7 +4410,7 @@ def suricata():
         return _suricata_cache["payload"]
 
     _, ip_to_host = load_leases()
-    week_alerts  = parse_fast_log(days=7)
+    week_alerts, suricata_flood = _parse_fast_log(days=7)
     today        = date.today()
     today_alerts = [a for a in week_alerts if a["ts"].date() == today]
     eve_events   = parse_eve_json_today()
@@ -4422,7 +4423,7 @@ def suricata():
         unresolved=unresolved,
         total_alerts=total_alerts,
         extras=extras,
-        suricata_flood=dict(_fast_log_flood),
+        suricata_flood=suricata_flood,
     )
     _suricata_cache["ts"] = now
     _suricata_cache["payload"] = rendered
