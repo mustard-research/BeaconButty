@@ -44,6 +44,13 @@ app = Flask(__name__)
 _suricata_cache: dict = {"ts": 0.0, "payload": None}
 _SURICATA_CACHE_TTL = 900  # seconds (15 min)
 
+# Dashboard tile cache. count_alerts_by_priority parses today's fast.log on every
+# "/" hit; under an alert flood (2026-11-10, 1.1M lines) each poll took minutes,
+# threads piled up and the site hung. One parse per minute, one thread at a time.
+_dash_counts_cache: dict = {"ts": 0.0, "payload": None}
+_DASH_COUNTS_TTL = 60
+_dash_counts_lock = threading.Lock()
+
 # ── Site-local overrides ───────────────────────────────────────────────────────
 def _load_local_env(path: str = "/etc/beaconbutty/local.env") -> None:
     p = Path(path)
@@ -1615,17 +1622,22 @@ def count_alerts_by_priority():
     Applies the same FP-device suppression as build_suricata_data so the
     dashboard tile agrees with the /suricata page — an FP'd device tripping
     a rule must not show a count the page then can't explain."""
-    alerts = filter_infra_noise(parse_fast_log_today())
-    fp_all = load_fp_all()
-    mac_to_ip, _ = load_leases()
-    fp_ips = _fp_device_ips(fp_all["devices"], mac_to_ip)
-    counts = {1: 0, 2: 0, 3: 0, 4: 0}
-    for a in alerts:
-        if a.get("src_ip") in fp_ips or a.get("dst_ip") in fp_ips:
-            continue
-        p = a.get("priority", 4)
-        counts[p] = counts.get(p, 0) + 1
-    return counts
+    with _dash_counts_lock:
+        now = time.time()
+        if _dash_counts_cache["payload"] is not None and now - _dash_counts_cache["ts"] < _DASH_COUNTS_TTL:
+            return _dash_counts_cache["payload"]
+        alerts = filter_infra_noise(parse_fast_log_today())
+        fp_all = load_fp_all()
+        mac_to_ip, _ = load_leases()
+        fp_ips = _fp_device_ips(fp_all["devices"], mac_to_ip)
+        counts = {1: 0, 2: 0, 3: 0, 4: 0}
+        for a in alerts:
+            if a.get("src_ip") in fp_ips or a.get("dst_ip") in fp_ips:
+                continue
+            p = a.get("priority", 4)
+            counts[p] = counts.get(p, 0) + 1
+        _dash_counts_cache.update(ts=now, payload=counts)
+        return counts
 
 
 def count_beacon_findings_today():
@@ -2338,6 +2350,7 @@ def _run_fp_script(*args):
         return False, msg
     _invalidate_network_cache()
     _suricata_cache["ts"] = 0  # the /suricata page cache must not outlive an FP edit
+    _dash_counts_cache["ts"] = 0
     return True, ""
 
 

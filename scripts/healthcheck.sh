@@ -177,7 +177,9 @@ else
     # PATH_DISK is semicolon-separated
     while IFS= read -r L2R_PATH; do
         [[ -z "$L2R_PATH" ]] && continue
-        mountpoint -q "$L2R_PATH" 2>/dev/null || continue
+        # A path that is NOT mounted is the failure (2026-11-10: suricata's store grew past
+        # SIZE, log2ram.service failed at boot, Suricata wrote to NVMe and nothing flagged it).
+        mountpoint -q "$L2R_PATH" 2>/dev/null || { FAIL "log2ram (${L2R_PATH}): not mounted — log2ram.service is $(systemctl is-active log2ram 2>/dev/null); logs are on disk, not RAM"; continue; }
         LOG2RAM_SEEN=1
         LOG2RAM_PCT=$(df "$L2R_PATH" | awk 'NR==2 {gsub(/%/,"",$5); print $5}')
         LOG2RAM_USED=$(df -h "$L2R_PATH" | awk 'NR==2 {print $3}')
