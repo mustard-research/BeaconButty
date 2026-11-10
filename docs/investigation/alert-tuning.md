@@ -153,4 +153,6 @@ _None._
 | 2210016, 2210020, 2210029, 2210030, 2210038, 2210042, 2210044, 2210045, 2210054 | `SURICATA STREAM …` | stream-reassembly complaints on ordinary lossy/asymmetric traffic |
 | 2231000, 2231001, 2231002 | `SURICATA QUIC …` | Suricata's QUIC probe accepts any UDP datagram without the long-header bit, so DTLS tunnels on 443 (Zscaler, other VPN clients) are "QUIC" and raise `error on data` on **every packet**; 1.16 M alerts in 28 min on 2026-11-09. Unchanged in 8.0.5, no DTLS parser upstream. |
 
+Below the suppressions the file carries a generated block (2026-11-10): `threshold gen_id 1, sig_id <sid>, type limit, track by_dst, count 50, seconds 60` for all 353 remaining built-in `SURICATA …` event sids, so no decoder event can exceed 50 alerts per destination host per minute. Upstream does not support a global `sig_id 0` threshold, hence one line per sid. Rule-set updates never add such sids; a Suricata **version** upgrade can — the regeneration one-liner is in the file header.
+
 Add a sid here, not to a `disable.conf`: `disable.conf` needs a `suricata-update` run and drops the rule entirely, whereas `suppress` survives rule updates and keeps the rule visible in `suricata.rules` for anyone auditing coverage.

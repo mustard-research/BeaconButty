@@ -191,6 +191,17 @@ else
         else
             FAIL "log2ram (${L2R_PATH}): ${LOG2RAM_PCT}% used  (${LOG2RAM_USED} of ${LOG2RAM_SIZE}) — may drop logs before 23:55 sync"
         fi
+        # Self-heal: force the Suricata rotation (copytruncate → archives on NVMe) before the
+        # tmpfs — which is RAM — fills. Root only (bb-watchdog runs us via sudo every 30 min).
+        # shortcut: Suricata only — Zeek has no logrotate path, its dirs are zeekctl-managed;
+        # revisit if a Zeek path ever trips 90%.
+        if [[ "$LOG2RAM_PCT" -ge 90 && "$EUID" -eq 0 && "$L2R_PATH" == /var/log/suricata && -f /etc/logrotate.d/suricata ]]; then
+            if logrotate -f /etc/logrotate.d/suricata 2>/dev/null; then
+                WARN "log2ram (${L2R_PATH}): forced Suricata log rotation at ${LOG2RAM_PCT}% — now $(df "$L2R_PATH" | awk 'NR==2 {print $5}') used; find the flooding signature (see Troubleshooting)"
+            else
+                FAIL "log2ram (${L2R_PATH}): forced Suricata log rotation at ${LOG2RAM_PCT}% FAILED"
+            fi
+        fi
     done < <(printf '%s\n' "$LOG2RAM_PATHS" | tr ';' '\n')
     [[ "$LOG2RAM_SEEN" -eq 0 ]] && WARN "log2ram: no PATH_DISK entry is mounted (${LOG2RAM_PATHS}) — logs are on disk, not RAM"
 fi

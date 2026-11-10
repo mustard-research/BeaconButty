@@ -14,6 +14,10 @@
   {% else %}{% set ns.p4 = ns.p4 + sig.count %}{% endif %}
 {% endfor %}
 
+{% if suricata_flood and suricata_flood.truncated %}
+<div class="stat-sub stat-value-warn" style="margin-bottom:8px;">⚠ Alert flood: parsing stopped after {{ "{:,}".format(suricata_flood.lines) }} lines, so every count on this page is partial. Top signature: {{ suricata_flood.top }} — suppress or rate-limit it in <code>threshold.config</code>.</div>
+{% endif %}
+
 <div class="page-header">
   <div class="header-row">
     <div>

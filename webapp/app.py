@@ -1382,14 +1382,23 @@ def _is_lan(ip):
     return bool(LAN_NET.match(ip or ""))
 
 
+# Flood guard. One decoder rule wrote 1.16M lines in 28 min (2026-11-10); parsing that
+# per request is what hung bb0. Stop after this many lines and say so on the page.
+_FAST_LOG_LINE_CAP = 250_000
+_fast_log_flood: dict = {"truncated": False, "lines": 0, "top": None}
+
+
 def parse_fast_log(days=1):
     """
     Parse Suricata fast.log entries from the last `days` days (including today).
     Reads the current fast.log plus rotated .gz files (fast.log.1.gz etc.).
-    Returns list of parsed alert dicts, newest entries last.
+    Returns list of parsed alert dicts, newest entries last. Stops at
+    _FAST_LOG_LINE_CAP lines and records the fact in _fast_log_flood.
     """
     cutoff = (date.today() - timedelta(days=days - 1))
     alerts = []
+    lines_seen = 0
+    rule_counts: Counter = Counter()
 
     # Collect files to read: current log + rotated gz files, oldest first
     # Rotated archives land in /var/lib/suricata/archive/ via logrotate lastaction
@@ -1408,11 +1417,21 @@ def parse_fast_log(days=1):
             opener = gzip.open if str(path).endswith(".gz") else open
             with opener(path, "rt", errors="replace") as f:
                 for line in f:
+                    lines_seen += 1
+                    if lines_seen > _FAST_LOG_LINE_CAP:
+                        top = rule_counts.most_common(1)
+                        _fast_log_flood.update(truncated=True, lines=lines_seen - 1,
+                                               top=top[0][0] if top else None)
+                        app.logger.warning("fast.log flood: stopped parsing at %d lines, top rule %s",
+                                           lines_seen - 1, _fast_log_flood["top"])
+                        return alerts
                     parsed = _parse_fast_log_line(line)
                     if parsed and parsed["ts"] and parsed["ts"].date() >= cutoff:
                         alerts.append(parsed)
+                        rule_counts[parsed.get("rule")] += 1
         except (FileNotFoundError, OSError):
             pass
+    _fast_log_flood.update(truncated=False, lines=lines_seen, top=None)
     return alerts
 
 
@@ -4113,6 +4132,7 @@ def dashboard():
         wan_status=load_wan_status(),
         beacon_count=beacon_count,
         suricata_counts=suricata_counts,
+        suricata_flood=dict(_fast_log_flood),
         network=network,
         slow=slow,
         pcap_active=pcap_active,
@@ -4402,6 +4422,7 @@ def suricata():
         unresolved=unresolved,
         total_alerts=total_alerts,
         extras=extras,
+        suricata_flood=dict(_fast_log_flood),
     )
     _suricata_cache["ts"] = now
     _suricata_cache["payload"] = rendered

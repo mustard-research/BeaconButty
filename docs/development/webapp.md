@@ -113,6 +113,8 @@ Always use `csv.reader`, never `str.split(",")`, in `parse_beacon_report()`. Quo
 
 `count_alerts_by_priority()` (the `/` Suricata tile) re-parsed today's `fast.log` **and** `fast.log.1.gz` on every request with no cache and no lock. A single flooding decoder rule made each parse take minutes; the 30 s global-health poll then stacked ~240 threads until bb0 hung. It now holds `_dash_counts_lock` around a 60 s TTL cache (`_dash_counts_cache`), so concurrent callers wait for one parse rather than each starting their own, and `_run_fp_script()` zeroes it with the `/suricata` cache. Rule: anything that reads a log whose size *traffic* controls gets a TTL cache and a lock.
 
+The parse itself is bounded too: `parse_fast_log()` stops at `_FAST_LOG_LINE_CAP` (250 k lines, ~50× a normal day) and records `_fast_log_flood` (`truncated`, `lines`, `top` signature). Both the dashboard tile and `/suricata` render a warning from it, so partial counts are never shown as complete. The service unit also carries `MemoryMax=1536M` so a bug here restarts the webapp rather than the box.
+
 ### Network Intel cache warmer (2026-05-15)
 
 `/network` runs 10 Zeek-log builders — **~17s uncached**. `build_network_intel()` TTL-caches the result (5 min), but before this change every cache lapse made the next visitor wait the full 17s (browsers gave up mid-load with `SSL: UNEXPECTED_EOF`). `_compute_network_intel()` now holds the uncached build, and a `_network_cache_warmer` daemon thread (started in `__main__` before `app.run`) rebuilds `_NETWORK_CACHE` every `TTL-60s`, swapping the finished dict in atomically. Requests always hit the ~0.01s cached path. If `/network` feels slow again, confirm the warmer thread is alive (the `bb-graphs` PID should show 2 threads).

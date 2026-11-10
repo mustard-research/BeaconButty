@@ -250,6 +250,9 @@
       {% if suricata_counts[3] + suricata_counts[4] > 0 %}<span class="badge badge-p3">{{ suricata_counts[3] + suricata_counts[4] }} P3</span>{% endif %}
     </div>
     {% endif %}
+    {% if suricata_flood and suricata_flood.truncated %}
+    <div class="stat-sub stat-value-warn">⚠ flood — parse stopped at {{ "{:,}".format(suricata_flood.lines) }} lines; top: {{ suricata_flood.top }}</div>
+    {% endif %}
     <div class="stat-sub"><a href="{{ url_for('suricata') }}">View alerts →</a></div>
   </div>
 

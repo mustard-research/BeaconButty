@@ -9,6 +9,10 @@ WorkingDirectory=/home/dm/BeaconButty/webapp
 ExecStart=/usr/bin/python3 /home/dm/BeaconButty/webapp/app.py
 Restart=on-failure
 RestartSec=5
+# A runaway parse must kill the webapp, not the router: with no ceiling the 2026-11-10
+# alert flood thrashed the whole box into a hang. Normal peak is ~570M.
+MemoryHigh=1G
+MemoryMax=1536M
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 
 [Install]

@@ -55,7 +55,7 @@ If a tmpfs fills **before** the 23:55 sync, further writes fail **silently** —
 | 70–84 % | ⚠ WARN |
 | ≥ 85 % | ✗ FAIL — "may drop logs before 23:55 sync" |
 
-The dashboard log2ram tile uses the same 70 / 85 thresholds.
+The dashboard log2ram tile uses the same 70 / 85 thresholds. Since 2026-11-10 the check also **self-heals the Suricata path**: at ≥ 90 % and running as root (bb-watchdog, every 30 min) it forces `logrotate -f /etc/logrotate.d/suricata`, whose `copytruncate` + `olddir` moves the bulk to NVMe. Suricata only — Zeek's dirs are zeekctl-managed. Not yet exercised by a real fill.
 
 ### The other fill failure: backing store larger than `SIZE` at boot (2026-11-10)
 
