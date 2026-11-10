@@ -143,3 +143,14 @@ _None._
   matters for embedded devices that have no host-based defence. The
   "reverse IP proxy" payload in the talk is precisely the outbound-beacon
   shape RITA scores near 1.0.
+
+## Suricata engine-level suppressions
+
+`config/threshold.config` (deployed to `/etc/suricata/threshold.config` by `08_install_suricata.sh`; re-read on `systemctl reload suricata`) silences rules whose volume is set by traffic shape rather than threats. These never reach `fast.log`/`eve.json`, which is the point — the webapp's `_INFRA_NOISE_PREFIXES` filter hides `SURICATA STREAM`/`SURICATA QUIC` from the UI but cannot stop the disk/RAM cost of logging them.
+
+| sids | Family | Why |
+|---|---|---|
+| 2210016, 2210020, 2210029, 2210030, 2210038, 2210042, 2210044, 2210045, 2210054 | `SURICATA STREAM …` | stream-reassembly complaints on ordinary lossy/asymmetric traffic |
+| 2231000, 2231001, 2231002 | `SURICATA QUIC …` | Suricata's QUIC probe accepts any UDP datagram without the long-header bit, so DTLS tunnels on 443 (Zscaler, other VPN clients) are "QUIC" and raise `error on data` on **every packet**; 1.16 M alerts in 28 min on 2026-11-09. Unchanged in 8.0.5, no DTLS parser upstream. |
+
+Add a sid here, not to a `disable.conf`: `disable.conf` needs a `suricata-update` run and drops the rule entirely, whereas `suppress` survives rule updates and keeps the rule visible in `suricata.rules` for anyone auditing coverage.

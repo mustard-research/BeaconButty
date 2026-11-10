@@ -57,6 +57,21 @@ If a tmpfs fills **before** the 23:55 sync, further writes fail **silently** —
 
 The dashboard log2ram tile uses the same 70 / 85 thresholds.
 
+### The other fill failure: backing store larger than `SIZE` at boot (2026-11-10)
+
+`log2ram start` refuses a path whose **disk** copy (`hdd.<name>`) is bigger than `SIZE` ("RAM disk too small. Can't sync."), unmounts it and exits 1 — so `log2ram.service` sits **failed**, that path falls back to NVMe, and **nothing else complains**: the writer keeps writing, `log2ram-daily` still runs, and the health check used to skip unmounted paths with `|| continue`. It now **FAILs** on any `PATH_DISK` entry that is not a mountpoint. The trap was set by a flood that filled the tmpfs to 100 % and was then rotated out by logrotate (`copytruncate` truncates the *tmpfs* file, not the 23:55 disk copy), so the oversized disk copy only bit on the next boot — an unclean one, 15 hours later.
+
+Two things matter at shutdown: with the unit failed its `ExecStop` never runs, so the **zeek tmpfs would be lost on the next clean reboot**. Fix it promptly, and never with a bare `systemctl start log2ram` while the other path is still mounted (start bind-mounts whatever is at the path — it would bind the live tmpfs as the "disk" copy). Recovery, as run on 2026-11-10 (shrink the offending disk copy first):
+
+```bash
+sudo systemctl stop zeek
+sudo rsync -aAX --delete-after /var/log/zeek/ /var/log/hdd.zeek/
+sudo umount -l /var/log/zeek && sudo umount -l /var/log/hdd.zeek
+sudo systemctl reset-failed log2ram && sudo systemctl start log2ram
+sudo systemctl restart suricata     # AFTER the mount, or it keeps writing to the hidden NVMe files
+sudo systemctl start zeek
+```
+
 ## What's on log2ram
 
 Only the two bulk traffic-log paths:

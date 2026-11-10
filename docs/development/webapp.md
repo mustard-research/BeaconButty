@@ -109,6 +109,10 @@ Always use `csv.reader`, never `str.split(",")`, in `parse_beacon_report()`. Quo
 
 `_NETWORK_CACHE` must be busted after **any** write to `false-positives.conf`, whether via the webapp or via the CLI. CLI writes bypass the webapp's normal FP-write code path.
 
+### Dashboard alert count cache (2026-11-10)
+
+`count_alerts_by_priority()` (the `/` Suricata tile) re-parsed today's `fast.log` **and** `fast.log.1.gz` on every request with no cache and no lock. A single flooding decoder rule made each parse take minutes; the 30 s global-health poll then stacked ~240 threads until bb0 hung. It now holds `_dash_counts_lock` around a 60 s TTL cache (`_dash_counts_cache`), so concurrent callers wait for one parse rather than each starting their own, and `_run_fp_script()` zeroes it with the `/suricata` cache. Rule: anything that reads a log whose size *traffic* controls gets a TTL cache and a lock.
+
 ### Network Intel cache warmer (2026-05-15)
 
 `/network` runs 10 Zeek-log builders — **~17s uncached**. `build_network_intel()` TTL-caches the result (5 min), but before this change every cache lapse made the next visitor wait the full 17s (browsers gave up mid-load with `SSL: UNEXPECTED_EOF`). `_compute_network_intel()` now holds the uncached build, and a `_network_cache_warmer` daemon thread (started in `__main__` before `app.run`) rebuilds `_NETWORK_CACHE` every `TTL-60s`, swapping the finished dict in atomically. Requests always hit the ~0.01s cached path. If `/network` feels slow again, confirm the warmer thread is alive (the `bb-graphs` PID should show 2 threads).

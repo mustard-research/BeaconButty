@@ -264,7 +264,15 @@ sudo systemctl reload suricata   # or restart if reload fails
 
 ### Too many P3/P4 alerts
 
-These are hidden by default on the Suricata page. If they leak into P1/P2 counts, the ruleset or classification changed after an update. Review `/var/log/suricata/fast.log` for the noisy signature and disable via `/etc/suricata/disable.conf`, then `sudo suricata-update && sudo systemctl reload suricata`.
+These are hidden by default on the Suricata page. If they leak into P1/P2 counts, the ruleset or classification changed after an update. Review `/var/log/suricata/fast.log` for the noisy signature and suppress it the house way — a `suppress gen_id 1, sig_id <sid>` line in `config/threshold.config`, copied to `/etc/suricata/threshold.config`, then `sudo systemctl reload suricata` (the reload re-reads threshold.config; no `suricata-update` run needed, and the suppression survives rule updates).
+
+### One signature flooding `fast.log` (thousands of lines a minute)
+
+```bash
+tail -200000 /var/log/suricata/fast.log | grep -oE '\[\*\*\] \[[0-9:]+\] [^[]+' | sort | uniq -c | sort -rn | head
+```
+
+If it is a `SURICATA …` app-layer/decoder event (sids 22xxxxx), it is traffic shape, not a threat — suppress it as above **first**, then shrink the logs: the tmpfs is RAM and the dashboard parses today's `fast.log` (plus `fast.log.1.gz`) per request, so a flood takes the box down twice over (2026-11-10: `SURICATA QUIC error on data` on a Zscaler DTLS tunnel). If `log2ram.service` is failed afterwards, see the recovery in the Log2Ram page ([Log2Ram Usage](../architecture/log2ram-usage.md)).
 
 ## dnsmasq
 
