@@ -451,6 +451,26 @@ cat /sys/class/net/eth0/carrier_changes
 > [!note]
 > The `dev eth0` scoping on the route lookup is load-bearing, not tidiness. This box is multi-homed (eth0 WAN + wlan0 on the LAN) and **both** carry a default route, so an unscoped lookup also returns our own LAN address — which always pings and would report a healthy gateway in the middle of a total WAN outage.
 
+## Tailscale node relaying payload via DERP
+
+Symptom: `derp*.tailscale.com` rows from a LAN tailnet node survive the DERP volume gate (hundreds of B/pkt, KBs/conn) and `tailscale status` on the box shows that peer as `relay "lhr"` although it is on the LAN. Do **not** add an FP — the gate is doing its job ([Network Topology](../architecture/network-topology.md#tailscale-traffic-in-beacon-detection)).
+
+```bash
+tailscale ping -c 6 <node>              # "direct connection not established"?
+tailscale debug netmap | python3 -c '
+import json,sys
+for p in json.load(sys.stdin)["Peers"]:
+    if "<node>" in p["Name"]: print(p.get("Endpoints"))'
+# A LAN-only endpoint list (no STUN-derived public ip:port) means the node is
+# NOT RECEIVING UDP on its Tailscale socket. Confirm with a capture: its
+# pings/STUN arrive and we reply, but no pongs come back.
+sudo tcpdump -i eth1 -nn udp port 41641 and host <lan-ip>
+```
+
+Cause seen 2026-11-23 on a macOS laptop: the Tailscale system extension's receive loop had died (app shows *"The MagicSock function ReceiveIPv6 is not running"*). Fix is on the node: quit Tailscale, install the pending update (or reboot), then re-run `tailscale ping`; it should answer `via <lan-ip>:41641`.
+
+macOS notes: the CLI is `/Applications/Tailscale.app/Contents/MacOS/Tailscale` — **alias it, never symlink** (the binary crashes on a bundle-identifier check). The Application Firewall lists the extension by its `/Library/SystemExtensions/<UUID>/` path and the UUID changes on every update, so a stale allow-rule is possible; `socketfilterfw --listapps` vs `pgrep -fl tailscale` shows the mismatch, `--add`/`--unblockapp` the live path fixes it.
+
 ## Backup clone failing
 
 See [Backup & Recovery](backup-and-recovery.md) — common causes: wrong device selected (not `sda`), USB enclosure not spun up, `rpi-clone` already running (check `pgrep rpi-clone`).

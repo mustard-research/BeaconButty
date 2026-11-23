@@ -104,6 +104,8 @@ when *every* component matches. What separates probe from payload is **volume**
 for the structural gate, and [Slow-Cadence Beacons](../investigation/slow-cadence-beacons.md#worked-example-tailscale-derp-relays)
 for the case that started it.
 
+**A LAN node relaying payload through DERP is a fault, not a baseline (found 2026-11-23).** One tailnet laptop on the same /24 as this box was reached by every peer via `relay "lhr"` at ~370 B/pkt — payload, which the volume gate correctly kept visible. Its Tailscale system extension's receive loop had died (app health warning *"The MagicSock function ReceiveIPv6 is not running"*): it could still send, so its disco pings and STUN requests arrived, but it never read a reply and advertised only its LAN endpoint. Quit + upgrade on the node fixed it. Playbook: [Troubleshooting](../operation/troubleshooting.md#tailscale-node-relaying-payload-via-derp).
+
 ## Known LAN devices
 
 The format below shows the kind of inventory the appliance maintains; substitute your own devices. Examples:
